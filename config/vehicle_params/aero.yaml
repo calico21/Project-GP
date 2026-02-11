@@ -1,0 +1,5 @@
+# Aerodynamic Maps (Cl and Cd)
+# Coefficients can be functions of ride height
+cla: 3.5
+cda: 1.2
+center_of_pressure: 0.55 # % rearward

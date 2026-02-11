@@ -1,0 +1,8 @@
+# Vehicle Mass and Inertia Properties
+mass: 300          # kg (including driver)
+cg_height: 0.28      # m
+weight_dist: 0.48    # % front
+inertia:
+  Ixx: 120.0
+  Iyy: 180.0
+  Izz: 200.0

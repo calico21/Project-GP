@@ -1,0 +1,12 @@
+# Python
+__pycache__/
+*.py[cod]
+*.so
+
+# Data Lake (Don't commit heavy logs)
+data/raw_telemetry/*
+data/cache/*
+
+# Environment
+.env
+venv/

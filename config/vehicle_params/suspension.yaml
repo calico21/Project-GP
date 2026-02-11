@@ -1,0 +1,9 @@
+# Suspension Parameters
+front:
+  spring_rate: 25000 # N/m
+  motion_ratio: 0.8
+  track_width: 1.2   # m
+rear:
+  spring_rate: 30000 # N/m
+  motion_ratio: 0.85
+  track_width: 1.15  # m
