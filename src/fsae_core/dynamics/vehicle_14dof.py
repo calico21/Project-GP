@@ -8,9 +8,11 @@ class Vehicle14DOF:
     DOFs:
     1-6:  Chassis Position & Orientation (x, y, z, roll, pitch, yaw)
     7-10: Wheel/Suspension Vertical Positions (z_fl, z_fr, z_rl, z_rr)
-    11-14: Wheel Spin Speeds (w_fl, w_fr, w_rl, w_rr)
+    11-14: Wheel Spin Speeds (w_fl, w_fr, w_rl, w_rr) (Integrates to Wheel Angle)
     
-    This class calculates the time-derivative of the state vector: x_dot = f(x, u)
+    State Vector (28 elements):
+    0-13:  Positions (Global XYZ, Euler RPY, Susp Z, Wheel Theta)
+    14-27: Velocities (Body uvw, Body pqr, Susp dZ, Wheel Omega)
     """
 
     def __init__(self, params):
@@ -19,26 +21,18 @@ class Vehicle14DOF:
     def get_dynamics(self, states, controls):
         """
         Symbolic equations of motion.
-        
-        Args:
-            states: CasADi MX/SX vector (28 elements: 14 positions + 14 velocities)
-            controls: CasADi MX/SX vector (3 elements: steer_angle, throttle, brake_bias)
-        
-        Returns:
-            d_states: Time derivative of the state vector
         """
         # --- 1. Unpack States ---
         # Positions / Orientations
         pos_x, pos_y, pos_z = states[0], states[1], states[2]
         roll, pitch, yaw    = states[3], states[4], states[5]
         
-        # Suspension compressions (relative to chassis hardpoints usually, 
-        # but here treating as absolute vertical pos of unsprung mass for rigorous 14-DOF)
+        # Suspension compressions (absolute vertical pos of unsprung mass)
         z_w = [states[6], states[7], states[8], states[9]] # fl, fr, rl, rr
         
-        # Wheel rotations (radians)
-        # theta_w = ... (We mostly care about speeds, so we skip tracking absolute wheel angle)
-            
+        # Wheel Angles (10, 11, 12, 13) - Not actively used in force calc, but integrated
+        # theta_w = [states[10], states[11], states[12], states[13]]
+        
         # Velocities
         u, v, w = states[14], states[15], states[16] # Chassis body velocities
         p, q, r = states[17], states[18], states[19] # Chassis rotational rates
@@ -46,7 +40,7 @@ class Vehicle14DOF:
         omega   = [states[24], states[25], states[26], states[27]] # Wheel spin speeds
         
         # --- 2. Unpack Controls ---
-        delta_steer = controls[0] # Steering angle at wheel (assume simplified Ackermann or direct map)
+        delta_steer = controls[0] # Steering angle at wheel
         throttle    = controls[1] # 0 to 1
         brake       = controls[2] # 0 to 1
         
@@ -64,8 +58,6 @@ class Vehicle14DOF:
         )
         
         # --- 4. Tire & Suspension Geometry ---
-        # Calculate tire velocities and slip angles
-        # Positions of wheels relative to CG
         track_f = self.p['track_width_f']
         track_r = self.p['track_width_r']
         wb_f    = self.p['wheelbase_f']
@@ -81,15 +73,10 @@ class Vehicle14DOF:
         
         tire_forces_x = []
         tire_forces_y = []
-        tire_forces_z = [] # Normal load
+        tire_forces_z = [] 
         
         for i in range(4):
             # A. Calculate Normal Load (Fz)
-            # Fz = Static + Aero + Suspension Force
-            # Simplified Suspension Force: k * (z_chassis_at_wheel - z_wheel) + c * velocity_diff
-            
-            # Kinematics: Vertical pos of chassis corner
-            # z_corner = z_cg - y_arm * sin(roll) + x_arm * sin(pitch) (Small angle approx)
             wx, wy = wheel_pos_body[i]
             z_chassis_corner = pos_z - wy * roll + wx * pitch
             
@@ -99,50 +86,31 @@ class Vehicle14DOF:
             # Spring + Damper force
             F_susp = self.p['k_spring'][i] * susp_deflection + self.p['c_damper'][i] * susp_velocity
             
-            # Add Downforce (simple map based on velocity squared)
-            # Distribute Aero forces 40/60 usually, simplified here
-            F_aero = 0.5 * 1.225 * self.p['Cl'] * (u**2 + v**2) * (0.25) 
-            
             # Tire stiffness (vertical)
-            # F_tire_spring = k_tire * (Radius - z_wheel_ground)
-            # Assuming flat ground at z=0
             tire_compression = self.p['tire_radius'] - z_w[i] 
-            Fz_tire = ca.fmax(0, self.p['k_tire'] * tire_compression) # Tire vertical spring
+            Fz_tire = ca.fmax(0, self.p['k_tire'] * tire_compression) 
             
-            # Store forces acting ON THE CHASSIS from suspension
-            # For Unsprung mass Eq: m_u * z_dd = F_tire - F_susp - m_u * g
             tire_forces_z.append(Fz_tire) 
             
             # B. Calculate Slips
-            # Velocity at the tire contact patch
             vx_tire = u - wy * r
             vy_tire = v + wx * r
             
-            # Steering angle for this wheel
             delta = delta_steer if i < 2 else 0
             
-            # Slip Angle (Alpha)
-            # alpha = atan(vy / vx) - delta
+            # Slip Angle (Alpha) & Ratio (Kappa)
             alpha = ca.arctan2(vy_tire, vx_tire) - delta
+            kappa = (omega[i] * self.p['tire_radius'] - vx_tire) / (vx_tire + 1.0) # +1 avoids div/0 at stop
             
-            # Slip Ratio (Kappa)
-            # kappa = (omega * R - vx) / vx
-            kappa = (omega[i] * self.p['tire_radius'] - vx_tire) / (vx_tire + 0.1)
-            
-            # C. Magic Formula (Simplified Call)
-            # Need to import/define Pacejka logic here or externally
-            # For conciseness, using a placeholder linear/peak model
+            # C. Magic Formula (Simplified)
             mu_y = self.p['Dy'] * ca.sin(self.p['Cy'] * ca.arctan(self.p['By'] * alpha))
             mu_x = self.p['Dx'] * ca.sin(self.p['Cx'] * ca.arctan(self.p['Bx'] * kappa))
             
-            # Combined slip reduction (friction circle)
-            # Fx = Fz * mu_x; Fy = Fz * mu_y ... (simplified)
+            # Combined slip (Friction Circle)
             Fx = Fz_tire * mu_x
             Fy = Fz_tire * mu_y
             
             # Transform to Body Frame
-            # Fx_body = Fx * cos(delta) - Fy * sin(delta)
-            # Fy_body = Fx * sin(delta) + Fy * cos(delta)
             Fx_b = Fx * ca.cos(delta) - Fy * ca.sin(delta)
             Fy_b = Fx * ca.sin(delta) + Fy * ca.cos(delta)
             
@@ -150,69 +118,58 @@ class Vehicle14DOF:
             tire_forces_y.append(Fy_b)
 
         # --- 5. Equations of Motion (Newton-Euler) ---
+        mass = self.p['mass']
         
-        # Sum of Forces
-        Sum_Fx = sum(tire_forces_x) - 0.5 * 1.225 * self.p['Cd'] * u**2 # Drag
+        Sum_Fx = sum(tire_forces_x) - 0.5 * 1.225 * self.p['Cd'] * u**2 
         Sum_Fy = sum(tire_forces_y)
-        Sum_Fz = sum([F - self.p['mass']*9.81 for F in tire_forces_z]) # Placeholder
+        Sum_Fz = sum([F - mass*9.81/4 for F in tire_forces_z]) # Approx gravity distribution
         
-        # Sum of Moments
-        # M = r x F
+        # Moments
         M_z = 0
-        M_y = 0 # Pitch moment from aero/accel
-        M_x = 0 # Roll moment
+        M_y = 0 
+        M_x = 0 
         
         for i in range(4):
             wx, wy = wheel_pos_body[i]
             Fx, Fy = tire_forces_x[i], tire_forces_y[i]
-            
             M_z += wx * Fy - wy * Fx
-            # Pitch/Roll moments depend on suspension forces pushing on chassis
-            # F_susp calculated earlier acts on chassis
-            # ... (Full moment arm calc would go here)
+            # Roll/Pitch moments simplified for prototype
+            M_x += (tire_forces_z[i] * wy) 
+            M_y += (tire_forces_z[i] * -wx)
 
-        # 6. Accelerations (solving Newton-Euler)
-        # m(u_dot - v*r + w*q) = Sum_Fx
-        # I * omega_dot + ... = Sum_M
-        
-        mass = self.p['mass']
+        # 6. Accelerations
         u_dot = Sum_Fx/mass + v*r - w*q
         v_dot = Sum_Fy/mass - u*r + w*p
-        w_dot = Sum_Fz/mass + u*q - v*p # Simplified
+        w_dot = Sum_Fz/mass + u*q - v*p 
         
         Ixx, Iyy, Izz = self.p['Ixx'], self.p['Iyy'], self.p['Izz']
-        p_dot = M_x / Ixx # Euler coupling terms omitted for brevity
+        p_dot = M_x / Ixx 
         q_dot = M_y / Iyy
         r_dot = M_z / Izz
         
         # 7. Unsprung Mass Dynamics
-        # m_u * z_dd = F_tire_vertical - F_suspension - m_u * g
         dz_w_dot = []
         for i in range(4):
-             # Re-calc F_susp and Fz_tire for clarity or reuse
              accel = (tire_forces_z[i] - 0) / self.p['unsprung_mass'] # Simplified
              dz_w_dot.append(accel)
 
         # 8. Wheel Spin Dynamics
-        # I_w * w_dot = T_drive - T_brake - Fx * R
         omega_dot = []
         for i in range(4):
-            T_drive = throttle * self.p['max_torque'] / 2 if i >= 2 else 0 # RWD
-            T_brake = brake * self.p['max_brake']
+            T_drive = throttle * self.p['max_torque'] / 2 if i >= 2 else 0 
+            T_brake = brake * self.p['max_brake'] / 4
             torque_net = T_drive - T_brake - tire_forces_x[i] * self.p['tire_radius']
             omega_dot.append(torque_net / self.p['wheel_inertia'])
 
         # --- Pack Derivatives ---
-        # [dx, dy, dz, droll, dpitch, dyaw] -> Rotation matrix * [u,v,w]
-        # But for small angles/body rates:
         d_pos = ca.mtimes(R_b2i, ca.vertcat(u, v, w))
-        d_ang = ca.vertcat(p, q, r) # Euler rates approx body rates (valid for small angles)
+        d_ang = ca.vertcat(p, q, r) 
         
         d_states = ca.vertcat(
             d_pos,
             d_ang,
             ca.vertcat(*dz_w),      # d(z_susp)/dt = vel_susp
-            ca.vertcat(*d_pos[:0]), # Placeholder for ignored pos
+            ca.vertcat(*omega),     # <--- FIXED: d(theta_wheel)/dt = omega
             ca.vertcat(u_dot, v_dot, w_dot),
             ca.vertcat(p_dot, q_dot, r_dot),
             ca.vertcat(*dz_w_dot),

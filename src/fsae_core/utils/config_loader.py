@@ -20,22 +20,23 @@ def load_vehicle_config(config_dir="config/vehicle_params"):
             data = yaml.safe_load(f)
             
             # Flatten structure (Simpler for the solver)
-            # e.g., suspension['front']['spring_rate'] -> params['k_spring_f']
             if filename == 'suspension.yaml':
                 params['k_spring'] = [
                     data['front']['spring_rate'], data['front']['spring_rate'], # FL, FR
                     data['rear']['spring_rate'],  data['rear']['spring_rate']   # RL, RR
                 ]
-                params['c_damper'] = [2000, 2000, 2000, 2000] # Default placeholders if not in YAML
+                params['c_damper'] = [2000, 2000, 2000, 2000] # Default damper rates
                 params['track_width_f'] = data['front']['track_width']
                 params['track_width_r'] = data['rear']['track_width']
-                # Assume wheelbase is split 50/50 roughly if not specified, 
-                # or read from chassis.yaml if you added it there.
                 params['wheelbase_f'] = 0.8
                 params['wheelbase_r'] = 0.75
                 params['tire_radius'] = 0.23 # m
                 
-                # Pacejka Defaults (if not in YAML)
+                # --- FIX: Add Vertical Tire Stiffness ---
+                # Default to 150,000 N/m (Typical for 13" FSAE Tire) if not in YAML
+                params['k_tire'] = data.get('tire_vertical_stiffness', 150000.0) 
+                
+                # Pacejka Defaults (Tire Grip Parameters)
                 params.update({'Dy': 1.6, 'Cy': 1.3, 'By': 8.0})
                 params.update({'Dx': 1.6, 'Cx': 1.3, 'Bx': 10.0})
 
@@ -45,16 +46,15 @@ def load_vehicle_config(config_dir="config/vehicle_params"):
                 
             else: # Chassis
                 params.update(data)
-                # Ensure inertia is accessible directly
                 if 'inertia' in data:
                     params['Ixx'] = data['inertia']['Ixx']
                     params['Iyy'] = data['inertia']['Iyy']
                     params['Izz'] = data['inertia']['Izz']
                 
-                # Add dummy variables for Unsprung Mass if missing
-                params['unsprung_mass'] = 15.0 # kg per corner
-                params['wheel_inertia'] = 0.5 
-                params['max_torque'] = 250 # Nm
-                params['max_brake'] = 1000 # Nm
+                # Add defaults for missing Chassis params
+                params['unsprung_mass'] = params.get('unsprung_mass', 15.0) 
+                params['wheel_inertia'] = params.get('wheel_inertia', 0.5) 
+                params['max_torque'] = params.get('max_torque', 250)
+                params['max_brake'] = params.get('max_brake', 1000)
 
     return params

@@ -15,21 +15,15 @@ class OptimalLapSolver:
     def solve(self, N_segments=200):
         """
         Solves for the optimal control inputs over a fixed distance.
-        
-        Args:
-            N_segments: Number of discretization points (mesh nodes).
-                        More segments = higher accuracy but slower solve time.
         """
         opti = ca.Opti() # The CasADi Optimization Interface
 
         # --- 1. Discretization Setup ---
-        # We assume a fixed track length L, divided into N segments of length ds
         total_length = self.track['total_length']
         ds = total_length / N_segments
         
         # --- 2. Decision Variables ---
         # State Vector: 28 States x (N+1) Nodes
-        # (Positions, Orientations, Velocities, Rates, etc.)
         n_states = 28
         X = opti.variable(n_states, N_segments + 1)
         
@@ -40,31 +34,27 @@ class OptimalLapSolver:
         
         # --- 3. Objective Function: Minimize Time ---
         # Time = Integral of (1 / velocity) ds
-        # We use the longitudinal velocity 'u' (State index 14 in our model)
+        # u_vel is State index 14
         u_vel = X[14, :-1] 
         
-        # Regularization: Add small term to minimize control jerk (smoother inputs)
-        J_time = ca.sum1(ds / (u_vel + 1e-3)) 
-        J_smoothness = ca.sum1(ca.sum2((U[:, 1:] - U[:, :-1])**2)) # Penalize rapid control changes
+        # FIXED: Use sum2 (horizontal sum) for the time integration
+        J_time = ca.sum2(ds / (u_vel + 1e-3)) 
+        
+        # Smoothness regularization
+        J_smoothness = ca.sum1(ca.sum2((U[:, 1:] - U[:, :-1])**2)) 
         
         opti.minimize(J_time + 0.1 * J_smoothness)
 
         # --- 4. Constraints ---
-        
         for k in range(N_segments):
-            # A. Dynamic Constraints (Runge-Kutta 4 Integration)
-            # x_next = x_curr + ds * (dx/ds)
-            # dx/ds = dynamics(x, u) / velocity
-            
+            # A. Dynamic Constraints (RK4 Integration)
             x_k = X[:, k]
             u_k = U[:, k]
             x_next = X[:, k+1]
             
-            # Get time-derivative from physics engine
-            # Note: We must ensure velocity is not zero to avoid division by zero
-            velocity_k = ca.fmax(x_k[14], 1.0) # Lower bound 1 m/s
+            # Lower bound velocity to prevent div/0
+            velocity_k = ca.fmax(x_k[14], 1.0) 
             
-            # RK4 Integration Step (Spatial)
             k1 = self.model.get_dynamics(x_k, u_k)
             k2 = self.model.get_dynamics(x_k + (ds/2) * (k1/velocity_k), u_k)
             k3 = self.model.get_dynamics(x_k + (ds/2) * (k2/velocity_k), u_k)
@@ -74,14 +64,8 @@ class OptimalLapSolver:
             
             opti.subject_to(x_next == x_next_rk4)
 
-            # B. Track Boundary Constraints
-            # Car position (x, y) must be within track width
-            # In a full spatial solver, we normally convert X,Y to Frenet coordinates (s, n)
-            # Here, we assume the inputs are global X,Y and we constrain deviation from center line.
-            
-            # Simple approximation for this file:
+            # B. Track Boundary Constraints (Simplified)
             # Distance from center line < track_width / 2
-            # (Requires spline lookup in real implementation)
             center_x = self.track['x_center'][k]
             center_y = self.track['y_center'][k]
             width    = self.track['width'][k]
@@ -93,36 +77,86 @@ class OptimalLapSolver:
             opti.subject_to(distance_sq <= (width/2)**2)
             
             # C. Physical Limits
-            # Friction Circle is handled inside 'get_dynamics', but we can add safety bounds
-            opti.subject_to(opti.bounded(-0.5, u_k[0], 0.5)) # Steering limit (rad)
-            opti.subject_to(opti.bounded(0, u_k[1], 1))      # Throttle 0-1
-            opti.subject_to(opti.bounded(0, u_k[2], 1))      # Brake 0-1
-            
-            # No simultaneous Throttle + Brake (optional logic)
-            # opti.subject_to(u_k[1] * u_k[2] == 0) # Hard for solvers, use with care
+            opti.subject_to(opti.bounded(-0.5, u_k[0], 0.5)) # Steering limit
+            opti.subject_to(opti.bounded(0, u_k[1], 1))      # Throttle
+            opti.subject_to(opti.bounded(0, u_k[2], 1))      # Brake
 
-        # --- 5. Boundary Conditions ---
-        # Start at initial state (e.g., start line velocity)
-        opti.subject_to(X[:, 0] == self.params['initial_state'])
+        # --- 5. Boundary Conditions (FIXED) ---
+        # Instead of looking for a missing config key, we calculate the start state here.
         
-        # Cyclic Constraint (for a lap): End state = Start state
-        # opti.subject_to(X[:, -1] == X[:, 0])
+        # Constants
+        R_tire = self.params.get('tire_radius', 0.23)
+        h_cg   = self.params.get('cg_height', 0.28)
+        
+        # Build the initial state vector (28 elements)
+        # We use a standard Python list, CasADi accepts this in subject_to
+        X0 = [0.0] * 28
+        
+        # Position: Start at the first point of the track
+        X0[0] = self.track['x_center'][0]
+        X0[1] = self.track['y_center'][0]
+        X0[2] = h_cg  # Z position roughly at CG height
+        
+        # Velocity: Rolling start at 20 m/s (72 kph)
+        # This helps the solver converge faster than a standing start
+        v_start = 20.0
+        X0[14] = v_start
+        
+        # Wheel Speeds: Match vehicle speed (No slip)
+        # omega = v / r
+        w_start = v_start / R_tire
+        X0[24] = w_start # FL
+        X0[25] = w_start # FR
+        X0[26] = w_start # RL
+        X0[27] = w_start # RR
+        
+        # Suspension: Unsprung mass height = tire radius
+        X0[6] = R_tire
+        X0[7] = R_tire
+        X0[8] = R_tire
+        X0[9] = R_tire
 
-        # --- 6. Initial Guess (Warm Start) ---
-        # Solvers fail if you start with all Zeros.
-        # We initialize with a constant velocity "cruise"
-        opti.set_initial(X[14, :], 20.0) # Guess 20 m/s everywhere
-        opti.set_initial(U[1, :], 0.5)   # Guess 50% throttle
+        # Apply the Start Constraint
+        opti.subject_to(X[:, 0] == X0)
+
+        # ... (Previous code remains the same up to Step 6)
+
+        # --- 6. Improved Initial Guess (Warm Start) ---
+        # Guess a constant velocity of 20 m/s
+        opti.set_initial(X[14, :], 20.0) 
+        
+        # Guess wheel speeds matching that velocity (No slip condition)
+        R_tire = self.params.get('tire_radius', 0.23)
+        omega_guess = 20.0 / R_tire
+        opti.set_initial(X[24, :], omega_guess) # FL
+        opti.set_initial(X[25, :], omega_guess) # FR
+        opti.set_initial(X[26, :], omega_guess) # RL
+        opti.set_initial(X[27, :], omega_guess) # RR
+        
+        # Guess correct ride height (prevent "falling" at start)
+        opti.set_initial(X[6, :], R_tire)
+        opti.set_initial(X[7, :], R_tire)
+        opti.set_initial(X[8, :], R_tire)
+        opti.set_initial(X[9, :], R_tire)
+
+        # Guess 50% throttle to maintain speed
+        opti.set_initial(U[1, :], 0.5)   
 
         # --- 7. Solve ---
-        # IPOPT is the standard interior-point solver for this
-        p_opts = {"expand": True}
-        s_opts = {"max_iter": 500, "tol": 1e-4}
+        p_opts = {"expand": True, "print_time": True}
+        s_opts = {
+            "max_iter": 3000,        # <-- INCREASED from 500
+            "tol": 1e-3,             # <-- RELAXED from 1e-4
+            "acceptable_tol": 1e-2,  # Allow loose solution if stuck
+            "acceptable_iter": 50,
+            "print_level": 5
+        }
         opti.solver("ipopt", p_opts, s_opts)
 
         try:
             sol = opti.solve()
             return sol.value(X), sol.value(U)
         except Exception as e:
-            print("Solver failed to converge. Returning debug values.")
+            print(f"⚠️ Solver Message: {e}")
+            print("Returning debug values (trajectory might be incomplete).")
             return opti.debug.value(X), opti.debug.value(U)
