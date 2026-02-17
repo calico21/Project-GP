@@ -1,0 +1,27 @@
+# FSG 2026 Vehicle Parameters
+# Units: SI (kg, m, rad, etc.)
+
+vehicle_params = {
+    # --- Mass & Inertia ---
+    'm': 250.0,         # Mass with driver [kg]
+    'Iz': 150.0,        # Yaw Inertia [kgm^2]
+    'Ixx': 80.0,        # Roll Inertia [kgm^2]
+    'Iyy': 100.0,       # Pitch Inertia [kgm^2]
+    'h_cg': 0.28,       # CG Height [m]
+    
+    # --- Geometry ---
+    'lf': 0.80,         # Distance CG to Front Axle [m]
+    'lr': 0.73,         # Distance CG to Rear Axle [m]
+    'track_width_f': 1.20, # Front Track Width [m]
+    'track_width_r': 1.15, # Rear Track Width [m]
+    
+    # --- Aerodynamics ---
+    'A': 1.2,           # Frontal Area [m^2]
+    'Cl': 3.5,          # Lift Coefficient (Downforce)
+    'Cd': 1.1,          # Drag Coefficient
+    'rho': 1.225,       # Air Density [kg/m^3]
+    
+    # --- Suspension (Defaults for OCP) ---
+    'k_roll': 30000.0,  # Roll Stiffness [Nm/rad]
+    'max_steer': 0.45,  # Max Steering Angle [rad]
+}

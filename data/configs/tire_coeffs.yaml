@@ -1,0 +1,29 @@
+# Pacejka 5.2 Coefficients
+# Based on FSAE TTC Data (Hoosier/Continental approx)
+
+tire_coeffs = {
+    # --- Scaling & Limits ---
+    'FNOMIN': 1000.0,   # Nominal Load [N]
+    
+    # --- Lateral (Fy) ---
+    'PCY1': 1.35,       # Shape Factor (Stiffness peak location)
+    'PDY1': 1.60,       # Peak Friction (Mu)
+    'PDY2': -0.10,      # Load Sensitivity (Friction drops as load increases)
+    'PKY1': -25.0,      # Cornering Stiffness (at Fz=0)
+    'PKY2': 2.0,        # Stiffness Load Sensitivity
+    
+    # --- Longitudinal (Fx) ---
+    'PCX1': 1.40,
+    'PDX1': 1.55,
+    'PDX2': -0.08,
+    
+    # --- Combined Slip & Transient ---
+    'RHX1': 0.0,        # Horizontal Shift
+    'PTX1': 0.20,       # Relaxation Length Base [m]
+    
+    # --- Thermal ---
+    'T_OPT': 70.0,      # Optimal Temp [C]
+    'T_WIDTH': 20.0,    # Window Width [C]
+    'C_HEAT': 900.0,    # Specific Heat
+    'K_COOL': 15.0      # Cooling Rate
+}
