@@ -1,180 +1,130 @@
 import numpy as np
-import casadi as ca
 
 class PacejkaTire:
-    def __init__(self, params):
+    """
+    Advanced Pacejka Magic Formula 5.2 Tire Model.
+    Includes:
+    - Combined Slip (Interactions between steering and braking)
+    - Load Sensitivity (Grip is not linear with load)
+    - Thermal Dynamics (Tire heats up with sliding)
+    - Thermal Degradation (Grip loss when hot/cold)
+    """
+    def __init__(self, tire_coeffs):
+        self.coeffs = tire_coeffs
+        
+        # --- THERMAL DEFAULTS ---
+        # If coefficients are missing from config, use these GT3-style defaults
+        self.T_opt = self.coeffs.get('T_opt', 90.0)      # Optimal Temp [C]
+        self.C_therm = self.coeffs.get('C_therm', 0.002) # Grip loss per degree^2
+        self.C_heat = self.coeffs.get('C_heat', 1.5)     # Heating efficiency
+        self.C_cool = self.coeffs.get('C_cool', 0.45)    # Cooling coefficient
+        self.mass = self.coeffs.get('mass', 10.0)        # Tire thermal mass [kg]
+        self.Cp = self.coeffs.get('Cp', 1100.0)          # Heat capacity [J/kgK]
+        self.T_env = 25.0                                # Air Temp [C]
+
+    def compute_force(self, alpha, kappa, Fz, Vx, T_tire=60.0):
         """
-        Initialize the Advanced Pacejka 5.2 Tire Model with Thermal & Transient features.
-        
-        Args:
-            params (dict): Dictionary containing the MF coefficients.
-                           Expects standard Pacejka keys (PCX1, PDX1, etc.).
-                           Optional Thermal keys: 'T_OPT', 'C_HEAT', 'K_COOL'.
+        Calculates tire forces (Fx, Fy) based on slip and CURRENT TEMPERATURE.
         """
-        self.p = params
+        # 1. Parameter Extraction (Simplified MF5.2)
+        # Lateral
+        dy = self.coeffs.get('Dy', 1.3)  # Peak friction
+        cy = self.coeffs.get('Cy', 1.5)  # Shape factor
+        by = self.coeffs.get('By', 10.0) # Stiffness
+        ey = self.coeffs.get('Ey', -1.0) # Curvature
         
-        # --- Thermal Parameters (Defaults if not in yaml) ---
-        self.T_opt = self.p.get('T_OPT', 60.0)      # Optimal Temp [C]
-        self.T_range = self.p.get('T_WIDTH', 20.0)  # Width of grip window
-        self.Cp = self.p.get('C_HEAT', 800.0)       # Specific Heat Capacity [J/kgK] * Mass [kg]
-        self.hA = self.p.get('K_COOL', 12.0)        # Convective Cooling Coeff [W/K]
+        # Longitudinal
+        dx = self.coeffs.get('Dx', 1.35)
+        cx = self.coeffs.get('Cx', 1.6)
+        bx = self.coeffs.get('Bx', 12.0)
+        ex = self.coeffs.get('Ex', -0.5)
 
-    def compute_force(self, alpha, kappa, Fz, Vx=None, T_tire=None, mu_scale=1.0, use_combined=True):
-        """
-        Master function to calculate tire forces with optional advanced physics.
+        # 2. Load Sensitivity
+        # Grip decreases as load increases (The reason downforce cars need big tires)
+        Fz_nom = 4000.0
+        d_fz = (Fz - Fz_nom) / Fz_nom
+        lambda_mu_y = 1.0 - 0.1 * d_fz 
+        lambda_mu_x = 1.0 - 0.08 * d_fz
         
-        Args:
-            alpha: Slip angle [rad]
-            kappa: Slip ratio [-]
-            Fz: Vertical load [N]
-            Vx: Longitudinal Velocity [m/s] (Required for Thermal/Relaxation)
-            T_tire: Current Tire Temp [C] (If None, ignores thermal degradation)
-            mu_scale: External friction scaler (e.g. wet track)
-            use_combined: If True, applies Combined Slip interactions (Friction Circle)
-            
-        Returns:
-            Fx, Fy: Final forces [N]
-        """
-        # 1. Detect Input Type (Symbolic vs Numeric)
-        if isinstance(alpha, (ca.SX, ca.MX)) or isinstance(Fz, (ca.SX, ca.MX)):
-            sin, cos, atan, sqrt, exp = ca.sin, ca.cos, ca.atan, ca.sqrt, ca.exp
-            fmax, fmin = ca.fmax, ca.fmin
-        else:
-            sin, cos, atan, sqrt, exp = np.sin, np.cos, np.arctan, np.sqrt, np.exp
-            fmax, fmin = np.maximum, np.minimum
-
-        # 2. Safety Clamps (Prevent Divide by Zero)
-        Fz = fmax(10.0, Fz)  # Minimum 10N load
+        # 3. THERMAL SENSITIVITY (The "Smart" Upgrade)
+        # Parabolic drop-off around T_opt
+        # Mu_factor = 1.0 at T_opt, drops to ~0.9 at T_opt +/- 20C
+        therm_factor = 1.0 - self.C_therm * (T_tire - self.T_opt)**2
         
-        # 3. Thermal Scaling
-        # If T_tire is provided, degrade mu based on deviation from T_opt
-        mu_thermal = 1.0
-        if T_tire is not None:
-            mu_thermal = self._get_thermal_scaling(T_tire, exp)
-        
-        total_mu_scale = mu_scale * mu_thermal
+        # Clamp thermal factor to avoid nonsensical physics (e.g. negative friction)
+        therm_factor = max(0.5, min(1.0, therm_factor))
 
-        # 4. Pure Slip Calculation (The "Ideal" forces)
-        Fx0, Fy0, mux, muy = self._compute_pure_slip(alpha, kappa, Fz, total_mu_scale, sin, cos, atan, fmin)
+        # Apply sensitivities
+        mu_y = dy * lambda_mu_y * therm_factor
+        mu_x = dx * lambda_mu_x * therm_factor
 
-        # 5. Combined Slip Calculation (Interaction)
-        if use_combined:
-            Fx, Fy = self._apply_combined_slip(Fx0, Fy0, alpha, kappa, mux, muy, Fz, sin, cos, atan)
-        else:
-            Fx, Fy = Fx0, Fy0
-
-        return Fx, Fy
-
-    def compute_thermal_dynamics(self, Fx, Fy, alpha, kappa, Vx, T_curr, T_env=25.0):
-        """
-        Calculates the derivative of Tire Temperature (dT/dt).
-        Intended for use in the OCP State Equations.
-        
-        Model:
-            dT/dt = (Power_Heat - Power_Cool) / Cp
-            Power_Heat = F_sliding * V_sliding
-            Power_Cool = hA * (T - T_env)
-        """
-        # Sliding Velocities
-        # V_sx = Vx * kappa
-        # V_sy = Vx * tan(alpha)  (approx for small angles)
-        
-        # Note: Using absolute values for heating power
-        if isinstance(Fx, (ca.SX, ca.MX)):
-            fabs, tan = ca.fabs, ca.tan
-        else:
-            fabs, tan = np.abs, np.tan
-
-        P_heat_x = fabs(Fx * Vx * kappa)
-        P_heat_y = fabs(Fy * Vx * tan(alpha))
-        P_heat = P_heat_x + P_heat_y
-        
-        P_cool = self.hA * (T_curr - T_env)
-        
-        dTdt = (P_heat - P_cool) / self.Cp
-        return dTdt
-
-    def get_relaxation_length(self, Fz):
-        """
-        Returns the Relaxation Length (Sigma) based on load.
-        Used for Transient Dynamics (lagged slip).
-        
-        Sigma = sigma_0 * (1 + k * dFz)
-        """
-        # Default Parameters
-        sigma0 = self.p.get('PTX1', 0.15)  # Base relaxation length [m] (approx contact patch length)
-        
-        # Simple load dependence
-        # As load increases, contact patch grows -> relaxation length increases
-        Fz0 = self.p.get('FNOMIN', 1000)
-        return sigma0 * (Fz / Fz0)
-
-    # ================= INTERNAL PHYSICS METHODS =================
-
-    def _get_thermal_scaling(self, T, exp_func):
-        """Gaussian-like drop-off for friction vs Temperature."""
-        # mu = 1 - k * (T - T_opt)^2
-        # Using Gaussian: exp( - (T-Topt)^2 / (2*width^2) )
-        delta_T = T - self.T_opt
-        sensitivity = 1.0 / (2 * self.T_range**2)
-        return exp_func(-sensitivity * delta_T**2)
-
-    def _compute_pure_slip(self, alpha, kappa, Fz, mu_scale, sin, cos, atan, fmin):
-        """Standard Pacejka 5.2 Pure Slip Formulas."""
-        Fz0 = self.p.get('FNOMIN', 1000)
-        dfz = (Fz - Fz0) / Fz0
-
-        # --- Longitudinal (Fx) ---
-        Cx = self.p.get('PCX1', 1.6)
-        mux = (self.p.get('PDX1', 1.2) + self.p.get('PDX2', -0.1) * dfz) * mu_scale
-        Dx = mux * Fz
-        Ex = (self.p.get('PEX1', 0.5) + self.p.get('PEX2', 0.0) * dfz + self.p.get('PEX3', 0.0) * dfz**2)
-        Ex = fmin(1.0, Ex)
-        Kx = Fz * (self.p.get('PKX1', 25) + self.p.get('PKX2', 0.0) * dfz)
-        Bx = Kx / (Cx * Dx + 1e-6)
-        
-        Shx = self.p.get('PHX1', 0.0)
-        Svx = self.p.get('PVX1', 0.0)
-        kappa_x = kappa + Shx
-        Bx_kappa = Bx * kappa_x
-        Fx0 = Dx * sin(Cx * atan(Bx_kappa - Ex * (Bx_kappa - atan(Bx_kappa)))) + Svx
-
-        # --- Lateral (Fy) ---
-        Cy = self.p.get('PCY1', 1.3)
-        muy = (self.p.get('PDY1', 1.6) + self.p.get('PDY2', -0.15) * dfz) * mu_scale
-        Dy = muy * Fz
-        Ey = (self.p.get('PEY1', -0.5) + self.p.get('PEY2', 0.0) * dfz)
-        Ey = fmin(1.0, Ey)
-        Ky = Fz * (self.p.get('PKY1', 15) + self.p.get('PKY2', 0.0) * dfz)
-        By = Ky / (Cy * Dy + 1e-6)
-        
-        Shy = self.p.get('PHY1', 0.0)
-        Svy = self.p.get('PVY1', 0.0)
+        # 4. Pure Slip Magic Formula
+        # Lateral
+        # alpha_eq: equivalent slip angle
+        Shy = 0.0 # Curvature shift (simplified)
+        Svy = 0.0 # Vertical shift
         alpha_y = alpha + Shy
-        By_alpha = By * alpha_y
-        Fy0 = Dy * sin(Cy * atan(By_alpha - Ey * (By_alpha - atan(By_alpha)))) + Svy
-
-        return Fx0, Fy0, mux, muy
-
-    def _apply_combined_slip(self, Fx0, Fy0, alpha, kappa, mux, muy, Fz, sin, cos, atan):
-        """
-        Applies Cosine Weighting Factors for Combined Slip.
-        (Based on Pacejka simplified interaction)
-        """
-        # --- Combined Fx (effect of alpha on Fx) ---
-        # Gxa = cos( Cxa * atan( Bxa * alpha ) )
-        rBx1 = self.p.get('RBX1', 12.0)
-        rCx1 = self.p.get('RCX1', 1.0)
-        alpha_s = alpha # In complex models, this is shifted
-        Gxa = cos(rCx1 * atan(rBx1 * alpha_s))
-        Fx = Fx0 * Gxa
-
-        # --- Combined Fy (effect of kappa on Fy) ---
-        # Gyk = cos( Cyk * atan( Byk * kappa ) )
-        rBy1 = self.p.get('RBY1', 10.0)
-        rCy1 = self.p.get('RCY1', 1.0)
-        kappa_s = kappa
-        Gyk = cos(rCy1 * atan(rBy1 * kappa_s))
-        Fy = Fy0 * Gyk
+        Fy_pure = Fz * mu_y * np.sin(cy * np.arctan(by * alpha_y - ey * (by * alpha_y - np.arctan(by * alpha_y)))) + Svy
         
+        # Longitudinal
+        kappa_x = kappa
+        Fx_pure = Fz * mu_x * np.sin(cx * np.arctan(bx * kappa_x - ex * (bx * kappa_x - np.arctan(bx * kappa_x))))
+
+        # 5. Combined Slip (Friction Circle)
+        # Simple "Elliptical" combination method
+        # If we are using 90% of grip for turning, we only have 10% left for braking
+        # Avoid divide by zero
+        safe_fx = abs(Fx_pure) + 1e-6
+        safe_fy = abs(Fy_pure) + 1e-6
+        
+        rho = np.sqrt((Fx_pure / safe_fx)**2 + (Fy_pure / safe_fy)**2)
+        
+        if rho > 1.0:
+            Fx = Fx_pure / rho
+            Fy = Fy_pure / rho
+        else:
+            Fx = Fx_pure
+            Fy = Fy_pure
+
         return Fx, Fy
+
+    def compute_thermal_dynamics(self, Fx, Fy, alpha, kappa, Vx, T_curr):
+        """
+        Calculates the Rate of Change of Temperature (dT/dt) in [K/s].
+        Used by the OCP solver to integrate temperature.
+        """
+        # 1. Sliding Velocities
+        # Lateral Slide Velocity ~= Vx * tan(alpha)
+        # Longitudinal Slide Velocity = Vx * kappa
+        # (Simplified for high speed approximation)
+        V_sy = Vx * np.tan(alpha)
+        V_sx = Vx * kappa
+        
+        # 2. Heat Generation (Power = Force * Velocity)
+        # We take absolute power because friction always heats, never cools
+        P_gen_lat = abs(Fy * V_sy)
+        P_gen_long = abs(Fx * V_sx)
+        P_total = (P_gen_lat + P_gen_long) * self.C_heat
+
+        # 3. Cooling (Convection)
+        # Cooling increases with speed (Nusselt number ~ Re^0.5 or Re^0.8)
+        # Q_cool = h * A * (T - T_env)
+        # We approximate h * A as C_cool * Vx^0.5
+        cooling_rate = self.C_cool * (abs(Vx) + 1.0) * (T_curr - self.T_env)
+        
+        # 4. Net Flux
+        Q_net = P_total - cooling_rate
+        
+        # 5. Temperature Rate (dT/dt = Q / (m * Cp))
+        dT_dt = Q_net / (self.mass * self.Cp)
+        
+        return dT_dt
+
+    def get_peak_slip(self, Fz):
+        """
+        Helper: Returns the optimal slip angle for a given load.
+        Useful for controllers/ABS.
+        """
+        # For this model, peak is roughly constant around 6-8 degrees
+        # Ideally this would be solved numerically
+        return 0.12 # radians (~7 degrees)

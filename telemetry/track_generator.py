@@ -1,121 +1,119 @@
 import numpy as np
-import scipy.interpolate as interp
-import matplotlib.pyplot as plt
+import pandas as pd
+from scipy.interpolate import splprep, splev
 
 class TrackGenerator:
     """
-    Advanced Track Generator for Formula Student.
+    Converts raw GPS data (lat/lon) into a smooth path-coordinate track model.
+    Critical for the OCP solver, which requires continuous curvature derivatives.
     """
-    def __init__(self, smoothing_factor=2.0):
-        self.s_factor = smoothing_factor
-        self.s = None
-        self.x = None
-        self.y = None
-        self.k = None
-        self.w_l = None
-        self.w_r = None
-
-    def from_centerline(self, x_raw, y_raw, track_width=3.0, closed_loop=True):
-        # 1. Input Validation
-        if len(x_raw) < 10:
-            raise ValueError(f"Not enough GPS points (<10). Got {len(x_raw)}.")
-
-        # 2. Filter Stationary Points
-        dx = np.diff(x_raw)
-        dy = np.diff(y_raw)
-        dist = np.sqrt(dx**2 + dy**2)
+    def __init__(self, df_log):
+        self.df = df_log
         
-        # DEBUG PRINT
-        print(f"[TrackGen] Max step distance: {np.max(dist):.4f} m")
-        print(f"[TrackGen] Avg step distance: {np.mean(dist):.4f} m")
+    def generate(self, s_step=2.0, smoothing_s=1.0):
+        """
+        Generates track model [s, x, y, psi, k]
         
-        # LOWER THRESHOLD to 0.05m (5cm) to catch slow movement
-        mask = np.insert(dist > 0.05, 0, True) 
-        x = x_raw[mask]
-        y = y_raw[mask]
+        Args:
+            s_step: Distance between nodes [m] (Lower = more precision, slower OCP)
+            smoothing_s: Spline smoothing factor (Higher = smoother but less accurate to GPS)
+        """
+        # 1. Extract and Center Coordinates
+        # (Assuming df has 'x_m' and 'y_m' converted from Lat/Lon already)
+        if 'x_m' not in self.df.columns:
+            # Fallback if raw lat/lon
+            # Simple equirectangular projection (sufficient for race tracks)
+            R_earth = 6371000
+            lat0 = self.df['lat'].mean()
+            self.df['x_m'] = (self.df['lon'] - self.df['lon'].mean()) * (np.pi/180) * R_earth * np.cos(lat0 * np.pi/180)
+            self.df['y_m'] = (self.df['lat'] - self.df['lat'].mean()) * (np.pi/180) * R_earth
+
+        x_raw = self.df['x_m'].values
+        y_raw = self.df['y_m'].values
         
-        if len(x) < 4:
-            # Fallback: If filtering removed everything, the car didn't move enough.
-            # But maybe units are wrong? (e.g. x is in km not meters?)
-            raise ValueError(f"Track too short. Points remaining: {len(x)}. Max movement was {np.max(dist):.4f}m. Check GPS units.")
+        # Close the loop explicitly for the spline
+        x_raw = np.append(x_raw, x_raw[0])
+        y_raw = np.append(y_raw, y_raw[0])
 
-        # 3. Check for Closed Loop Feasibility
-        # If start and end are far apart (>15m), force open loop
-        gap = np.sqrt((x[0]-x[-1])**2 + (y[0]-y[-1])**2)
-        if gap > 15.0:
-            print(f"[TrackGen] Warning: Loop gap is {gap:.1f}m. Treating as Open Sprint.")
-            closed_loop = False
-        
-        # 4. Deduplicate exact matches (Floating point tolerance)
-        points = np.vstack((x, y)).T
-        _, idx = np.unique(np.round(points, 3), axis=0, return_index=True)
-        idx = np.sort(idx)
-        x = x[idx]
-        y = y[idx]
-
-        # 5. Close the loop manually if requested
-        if closed_loop:
-            # Append start point to end to ensure geometric closure
-            if gap > 0.1: 
-                x = np.append(x, x[0])
-                y = np.append(y, y[0])
-
-        # 6. Fit B-Spline
+        # 2. Fit Spline (B-Spline representation)
+        # k=3 (Cubic spline) ensures continuous 2nd derivative (Curvature)
+        # s=smoothing_s handles GPS noise
         try:
-            # k=3 (Cubic), s is smoothing factor
-            # quiet=1 suppresses warnings
-            tck, u = interp.splprep([x, y], s=self.s_factor, k=3, per=closed_loop)
+            tck, u = splprep([x_raw, y_raw], s=smoothing_s, k=3, per=True)
         except Exception as e:
-            print(f"[TrackGen] Spline fit failed: {e}")
-            print("[TrackGen] Retrying with higher smoothing...")
-            tck, u = interp.splprep([x, y], s=self.s_factor*10, k=3, per=closed_loop)
+            print(f"[TrackGen] Spline fit failed: {e}. Trying without periodic constraint...")
+            tck, u = splprep([x_raw, y_raw], s=smoothing_s, k=3, per=False)
+
+        # 3. Resample at fixed distance intervals
+        # First, evaluate at high resolution to measure total length
+        u_fine = np.linspace(0, 1, 10000)
+        x_fine, y_fine = splev(u_fine, tck)
         
-        # 7. Resample to Spatial Domain
-        # High res first to calculate arc length
-        u_fine = np.linspace(0, 1.0, 2000)
-        x_fine, y_fine = interp.splev(u_fine, tck)
+        # Calculate cumulative distance 's'
+        dx = np.diff(x_fine)
+        dy = np.diff(y_fine)
+        ds = np.sqrt(dx**2 + dy**2)
+        total_length = np.sum(ds)
         
-        # Calculate Arc Length (s)
-        dx_fine = np.gradient(x_fine)
-        dy_fine = np.gradient(y_fine)
-        ds = np.sqrt(dx_fine**2 + dy_fine**2)
-        s_cumulative = np.cumsum(ds)
-        total_length = s_cumulative[-1]
+        # Create evaluation points based on desired s_step
+        n_nodes = int(total_length / s_step)
+        u_new = np.linspace(0, 1, n_nodes)
         
-        # 8. Final Resampling (Constant ds = 1.0m)
-        resolution = 1.0 
-        N_nodes = int(total_length / resolution)
+        # 4. Evaluate Spline and Derivatives
+        # der=0 -> Position (x, y)
+        x_smooth, y_smooth = splev(u_new, tck)
         
-        self.s = np.linspace(0, total_length, N_nodes)
+        # der=1 -> Velocity vector (dx/du, dy/du) -> Heading
+        dx_du, dy_du = splev(u_new, tck, der=1)
+        psi = np.arctan2(dy_du, dx_du)
         
-        # Map s back to u
-        # Scale s to [0, 1] range of u (approx)
-        # Better: Interpolate u from s_cumulative
-        u_at_s = np.interp(self.s, s_cumulative, u_fine)
+        # der=2 -> Acceleration vector -> Curvature
+        ddx_du, ddy_du = splev(u_new, tck, der=2)
         
-        # Evaluate Spline at uniform s
-        self.x, self.y = interp.splev(u_at_s, tck)
-        
-        # 9. Derivatives
-        dx_du, dy_du = interp.splev(u_at_s, tck, der=1)
-        ddx_du, ddy_du = interp.splev(u_at_s, tck, der=2)
-        
-        # Heading
-        self.psi = np.arctan2(dy_du, dx_du)
-        self.psi = np.unwrap(self.psi)
-        
-        # Curvature
+        # Curvature formula: k = (x'y'' - y'x'') / (x'^2 + y'^2)^(3/2)
+        # This is the "Analytical Curvature" (Noise free!)
         num = dx_du * ddy_du - dy_du * ddx_du
         den = (dx_du**2 + dy_du**2)**1.5
-        self.k = num / (den + 1e-6)
-        
-        # Boundaries
-        self.w_l = np.ones_like(self.s) * (track_width / 2.0)
-        self.w_r = np.ones_like(self.s) * (track_width / 2.0)
-        
-        print(f"[TrackGen] Success. L={total_length:.1f}m, Nodes={N_nodes}")
-        return self
+        curvature = num / (den + 1e-6) # Avoid div/0
 
-    def get_arrays(self):
-        if self.s is None: raise ValueError("Track not generated.")
-        return {'s': self.s, 'x': self.x, 'y': self.y, 'psi': self.psi, 'k': self.k, 'w_l': self.w_l, 'w_r': self.w_r}
+        # Calculate exact 's' for these nodes
+        s_array = np.zeros(n_nodes)
+        # We integrate the actual spline distance roughly
+        # For OCP, s must be strictly increasing.
+        # We approximate it by scaling u_new by total_length
+        # (A simplified arc-length parameterization)
+        s_array = u_new * total_length
+
+        # 5. Track Width (Simple estimation)
+        # In a real tool, you would extract this from left/right boundary GPS
+        # Here we assume constant 10m width
+        w_left = np.full(n_nodes, 5.0)
+        w_right = np.full(n_nodes, 5.0)
+
+        # 6. Format Output
+        track_data = {
+            's': s_array,
+            'x': x_smooth,
+            'y': y_smooth,
+            'psi': psi,
+            'k': curvature,
+            'w_left': w_left,
+            'w_right': w_right,
+            'total_length': total_length
+        }
+        
+        print(f"[TrackGen] Track generated. Length: {total_length:.1f}m, Nodes: {n_nodes}")
+        return track_data
+
+    def save_track(self, track_data, filename="track_model.csv"):
+        df = pd.DataFrame({
+            's': track_data['s'],
+            'x': track_data['x'],
+            'y': track_data['y'],
+            'psi': track_data['psi'],
+            'k': track_data['k'],
+            'w_left': track_data['w_left'],
+            'w_right': track_data['w_right']
+        })
+        df.to_csv(filename, index=False)
+        print(f"[TrackGen] Saved to {filename}")

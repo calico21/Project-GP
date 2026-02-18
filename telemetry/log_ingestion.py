@@ -1,169 +1,221 @@
 import pandas as pd
 import numpy as np
 import os
+import struct
 
 class LogIngestion:
     """
-    Robust Data Ingestion for Formula Student Telemetry.
-    Handles sparse GPS data (1Hz) vs fast sensors (100Hz).
-    """
+    Robust telemetry importer.
+    Handles:
+    1. CSV files (Assetto Corsa, Motec CSV)
+    2. ASC files (Vector CAN Logs) - *NEW*
     
-    # Standard names the Simulation expects
-    STANDARD_SCHEMA = {
-        'v_car': 'velocity',    # m/s
-        'yaw_rate': 'yaw_rate', # rad/s
-        'delta': 'steer',       # rad
-        'acc_y': 'g_lat',       # m/s^2
-        'acc_x': 'g_long',      # m/s^2
-        'gps_lat': 'lat',
-        'gps_lon': 'lon'
-    }
-
-    def __init__(self, dbc_config=None):
-        self.dbc = dbc_config if dbc_config else {}
-        self.df = None
-        self.meta = {}
-
-    def parse_asc(self, file_path, resample_freq='20ms'):
-        """Parses Vector .asc file with Forward Fill strategy."""
-        raw_data = []
-        print(f"[Ingestor] Reading log file: {file_path}...")
+    Standardizes output to SI Units:
+    - Position: Lat/Lon [deg]
+    - Speed: v [m/s]
+    - Steering: delta [rad]
+    """
+    def __init__(self, file_path):
+        self.file_path = file_path
         
-        try:
-            with open(file_path, 'r') as f:
-                for line in f:
-                    parts = line.strip().split()
-                    if len(parts) < 6: continue
-                    
+        # --- CAN CONFIGURATION (For ASC Files) ---
+        # Based on your 'scan_logs_for_gps.py' and 'visualize_log.py'
+        self.can_map = {
+            # GPS: ID 0x119 (281)
+            # Layout: [Lat (4 bytes)] [Lon (4 bytes)]
+            0x119: {'name': 'gps', 'type': '<ii', 'factor': 1e-7, 'cols': ['lat', 'lon']},
+            
+            # Steering: ID 0x5
+            # Layout: [Angle (2 bytes)] ...
+            0x5:   {'name': 'steer', 'type': '<h', 'factor': 0.01, 'cols': ['delta_deg']},
+            
+            # Speed: ID 0x402 (Potential Speed)
+            # Layout: [Speed (2 bytes)] ...
+            # Assumption: 0.1 factor for kph (common standard)
+            0x402: {'name': 'speed', 'type': '<h', 'factor': 0.1, 'cols': ['v_kph']},
+        }
+
+    def process(self):
+        """
+        Detects file type and processes it.
+        Returns: DataFrame with ['lat', 'lon', 'v', 'delta', 'time']
+        """
+        if not os.path.exists(self.file_path):
+            raise FileNotFoundError(f"[LogIngestion] File not found: {self.file_path}")
+            
+        ext = os.path.splitext(self.file_path)[1].lower()
+        
+        print(f"[LogIngestion] Loading {self.file_path}...")
+        
+        if ext == '.asc':
+            df = self._parse_asc_file()
+        else:
+            df = self._parse_csv_file()
+            
+        # --- POST-PROCESSING & VALIDATION ---
+        
+        # 1. Convert Units to SI
+        if 'v_kph' in df.columns:
+            df['v'] = df['v_kph'] / 3.6 # km/h -> m/s
+        elif 'v' not in df.columns:
+            # Fallback: Calc speed from GPS
+            df = self._calc_speed_from_coords(df)
+
+        if 'delta_deg' in df.columns:
+            df['delta'] = np.deg2rad(df['delta_deg']) # deg -> rad
+            
+        # 2. Ensure Critical Columns Exist
+        required = ['lat', 'lon', 'v', 'delta']
+        for col in required:
+            if col not in df.columns:
+                print(f"[LogIngestion] Warning: Missing '{col}'. filling with 0.")
+                df[col] = 0.0
+                
+        # 3. Clean NaN
+        df = df.dropna(subset=['lat', 'lon'])
+        df = df.reset_index(drop=True)
+        
+        print(f"[LogIngestion] Complete. {len(df)} samples loaded.")
+        return df
+
+    def _parse_asc_file(self):
+        """
+        Parses Vector ASC CAN logs line-by-line.
+        Format: "  11.234 1  119  Rx   d 8 10 27 00 00 ..."
+        """
+        data_buffers = {0x119: [], 0x5: [], 0x402: []}
+        
+        print("[LogIngestion] Parsing ASC CAN data...")
+        with open(self.file_path, 'r') as f:
+            for line in f:
+                # Basic filtering for data lines
+                parts = line.strip().split()
+                
+                # Check structure: Timestamp, channel, ID, ... 'd', DLC, Data
+                # Minimal check: at least 7 parts and 'd' indicates data payload
+                if len(parts) > 6 and 'd' in parts:
                     try:
-                        # 1. Parse Timestamp & ID
-                        timestamp = float(parts[0])
-                        can_id_str = parts[2].strip('x') # Handle '123x'
+                        # Extract basic info
+                        ts = float(parts[0])
+                        
+                        # ID handling: "119" or "119x" (extended)
+                        can_id_str = parts[2].strip('x')
                         can_id = int(can_id_str, 16)
                         
-                        if can_id in self.dbc:
-                            # 2. Extract Data
-                            if 'd' in parts:
-                                d_idx = parts.index('d')
-                                hex_bytes = parts[d_idx + 2:]
-                                int_bytes = [int(b, 16) for b in hex_bytes]
+                        if can_id in self.can_map:
+                            # Locate data bytes (after 'd' and DLC)
+                            d_idx = parts.index('d')
+                            # parts[d_idx] = 'd'
+                            # parts[d_idx+1] = DLC (e.g. '8')
+                            # parts[d_idx+2:] = Data Bytes
+                            hex_bytes = parts[d_idx+2:]
+                            
+                            # Convert hex list to byte string
+                            # e.g. ['10', '27', ...] -> b'\x10\x27...'
+                            raw_data = bytes([int(b, 16) for b in hex_bytes])
+                            
+                            cfg = self.can_map[can_id]
+                            
+                            # Unpack binary data
+                            # Note: struct.unpack requires exact byte length
+                            req_len = struct.calcsize(cfg['type'])
+                            
+                            if len(raw_data) >= req_len:
+                                unpacked = struct.unpack(cfg['type'], raw_data[:req_len])
                                 
-                                # 3. Decode
-                                signals = self._decode_frame(can_id, int_bytes)
-                                signals['Time'] = timestamp
-                                raw_data.append(signals)
+                                # Apply factor and store
+                                row = {'time': ts}
+                                for i, col_name in enumerate(cfg['cols']):
+                                    val = unpacked[i] * cfg['factor']
+                                    row[col_name] = val
+                                    
+                                data_buffers[can_id].append(row)
                                 
-                    except (ValueError, IndexError):
+                    except (ValueError, struct.error, IndexError):
                         continue
-        except FileNotFoundError:
-            print(f"[Error] File not found: {file_path}")
-            return pd.DataFrame()
 
-        if not raw_data:
-            print("[Warning] No matching CAN IDs found. Check DBC config.")
-            return pd.DataFrame()
-
-        # --- DATAFRAME CONSTRUCTION ---
-        df = pd.DataFrame(raw_data)
+        # Convert buffers to DataFrames
+        df_gps = pd.DataFrame(data_buffers[0x119])
+        df_steer = pd.DataFrame(data_buffers[0x5])
+        df_speed = pd.DataFrame(data_buffers[0x402])
         
-        # Check raw capture before resampling
-        if 'Latitude' in df.columns:
-            print(f"[Ingestor] Raw GPS points found: {df['Latitude'].notna().sum()}")
-        
-        # Deduplicate and Sort
-        df = df.sort_values('Time').drop_duplicates('Time', keep='last')
-        df['Time'] = pd.to_timedelta(df['Time'], unit='s')
-        df = df.set_index('Time')
-        
-        # --- ROBUST RESAMPLING ---
-        # 1. Resample to grid (creates NaNs)
-        df_resampled = df.resample(resample_freq).mean()
-        
-        # 2. Forward Fill (Propagate last known value) - Vital for GPS!
-        df_resampled = df_resampled.ffill()
-        
-        # 3. Backward Fill (Fill start gaps)
-        df_resampled = df_resampled.bfill()
-        
-        self.df = df_resampled
-        
-        # Create float time column
-        self.df['time'] = self.df.index.total_seconds()
-        self.df = self.df.reset_index(drop=True)
-        
-        print(f"[Ingestor] Final Grid: {len(self.df)} rows @ {resample_freq}")
-        return self.df
-
-    def _decode_frame(self, can_id, data_bytes):
-        signals = {}
-        msg_def = self.dbc[can_id]
-        
-        raw_payload = 0
-        for i, byte in enumerate(data_bytes):
-            if i < 8: raw_payload |= (byte << (i * 8))
+        # If no GPS found, crash early
+        if df_gps.empty:
+            raise ValueError("[LogIngestion] No GPS data (ID 0x119) found in .asc file!")
             
-        for sig in msg_def['signals']:
-            mask = (1 << sig['length']) - 1
-            raw_val = (raw_payload >> sig['start_bit']) & mask
+        # --- SYNCHRONIZATION ---
+        # GPS is usually 10Hz, Steer 100Hz. We need to align them.
+        # We use the GPS timestamps as the "Master Clock" (or a fixed 20Hz grid)
+        
+        # 1. Create a Master Time Grid (e.g. 20Hz / 50ms)
+        t_start = df_gps['time'].min()
+        t_end = df_gps['time'].max()
+        t_grid = np.arange(t_start, t_end, 0.05)
+        
+        df_master = pd.DataFrame({'time': t_grid})
+        
+        # 2. Merge AsOf (Nearest neighbor interpolation)
+        # GPS
+        df_gps = df_gps.sort_values('time')
+        df_master = pd.merge_asof(df_master, df_gps, on='time', direction='nearest', tolerance=0.2)
+        
+        # Steer
+        if not df_steer.empty:
+            df_steer = df_steer.sort_values('time')
+            df_master = pd.merge_asof(df_master, df_steer, on='time', direction='nearest', tolerance=0.1)
+        
+        # Speed
+        if not df_speed.empty:
+            df_speed = df_speed.sort_values('time')
+            df_master = pd.merge_asof(df_master, df_speed, on='time', direction='nearest', tolerance=0.1)
             
-            if sig.get('signed', False):
-                if raw_val >= (1 << (sig['length'] - 1)):
-                    raw_val -= (1 << sig['length'])
+        return df_master
+
+    def _parse_csv_file(self):
+        """
+        Legacy CSV parser (kept for compatibility)
+        """
+        try:
+            df = pd.read_csv(self.file_path)
+        except:
+            df = pd.read_csv(self.file_path, sep=';')
             
-            phys_val = (raw_val * sig['factor']) + sig['offset']
-            signals[sig['name']] = phys_val
-            
-        return signals
-
-    def apply_schema(self, channel_map):
-        if self.df is None: return
-        self.df = self.df.rename(columns=channel_map)
-        print("[Ingestor] Schema applied.")
-
-    def process_units(self):
-        if self.df is None: return
+        # Normalize columns (simple mapping)
+        df.columns = [c.lower().strip() for c in df.columns]
         
-        # Auto-detect units based on column names
-        if 'steer' in self.df.columns:
-            # Assume degrees if max > 6.0 (2*PI is approx 6)
-            if self.df['steer'].abs().max() > 10.0:
-                 self.df['steer'] = np.deg2rad(self.df['steer'])
-                 
-        if 'velocity' in self.df.columns:
-            # Assume kph if max > 40
-            if self.df['velocity'].max() > 40.0:
-                self.df['velocity'] = self.df['velocity'] / 3.6
-
-    def project_gps_to_cartesian(self):
-        required = ['lat', 'lon']
-        if not all(col in self.df.columns for col in required):
-            print(f"[Warning] Missing GPS columns: {[c for c in required if c not in self.df.columns]}")
-            return
-
-        # Check for NaNs
-        if self.df['lat'].isna().all():
-            print("[Error] GPS data exists but is all NaN. Check parsing.")
-            return
-
-        # Origin
-        lat0 = self.df['lat'].iloc[0]
-        lon0 = self.df['lon'].iloc[0]
+        # Rename standard columns
+        col_map = {
+            'latitude': 'lat', 'pos_lat': 'lat',
+            'longitude': 'lon', 'pos_lon': 'lon',
+            'speed': 'v_kph', 'gps_speed': 'v_kph',
+            'steer_angle': 'delta_deg', 'steer': 'delta_deg'
+        }
+        df = df.rename(columns=col_map)
         
-        R = 6378137.0 
-        lat_rad = np.deg2rad(self.df['lat'].values)
-        lon_rad = np.deg2rad(self.df['lon'].values)
-        lat0_rad = np.deg2rad(lat0)
-        lon0_rad = np.deg2rad(lon0)
-        
-        dlon = lon_rad - lon0_rad
-        dlat = lat_rad - lat0_rad
-        
-        x = R * dlon * np.cos(lat0_rad)
-        y = R * dlat
-        
-        self.df['x'] = x
-        self.df['y'] = y
-        print(f"[Ingestor] GPS Projected. Track bounds: {np.min(x):.1f}m to {np.max(x):.1f}m")
+        return df
 
-    def export(self):
-        return {c: self.df[c].values for c in self.df.columns}
+    def _calc_speed_from_coords(self, df):
+        """
+        Calculates velocity if CAN Speed is missing.
+        """
+        print("[LogIngestion] Calculating speed from GPS coordinates...")
+        R = 6371000
+        dt = np.diff(df['time'], prepend=df['time'][0])
+        dt[dt == 0] = 0.05 # Avoid div/0
+        
+        lat_rad = np.deg2rad(df['lat'])
+        lon_rad = np.deg2rad(df['lon'])
+        
+        dlat = np.diff(lat_rad, prepend=lat_rad[0])
+        dlon = np.diff(lon_rad, prepend=lon_rad[0])
+        
+        dx = dlon * np.cos(lat_rad) * R
+        dy = dlat * R
+        
+        dist = np.sqrt(dx**2 + dy**2)
+        df['v'] = dist / dt
+        
+        # Smooth noise
+        df['v'] = df['v'].rolling(window=5, center=True, min_periods=1).mean()
+        
+        return df

@@ -1,27 +1,53 @@
-# FSG 2026 Vehicle Parameters
-# Units: SI (kg, m, rad, etc.)
+"""
+Vehicle Parameter Configuration
+-------------------------------
+Defines the physical properties of the race car.
+Used by:
+  - models.vehicle_dynamics (Simulation)
+  - optimization.ocp_solver (Ghost Car Physics)
+  - optimization.evolutionary (Genetic Algorithm Bounds)
+"""
 
 vehicle_params = {
-    # --- Mass & Inertia ---
-    'm': 250.0,         # Mass with driver [kg]
-    'Iz': 150.0,        # Yaw Inertia [kgm^2]
-    'Ixx': 80.0,        # Roll Inertia [kgm^2]
-    'Iyy': 100.0,       # Pitch Inertia [kgm^2]
-    'h_cg': 0.28,       # CG Height [m]
+    # --- MASS & INERTIA ---
+    'm': 1200.0,          # Total Vehicle Mass [kg] (GT3 approx)
+    'Iz': 1800.0,         # Yaw Inertia [kg*m^2]
     
-    # --- Geometry ---
-    'lf': 0.80,         # Distance CG to Front Axle [m]
-    'lr': 0.73,         # Distance CG to Rear Axle [m]
-    'track_width_f': 1.20, # Front Track Width [m]
-    'track_width_r': 1.15, # Rear Track Width [m]
+    # --- GEOMETRY ---
+    'lf': 1.4,            # Distance CG to Front Axle [m]
+    'lr': 1.2,            # Distance CG to Rear Axle [m]
+    'track_width': 1.6,   # Track Width [m]
+    'h_cg': 0.35,         # Center of Gravity Height [m]
     
-    # --- Aerodynamics ---
-    'A': 1.2,           # Frontal Area [m^2]
-    'Cl': 3.5,          # Lift Coefficient (Downforce)
-    'Cd': 1.1,          # Drag Coefficient
-    'rho': 1.225,       # Air Density [kg/m^3]
+    # --- AERODYNAMICS ---
+    # Critical for high-speed cornering in the OCP
+    'A': 2.2,             # Frontal Area [m^2]
+    'Cl': 5.2,            # Coefficient of Lift (Negative for Downforce? Model assumes positive = downforce in current logic)
+                          # In vehicle_dynamics.py we used: Fz_aero = 0.5 * rho * Cl * A * v^2
+                          # So Cl should be the 'Downforce Coefficient' (e.g. 3.0 for high downforce)
+    'Cd': 0.8,            # Coefficient of Drag
     
-    # --- Suspension (Defaults for OCP) ---
-    'k_roll': 30000.0,  # Roll Stiffness [Nm/rad]
-    'max_steer': 0.45,  # Max Steering Angle [rad]
+    # --- SUSPENSION LIMITS (For Optimization) ---
+    # These define the search space for the NSGA-II algorithm
+    'min_spring': 15000.0,  # [N/m] Softest spring allowed
+    'max_spring': 60000.0,  # [N/m] Stiffest spring allowed
+    
+    'min_damp': 1000.0,     # [Ns/m] Min Damping
+    'max_damp': 8000.0,     # [Ns/m] Max Damping
+    
+    'min_arb': 0.0,         # [Nm/deg] Detached ARB
+    'max_arb': 2500.0,      # [Nm/deg] Stiff ARB
+    
+    # --- BRAKES ---
+    'brake_bias': 0.55,     # % Front Bias (0.55 = 55% Front)
+    'max_brake_torque': 4000.0, # [Nm] Per wheel
+    
+    # --- POWERTRAIN (Simple) ---
+    'power_max': 400000.0,  # [W] ~530 hp
+    'redline': 8500.0,      # [RPM]
+    'drive_wheels': 'RWD',  # Rear Wheel Drive
 }
+
+# Derived Parameters (Helper calculation)
+vehicle_params['wb'] = vehicle_params['lf'] + vehicle_params['lr'] # Wheelbase
+vehicle_params['mass_dist'] = vehicle_params['lr'] / vehicle_params['wb'] # % Weight Front (Static)

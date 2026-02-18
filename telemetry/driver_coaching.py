@@ -1,6 +1,21 @@
 import numpy as np
 import pandas as pd
 from scipy.signal import find_peaks
+import sys
+import os
+
+# --- IMPORT PATH FIX ---
+current_dir = os.path.dirname(os.path.abspath(__file__))
+project_root = os.path.dirname(current_dir)
+if project_root not in sys.path:
+    sys.path.append(project_root)
+
+# Import the Master Config to ensure Physics Consistency
+try:
+    from data.configs.vehicle_params import vehicle_params as VP
+except ImportError:
+    # Fallback if config is missing
+    VP = {'m': 1200.0, 'A': 2.2, 'Cd': 0.8}
 
 class DriverCoach:
     """
@@ -8,8 +23,8 @@ class DriverCoach:
     
     Responsibilities:
     1. Segment Track into 'Corners' and 'Straights' based on curvature.
-    2. Compare Inputs (Force -> Pedal %).
-    3. Analyze Corner Phases (Braking Point, Apex Speed, Exit Speed).
+    2. Compare Real Telemetry vs. Ghost Telemetry (OCP).
+    3. Generate textual advice (e.g., "Brake Later", "Missed Apex").
     """
     def __init__(self, track_data):
         self.track = track_data
@@ -23,16 +38,17 @@ class DriverCoach:
         k = np.abs(self.track['k'])
         s = self.track['s']
         
-        # Thresholds
-        k_threshold = 0.05 # 1/m (approx 20m radius) - adjust for your track
+        # 1. Identify "High Curvature" regions
+        # Threshold: 1/R. For R=200m -> k=0.005. For R=50m -> k=0.02.
+        # Let's set a threshold for "Straight" vs "Corner"
+        k_threshold = 0.005 
         is_corner = k > k_threshold
         
-        # Find transitions
-        # This is a simplified logic. Robust segmentation merges close corners.
         corners = []
         in_corner = False
         start_idx = 0
         
+        # 2. Iterate and group segments
         for i, val in enumerate(is_corner):
             if val and not in_corner:
                 in_corner = True
@@ -41,9 +57,9 @@ class DriverCoach:
                 in_corner = False
                 end_idx = i
                 
-                # Filter tiny blips (noise)
-                if (s[end_idx] - s[start_idx]) > 5.0:
-                    # Find Apex (Max Curvature)
+                # Filter noise: A corner must be at least 10m long
+                if (s[end_idx] - s[start_idx]) > 10.0:
+                    # Find Apex (Max Curvature in this segment)
                     segment_k = k[start_idx:end_idx]
                     apex_local_idx = np.argmax(segment_k)
                     apex_idx = start_idx + apex_local_idx
@@ -53,97 +69,126 @@ class DriverCoach:
                         'start_s': s[start_idx],
                         'end_s': s[end_idx],
                         'apex_s': s[apex_idx],
-                        'type': 'Corner'
+                        'length': s[end_idx] - s[start_idx]
                     })
         return corners
 
-    def analyze_lap(self, real_data, ghost_data):
+    def analyze_lap(self, df_real, df_ghost):
         """
         Generates the 'Coaching Report'.
-        
-        Args:
-            real_data: Synced dictionary (s, velocity, etc.)
-            ghost_data: Solver dictionary (s, v, delta, etc.)
+        Comparing Real Driver (df_real) vs Optimal Driver (df_ghost)
         """
         report = []
         
-        # Helper to get value at specific 's'
-        def get_val_at(data, key, s_query):
-            idx = np.searchsorted(data['s'], s_query)
-            if idx >= len(data[key]): idx = len(data[key]) - 1
-            return data[key][idx]
-            
+        # Pre-interpolation functions for fast lookup
+        # We map everything to distance 's'
+        interp_v_real = lambda x: np.interp(x, df_real['s'], df_real['v'])
+        interp_v_ghost = lambda x: np.interp(x, df_ghost['s'], df_ghost['v'])
+        interp_t_real = lambda x: np.interp(x, df_real['s'], df_real['time'])
+        interp_t_ghost = lambda x: np.interp(x, df_ghost['s'], df_ghost['time'])
+        
         for c in self.corners:
-            # 1. Apex Speed Comparison (Mid-Corner Limit)
-            v_real_apex = get_val_at(real_data, 'velocity', c['apex_s'])
-            v_ghost_apex = get_val_at(ghost_data, 'v', c['apex_s'])
+            # 1. Get Speeds at critical points
+            s_entry = c['start_s']
+            s_apex = c['apex_s']
+            s_exit = c['end_s']
             
-            # 2. Entry Speed (Speed at corner start)
-            v_real_entry = get_val_at(real_data, 'velocity', c['start_s'])
-            v_ghost_entry = get_val_at(ghost_data, 'v', c['start_s'])
+            v_real_entry = interp_v_real(s_entry)
+            v_ghost_entry = interp_v_ghost(s_entry)
             
-            # 3. Braking Point Analysis (Look 50m before corner)
-            # Find where Ghost switches from Accel to Brake
-            # Simplified: Find max speed location before corner
-            search_start = max(0, c['start_s'] - 50)
+            v_real_apex = interp_v_real(s_apex)
+            v_ghost_apex = interp_v_ghost(s_apex)
             
-            # 4. Score this corner
-            time_loss = 0 # Placeholder for integral calculation
+            v_real_exit = interp_v_real(s_exit)
+            v_ghost_exit = interp_v_ghost(s_exit)
+            
+            # 2. Calculate Time Loss in this corner
+            t_entry_real = interp_t_real(s_entry)
+            t_exit_real = interp_t_real(s_exit)
+            dt_real = t_exit_real - t_entry_real
+            
+            t_entry_ghost = interp_t_ghost(s_entry)
+            t_exit_ghost = interp_t_ghost(s_exit)
+            dt_ghost = t_exit_ghost - t_entry_ghost
+            
+            time_lost = dt_real - dt_ghost
+            
+            # 3. Generate Advice
+            advice = []
+            
+            # Entry Phase
+            if v_real_entry > v_ghost_entry + 5.0:
+                advice.append("Overshot Entry (Brake Earlier)")
+            elif v_real_entry < v_ghost_entry - 5.0:
+                advice.append("Braked Too Early")
+                
+            # Apex Phase
+            if v_real_apex < v_ghost_apex - 3.0:
+                advice.append("Overslowed Apex (Trust Grip)")
+            elif abs(v_real_apex - v_ghost_apex) < 1.0:
+                advice.append("Good Apex Speed")
+                
+            # Exit Phase
+            if v_real_exit < v_ghost_exit - 5.0:
+                advice.append("Poor Exit (Get on Throttle Earlier)")
+
+            # Format primary advice
+            primary_advice = advice[0] if advice else "Good Corner"
             
             report.append({
                 'Corner': f"T{c['id']}",
-                'Apex_Speed_Real': v_real_apex,
-                'Apex_Speed_Ghost': v_ghost_apex,
-                'Delta_Apex': v_real_apex - v_ghost_apex,
-                'Entry_Delta': v_real_entry - v_ghost_entry,
-                'Advice': self._generate_advice(v_real_entry, v_real_apex, v_ghost_apex)
+                'S_Start': int(s_entry),
+                'Time_Loss': round(time_lost, 3),
+                'Apex_Speed_Real': round(v_real_apex * 3.6, 1), # kph
+                'Apex_Speed_Ghost': round(v_ghost_apex * 3.6, 1),
+                'Advice': primary_advice
             })
             
         return pd.DataFrame(report)
-        
-    def _generate_advice(self, v_entry, v_apex, v_optimal):
-        """Generates text feedback."""
-        if v_apex < (v_optimal - 5.0):
-            return "Overslowed Apex (Check Grip)"
-        elif v_entry > (v_apex + 10.0) and v_apex < v_optimal:
-            return "Overshot Entry (Brake Earlier)"
-        elif abs(v_apex - v_optimal) < 1.0:
-            return "Good Cornering"
-        else:
-            return "Review Line"
 
-    def get_input_comparison(self, real_data, ghost_data):
+    def get_input_comparison(self, ghost_data):
         """
-        Maps Ghost Forces to Pedal % for plotting.
+        Reverse-engineers the Ghost Car's pedal inputs from its motion.
+        Used because the OCP output might not explicitly save throttle/brake %.
         """
-        # Ghost 'u' is Force [N]. We normalize to -1 (Brake) to +1 (Throttle)
-        # Assuming Max Drive Force ~ 1000N, Max Brake ~ 2500N (from Solver constraints)
-        MAX_DRIVE = 1000.0
-        MAX_BRAKE = 2500.0
+        # Physics Constants from Config
+        mass = VP['m']
+        Cd = VP['Cd']
+        A = VP['A']
+        rho = 1.225
         
-        # Calculate Ghost Pedals
-        # OCP Fx is usually in ghost_data (check keys, sometimes it's U[1])
-        # We need to re-extract or approximate from V_dot if inputs aren't saved directly
-        # For this snippet, assuming we saved 'Fx' in ghost_data from solver
+        s = ghost_data['s']
+        v = ghost_data['v']
         
-        # If Fx not in ghost data, calculate it: F = ma + drag
-        # This is robust because it matches physics
-        mass = 250
-        v_ghost = ghost_data['v']
-        dv = np.gradient(v_ghost, ghost_data['s']) * v_ghost # a = v * dv/ds
-        drag = 0.5 * 1.225 * 1.1 * 1.2 * v_ghost**2
-        fx_ghost = mass * dv + drag
+        # 1. Calculate Acceleration (a = v * dv/ds)
+        # Gradient handles non-uniform spacing better
+        dv_ds = np.gradient(v, s)
+        accel = v * dv_ds
         
-        ghost_pedal = np.zeros_like(fx_ghost)
-        ghost_pedal[fx_ghost > 0] = fx_ghost[fx_ghost > 0] / MAX_DRIVE
-        ghost_pedal[fx_ghost < 0] = fx_ghost[fx_ghost < 0] / MAX_BRAKE
+        # 2. Calculate Required Force (F_net = m*a)
+        F_net = mass * accel
         
-        # Real Pedals (assuming normalized 0-1)
-        # Combine Throttle (0 to 1) and Brake (0 to 1) into single -1 to 1 trace
-        real_pedal = real_data['throttle'] - real_data['brake']
+        # 3. Add Aerodynamic Drag (F_drag = 0.5 * rho * Cd * A * v^2)
+        # We must overcome drag to accelerate, so Engine Force must be higher
+        F_drag = 0.5 * rho * Cd * A * v**2
+        F_total = F_net + F_drag
         
-        return {
-            's': ghost_data['s'],
-            'ghost_pedal': np.clip(ghost_pedal, -1, 1),
-            'real_pedal': real_pedal
-        }
+        # 4. Normalize to -100% (Brake) to +100% (Throttle)
+        # We assume some max capabilities
+        MAX_FORCE_DRIVE = VP.get('power_max', 400000) / (np.mean(v) + 1.0) # Approx mean force
+        MAX_FORCE_BRAKE = VP['m'] * 9.81 * 1.5 # Approx 1.5G braking
+        
+        pedal_trace = np.zeros_like(F_total)
+        
+        # Throttle (Positive Force)
+        mask_drive = F_total > 0
+        pedal_trace[mask_drive] = (F_total[mask_drive] / 6000.0) * 100 # Approx 6000N max thrust
+        
+        # Brake (Negative Force)
+        mask_brake = F_total < 0
+        pedal_trace[mask_brake] = (F_total[mask_brake] / 15000.0) * 100 # Approx 15000N max brake
+        
+        # Clip
+        pedal_trace = np.clip(pedal_trace, -100, 100)
+        
+        return pedal_trace
