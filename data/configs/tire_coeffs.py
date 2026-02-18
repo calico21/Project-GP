@@ -1,27 +1,24 @@
 # tire_coeffs.py
-# Updated with fits from "RawData_Cornering_Matlab_SI_Round9"
+# Adjusted for Realistic Tarmac Grip (~1.5G peak)
 
 tire_coeffs = {
     # --- Scaling & Limits ---
-    'FNOMIN': 1000.0,   # Nominal Load [N] (Reference for all params)
+    'FNOMIN': 1000.0,   # Nominal Load [N]
     
-    # --- Lateral (Fy) - The Critical Updates ---
-    'PCY1': 1.50,       # Shape Factor (C). Data avg: ~1.5 (was 1.35)
-    'PDY1': 2.1,       # Peak Friction (Mu). Data avg at 1kN: ~2.8 (was 1.60)
-    'PDY2': -0.25,      # Load Sensitivity. Grip drops high loads. (was -0.10)
+    # --- Lateral (Fy) ---
+    'PCY1': 1.45,       # Shape Factor
+    'PDY1': 1.45,       # Peak Friction (Mu). Reduced from 2.1 to 1.45
+    'PDY2': -0.15,      # Load Sensitivity (Grip drops slightly with load)
     
-    # Cornering Stiffness = Fz * (PKY1 + PKY2 * dfz)
-    # Calculated from B_Stiff * C_Shape * D_Peak in your data
-    'PKY1': 35.0,       # Base Stiffness. (was 25.0)
-    'PKY2': -1.5,       # Stiffness drops slightly with load
-    'PEY1': 0.5,        # Curvature at peak (E). Data avg: ~0.4-0.6
+    'PKY1': 25.0,       # Cornering Stiffness
+    'PKY2': -1.0,
+    'PEY1': 0.5,        # Curvature
     
-    # --- Longitudinal (Fx) - Estimated scaling based on Fy ---
-    # Usually Fx is 85-90% of Fy on bias-ply FSAE tires
+    # --- Longitudinal (Fx) ---
     'PCX1': 1.50,
-    'PDX1': 2.60,       # Slightly less than lateral grip
-    'PDX2': -0.20,
-    'PKX1': 40.0,       # Long. stiffness is usually higher
+    'PDX1': 1.50,       # Traction matches cornering
+    'PDX2': -0.15,
+    'PKX1': 30.0,
     
     # --- Combined Slip & Transient ---
     'RHX1': 0.0,        

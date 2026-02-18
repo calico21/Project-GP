@@ -49,7 +49,6 @@ class MultiBodyVehicle:
         Fz_r_static = (m * 9.81 * lf) / (lf + lr) + Fz_aero * 0.6
         
         # Lateral Weight Transfer (Elastic)
-        # Distributed based on Roll Stiffness (Springs + ARB)
         roll_stiff_f = k_f * 0.5**2 + arb_f
         roll_stiff_r = k_r * 0.5**2 + arb_r
         total_stiff = roll_stiff_f + roll_stiff_r + 1.0
@@ -71,17 +70,18 @@ class MultiBodyVehicle:
 
         # 5. Tire Kinematics (Slip Angles)
         # Front
-        alpha_f_l = delta - np.arctan2(vy + lf*r, vx - 0.8)
-        alpha_f_r = delta - np.arctan2(vy + lf*r, vx + 0.8)
+        alpha_f_l = delta - np.arctan2(vy + lf*r, vx - 0.6) # 0.6 = half track width (1.2m)
+        alpha_f_r = delta - np.arctan2(vy + lf*r, vx + 0.6)
         # Rear
-        alpha_r_l = -np.arctan2(vy - lr*r, vx - 0.8)
-        alpha_r_r = -np.arctan2(vy - lr*r, vx + 0.8)
+        alpha_r_l = -np.arctan2(vy - lr*r, vx - 0.6)
+        alpha_r_r = -np.arctan2(vy - lr*r, vx + 0.6)
         
         # 6. Tire Forces (Include Thermal State!)
-        Fy_f_l, _ = self.tire.compute_force(alpha_f_l, 0, Fz_f_l, vx, T_f)
-        Fy_f_r, _ = self.tire.compute_force(alpha_f_r, 0, Fz_f_r, vx, T_f)
-        Fy_r_l, _ = self.tire.compute_force(alpha_r_l, 0, Fz_r_l, vx, T_r)
-        Fy_r_r, _ = self.tire.compute_force(alpha_r_r, 0, Fz_r_r, vx, T_r)
+        # FIX: Unpack order matches Tire Model (Fx, Fy)
+        _, Fy_f_l = self.tire.compute_force(alpha_f_l, 0, Fz_f_l, vx, T_f)
+        _, Fy_f_r = self.tire.compute_force(alpha_f_r, 0, Fz_f_r, vx, T_f)
+        _, Fy_r_l = self.tire.compute_force(alpha_r_l, 0, Fz_r_l, vx, T_r)
+        _, Fy_r_r = self.tire.compute_force(alpha_r_r, 0, Fz_r_r, vx, T_r)
         
         Fy_f_tot = Fy_f_l + Fy_f_r
         Fy_r_tot = Fy_r_l + Fy_r_r
@@ -92,7 +92,7 @@ class MultiBodyVehicle:
         dT_r = self.tire.compute_thermal_dynamics(0, Fy_r_tot/2, np.mean([alpha_r_l, alpha_r_r]), 0, vx, T_r)
 
         # 8. Equations of Motion (Body Frame)
-        m_dot_vx = Fy_f_tot * np.sin(delta) + m * vy * r # Drag ignored for short steps
+        m_dot_vx = Fy_f_tot * np.sin(delta) + m * vy * r 
         m_dot_vy = Fy_f_tot * np.cos(delta) + Fy_r_tot - m * vx * r
         Iz_dot_r = lf * (Fy_f_tot * np.cos(delta)) - lr * Fy_r_tot
 
@@ -129,7 +129,7 @@ class DynamicBicycleModel:
         # Symbols
         s = ca.MX.sym('s')
         n = ca.MX.sym('n')
-        alpha = ca.MX.sym('alpha') # Heading error relative to path
+        alpha = ca.MX.sym('alpha') 
         v = ca.MX.sym('v')
         delta = ca.MX.sym('delta')
         r = ca.MX.sym('r')
@@ -140,37 +140,30 @@ class DynamicBicycleModel:
         u_fx = ca.MX.sym('u_fx')
         u = ca.vertcat(u_d_delta, u_fx)
         
-        k_c = ca.MX.sym('k_c') # Path curvature
+        k_c = ca.MX.sym('k_c') 
         
         # Parameters
         m, Iz = self.vp['m'], self.vp['Iz']
         lf, lr = self.vp['lf'], self.vp['lr']
         
-        # Slip Angles
-        # Kinematic approximation for OCP (Stable & Smooth)
-        # alpha_f = delta - atan((v_y + lf*r)/v_x)
-        # In path coords: v_y ~ v * alpha (small angle approx for stability)
+        # Slip Angles (Kinematic)
         alpha_f = delta - (lf * r) / v 
-        alpha_r = (lr * r) / v - alpha # Note: approx
+        alpha_r = (lr * r) / v - alpha 
         
-        # Forces (Using simplified linear/peak model for OCP stability)
-        # To make OCP converge, we use the Pacejka model but assume T=Optimized
-        # (The thermal constraint is handled externally in the solver)
         Fz_f = m * 9.81 * lr / (lf + lr)
         Fz_r = m * 9.81 * lf / (lf + lr)
         
-        # Note: We pass T=90.0 (Optimal) to force calculations here
-        # The Solver adds a penalty if T deviates from 90 in the separate Thermal state
-        Fy_f, _ = self.tire.compute_force(alpha_f, 0, Fz_f, v, T_tire=90.0)
-        Fy_r, _ = self.tire.compute_force(alpha_r, 0, Fz_r, v, T_tire=90.0)
+        # FIX: Unpack order matches Tire Model (Fx, Fy)
+        # Note: We still force T=90.0 for OCP simplicity
+        _, Fy_f = self.tire.compute_force(alpha_f, 0, Fz_f, v, T_tire=90.0)
+        _, Fy_r = self.tire.compute_force(alpha_r, 0, Fz_r, v, T_tire=90.0)
         
-        # Derivatives (Path Coordinates)
-        # s_dot = v * cos(alpha + beta) / (1 - n * k_c)
+        # Derivatives
         s_dot = (v * ca.cos(alpha)) / (1 - n * k_c)
         n_dot = v * ca.sin(alpha)
         alpha_dot = r - k_c * s_dot
         
-        v_dot = u_fx / m # Longitudinal accel
+        v_dot = u_fx / m 
         r_dot = (lf * Fy_f * ca.cos(delta) - lr * Fy_r) / Iz
         delta_dot = u_d_delta
         
