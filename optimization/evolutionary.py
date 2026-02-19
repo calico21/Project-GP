@@ -3,23 +3,30 @@ import os
 import numpy as np
 import pandas as pd
 import time
-from scipy.stats import norm
+import torch
 
-# --- SCILKIT-LEARN FOR KRIGING ---
+# --- BOTORCH & GPYTORCH IMPORTS (The SOTA Upgrade) ---
 try:
-    from sklearn.gaussian_process import GaussianProcessRegressor
-    from sklearn.gaussian_process.kernels import Matern, ConstantKernel as C
+    import gpytorch
+    from botorch.models import SingleTaskMultiFidelityGP, ModelListGP
+    from gpytorch.mlls import SumMarginalLogLikelihood
+    from botorch.fit import fit_gpytorch_mll
+    from botorch.acquisition.multi_objective.monte_carlo import qNoisyExpectedHypervolumeImprovement
+    from botorch.acquisition.fixed_feature import FixedFeatureAcquisitionFunction
+    from botorch.optim import optimize_acqf
+    from botorch.utils.multi_objective.pareto import is_non_dominated
+    from botorch.utils.sampling import draw_sobol_samples
+    from botorch.models.transforms.input import Normalize
+    from botorch.models.transforms.outcome import Standardize
 except ImportError:
-    print("[Error] sklearn missing. Please install scikit-learn.")
+    print("[Error] BoTorch or GPyTorch missing. Please run: pip install botorch gpytorch")
     sys.exit(1)
 
-# --- IMPORT PATH FIX ---
 current_dir = os.path.dirname(os.path.abspath(__file__))
 project_root = os.path.dirname(current_dir)
 if project_root not in sys.path:
     sys.path.append(project_root)
 
-# --- IMPORTS ---
 try:
     from models.vehicle_dynamics import MultiBodyVehicle
     from data.configs.vehicle_params import vehicle_params as VP_DICT
@@ -28,242 +35,202 @@ except ImportError as e:
     print(f"[Error] Import Failed: {e}")
     sys.exit(1)
 
-# --- PYMOO IMPORTS ---
-from pymoo.core.problem import ElementwiseProblem
-from pymoo.algorithms.moo.nsga2 import NSGA2
-from pymoo.operators.crossover.sbx import SBX
-from pymoo.operators.mutation.pm import PM
-from pymoo.operators.sampling.rnd import FloatRandomSampling
-from pymoo.optimize import minimize
-from pymoo.termination import get_termination
+tkwargs = {
+    "dtype": torch.double,
+    "device": torch.device("cuda" if torch.cuda.is_available() else "cpu"),
+}
 
-
-class MultiFidelitySurrogate:
+class MultiFidelitySetupOptimizer:
     """
-    Autoregressive Co-Kriging Surrogate Model.
-    Predicts: Y_high(x) = Y_low(x) + GP_residual(x)
+    State-of-the-Art Multi-Objective Multi-Fidelity Bayesian Optimizer (BoTorch).
+    Uses Auto-Regressive Co-Kriging to learn residuals between an algebraic proxy 
+    and the heavy 14-DOF Thermal ODE solver.
     """
     def __init__(self):
-        # Matern kernel is ideal for physical processes
-        kernel = C(1.0, (1e-3, 1e3)) * Matern(length_scale=1.0, nu=2.5)
-        self.gp_grip = GaussianProcessRegressor(kernel=kernel, n_restarts_optimizer=5, alpha=1e-4)
-        self.gp_stab = GaussianProcessRegressor(kernel=kernel, n_restarts_optimizer=5, alpha=1e-4)
-        self.is_trained = False
+        # Setup Parameter Bounds: [k_f, k_r, arb_f, arb_r, c_f, c_r, h_cg, fidelity]
+        # Fidelity dimension appended to the end (0.0 = Algebraic Proxy, 1.0 = 14-DOF Physics)
+        self.bounds = torch.tensor([
+            [15000., 15000., 0.,    0.,    1000., 1000., 0.25, 0.0],
+            [60000., 60000., 2000., 1500., 5000., 5000., 0.35, 1.0]
+        ], **tkwargs)
         
-    def low_fidelity_model(self, ind):
-        """
-        Cheap, 0-DOF Algebraic Approximation (Microseconds to compute).
-        Maps setup trends but lacks transient accuracy.
-        """
-        k_f, k_r = ind['k_f'], ind['k_r']
-        arb_f, arb_r = ind['arb_f'], ind['arb_r']
-        h_cg = ind['h_cg']
-        
-        # Total lateral load transfer approximation
-        roll_stiff_f = k_f + arb_f * 50
-        roll_stiff_r = k_r + arb_r * 50
-        balance = roll_stiff_f / (roll_stiff_f + roll_stiff_r + 1e-6)
-        
-        # Grip proxy: lower CG is better, extreme balance is bad
-        ideal_balance = 0.55
-        grip = -1.6 + (h_cg - 0.25)*2.0 + abs(balance - ideal_balance)*1.5
-        
-        # Stability proxy: Front stiffness increases understeer (stability)
-        stability = max(0.0, 0.2 - (balance - 0.5)*0.5)
-        
-        return np.array([grip, stability])
-
-    def train_residuals(self, X_train, Y_high):
-        """Trains the GPs on the error between High and Low fidelity."""
-        Y_low = np.array([self.low_fidelity_model(self._vec_to_dict(x)) for x in X_train])
-        Y_res = Y_high - Y_low
-        
-        self.gp_grip.fit(X_train, Y_res[:, 0])
-        self.gp_stab.fit(X_train, Y_res[:, 1])
-        self.is_trained = True
-
-    def predict(self, x, return_std=False):
-        """Combined Multi-Fidelity Prediction."""
-        ind = self._vec_to_dict(x)
-        y_low = self.low_fidelity_model(ind)
-        
-        if not self.is_trained:
-            if return_std: return y_low, np.array([1.0, 1.0])
-            return y_low
-            
-        res_g, std_g = self.gp_grip.predict(x.reshape(1, -1), return_std=True)
-        res_s, std_s = self.gp_stab.predict(x.reshape(1, -1), return_std=True)
-        
-        y_pred = y_low + np.array([res_g[0], res_s[0]])
-        
-        if return_std:
-            return y_pred, np.array([std_g[0], std_s[0]])
-        return y_pred
-
-    def _vec_to_dict(self, x):
-        keys = ['k_f', 'k_r', 'arb_f', 'arb_r', 'c_f', 'c_r', 'h_cg']
-        return {k: v for k, v in zip(keys, x)}
-
-
-class ActiveLearningOptimizer:
-    """
-    Manages the Bayesian Active Learning Loop using Expected Improvement (EI).
-    """
-    def __init__(self, bounds):
-        self.bounds = bounds
-        self.surrogate = MultiFidelitySurrogate()
-        self.X_history = []
-        self.Y_history = []
-        
-    def expected_improvement(self, X_candidate, gp, current_best):
-        """Calculates EI for a set of candidate points."""
-        mu, std = gp.predict(X_candidate, return_std=True)
-        with np.errstate(divide='warn'):
-            Z = (current_best - mu) / (std + 1e-9)
-            ei = (current_best - mu) * norm.cdf(Z) + std * norm.pdf(Z)
-            ei[std == 0.0] = 0.0
-        return ei
-
-    def run_high_fidelity(self, x):
-        """Executes the expensive 14-DOF MultiBody ODE integration."""
-        ind = self.surrogate._vec_to_dict(x)
-        params = [ind['k_f'], ind['k_r'], ind['arb_f'], ind['arb_r'], ind['c_f'], ind['c_r']]
-        vehicle = MultiBodyVehicle(VP_DICT, TP_DICT)
-        
-        dt, T_max = 0.005, 2.5
-        steps = int(T_max / dt)
-        x_curr = np.zeros(14) # Upgraded 14-DOF thermal vector
-        x_curr[3] = 20.0 
-        
-        yaw_rates, lat_accels = [], []
-        crashed = False
-
-        for t in np.linspace(0, T_max, steps):
-            steer = 0.1 if t > 0.2 else 0.0
-            try:
-                x_next = vehicle.simulate_step(x_curr, [steer, 0], params, dt=dt)
-                if not np.all(np.isfinite(x_next)): crashed = True; break
-                
-                vx, r = x_next[3], x_next[5]
-                if abs(r) > 5.0 or abs(vx) > 100.0: crashed = True; break
-                
-                lat_accels.append(vx * r / 9.81)
-                yaw_rates.append(r)
-                x_curr = x_next
-            except RuntimeError:
-                crashed = True
-                break
-                
-        if crashed or len(lat_accels) < 10: return [0.0, 5.0]
-        
-        steady_ay = np.mean(lat_accels[-int(steps*0.2):])
-        f_score = -abs(steady_ay) 
-        
-        peak_yaw = np.max(np.abs(yaw_rates))
-        steady_yaw = np.mean(np.abs(yaw_rates[-int(steps*0.2):]))
-        overshoot = 0.0 if steady_yaw < 0.01 else (peak_yaw - steady_yaw) / steady_yaw
-            
-        return [f_score, overshoot]
-
-    def build_surrogate(self, initial_samples=5, active_iterations=10):
-        print("\n[BayesianOpt] Phase 1: Building Multi-Fidelity Surrogate...")
-        
-        # 1. LHS Initial Sampling
-        xl, xu = self.bounds
-        for _ in range(initial_samples):
-            x = np.random.uniform(xl, xu)
-            y = self.run_high_fidelity(x)
-            self.X_history.append(x)
-            self.Y_history.append(y)
-            
-        self.surrogate.train_residuals(np.array(self.X_history), np.array(self.Y_history))
-        
-        # 2. Active Learning via Expected Improvement
-        print(f"[BayesianOpt] Phase 2: Active Learning ({active_iterations} Iterations)...")
-        for i in range(active_iterations):
-            # Generate 10,000 cheap candidates to evaluate EI
-            X_cand = np.random.uniform(xl, xu, (10000, len(xl)))
-            
-            # Use scalarized metric for EI (e.g., focus heavily on grip)
-            current_best = np.min(np.array(self.Y_history)[:, 0])
-            ei_scores = self.expected_improvement(X_cand, self.surrogate.gp_grip, current_best)
-            
-            best_cand = X_cand[np.argmax(ei_scores)]
-            
-            # Execute Expensive Model ONLY on the point with max EI
-            print(f"   > Iter {i+1}: Running High-Fidelity Physics on max EI candidate...")
-            y_true = self.run_high_fidelity(best_cand)
-            
-            self.X_history.append(best_cand)
-            self.Y_history.append(y_true)
-            self.surrogate.train_residuals(np.array(self.X_history), np.array(self.Y_history))
-            
-        print("[BayesianOpt] Autoregressive Co-Kriging Trained Successfully.")
-        return self.surrogate
-
-
-class SurrogateVehicleSetupProblem(ElementwiseProblem):
-    """
-    NSGA-II Problem that evaluates the fast Multi-Fidelity Surrogate 
-    instead of the heavy ODE physics engine.
-    """
-    def __init__(self, surrogate, xl, xu):
-        self.surrogate = surrogate
         self.var_keys = ['k_f', 'k_r', 'arb_f', 'arb_r', 'c_f', 'c_r', 'h_cg']
-        super().__init__(n_var=7, n_obj=2, n_ieq_constr=0, xl=xl, xu=xu)
+        self.ref_point = torch.tensor([0.0, -5.0], **tkwargs) 
 
-    def _evaluate(self, x, out, *args, **kwargs):
-        # Microsecond evaluation using Co-Kriging predictions
-        y_pred = self.surrogate.predict(x)
-        out["F"] = [y_pred[0], y_pred[1]]
+    def evaluate_algebraic_proxy(self, X_tensor):
+        """
+        LOW-FIDELITY EVALUATOR (fidelity = 0.0)
+        Vectorized steady-state calculation. Extremely cheap (evaluates thousands per second).
+        """
+        k_f, k_r = X_tensor[:, 0], X_tensor[:, 1]
+        arb_f, arb_r = X_tensor[:, 2], X_tensor[:, 3]
+        c_f, c_r = X_tensor[:, 4], X_tensor[:, 5]
+        h_cg = X_tensor[:, 6]
 
+        total_k_f = k_f + arb_f
+        total_k_r = k_r + arb_r
+        
+        # Lateral Load Transfer Distribution (LLTD) -> Dictates balance
+        lltd = total_k_f / (total_k_f + total_k_r)
+        
+        # Proxy Grip: Lower CG is better. LLTD near 0.5 maximizes total axle grip.
+        grip_proxy = 1.6 - 2.5 * (h_cg - 0.25) - 1.2 * torch.abs(lltd - 0.5)
+        
+        # Proxy Stability: Higher damping reduces overshoot. Extreme LLTD causes instability.
+        c_total = c_f + c_r
+        overshoot_proxy = 0.8 - 0.00005 * c_total + 1.5 * torch.abs(lltd - 0.5)
+        
+        return torch.stack([grip_proxy, -overshoot_proxy], dim=1)
 
-class SetupOptimizer:
-    def __init__(self, pop_size=100, generations=50):
-        self.pop_size = pop_size
-        self.generations = generations
-        self.xl = np.array([15000., 15000., 0.,   0.,   1000., 1000., 0.25])
-        self.xu = np.array([60000., 60000., 2000.,1500., 5000., 5000., 0.35])
+    def evaluate_physics(self, X_tensor):
+        """
+        HIGH-FIDELITY EVALUATOR (fidelity = 1.0)
+        Executes the expensive 14-DOF MultiBody ODE integration.
+        """
+        Y_list = []
+        for i in range(X_tensor.shape[0]):
+            x = X_tensor[i].cpu().numpy()
+            params = [x[0], x[1], x[2], x[3], x[4], x[5]]
+            vehicle = MultiBodyVehicle(VP_DICT, TP_DICT)
+            
+            dt, T_max = 0.005, 2.5
+            steps = int(T_max / dt)
+            x_curr = np.zeros(17) # Updated for 5-Node Tire States
+            x_curr[3] = 20.0 
+            
+            yaw_rates, lat_accels = [], []
+            crashed = False
 
-    def run(self):
-        # 1. Train the Multi-Fidelity Surrogate using Active Learning
-        bo_manager = ActiveLearningOptimizer(bounds=(self.xl, self.xu))
-        trained_surrogate = bo_manager.build_surrogate(initial_samples=5, active_iterations=15)
+            for t in np.linspace(0, T_max, steps):
+                steer = 0.1 if t > 0.2 else 0.0
+                try:
+                    x_next = vehicle.simulate_step(x_curr, [steer, 0], params, dt=dt)
+                    if not np.all(np.isfinite(x_next)): crashed = True; break
+                    
+                    vx, r = x_next[3], x_next[5]
+                    if abs(r) > 5.0 or abs(vx) > 100.0: crashed = True; break
+                    
+                    lat_accels.append(vx * r / 9.81)
+                    yaw_rates.append(r)
+                    x_curr = x_next
+                except RuntimeError:
+                    crashed = True
+                    break
+                    
+            if crashed or len(lat_accels) < 10:
+                Y_list.append([0.0, -5.0]) 
+                continue
+            
+            steady_ay = np.mean(lat_accels[-int(steps*0.2):])
+            f_score = abs(steady_ay) 
+            
+            peak_yaw = np.max(np.abs(yaw_rates))
+            steady_yaw = np.mean(np.abs(yaw_rates[-int(steps*0.2):]))
+            overshoot = 0.0 if steady_yaw < 0.01 else (peak_yaw - steady_yaw) / steady_yaw
+            
+            Y_list.append([f_score, -overshoot]) 
+            
+        return torch.tensor(Y_list, **tkwargs)
+
+    def initialize_multifidelity_surrogate(self, n_lf=500, n_hf=10):
+        """Pre-maps the setup space using cheap physics, grounded by a few expensive solves."""
+        print(f"\n[BoTorch] Phase 1: Co-Kriging Initialization...")
+        print(f"   > Evaluating {n_lf} Low-Fidelity (Algebraic) Samples")
+        train_X_lf = draw_sobol_samples(bounds=self.bounds, n=n_lf, q=1).squeeze(1)
+        train_X_lf[:, -1] = 0.0 # Force fidelity to 0.0
+        train_Y_lf = self.evaluate_algebraic_proxy(train_X_lf)
+
+        print(f"   > Evaluating {n_hf} High-Fidelity (14-DOF Thermal) Samples")
+        train_X_hf = draw_sobol_samples(bounds=self.bounds, n=n_hf, q=1).squeeze(1)
+        train_X_hf[:, -1] = 1.0 # Force fidelity to 1.0
+        train_Y_hf = self.evaluate_physics(train_X_hf)
+
+        train_X = torch.cat([train_X_lf, train_X_hf])
+        train_Y = torch.cat([train_Y_lf, train_Y_hf])
         
-        # 2. Run genetic algorithm instantly on the Surrogate
-        print(f"\n[Optimizer] Initializing NSGA-II on Surrogate Surface (Pop={self.pop_size}, Gen={self.generations})...")
-        problem = SurrogateVehicleSetupProblem(trained_surrogate, self.xl, self.xu)
+        return train_X, train_Y
+
+    def build_model_list(self, train_X, train_Y):
+        """Constructs Auto-Regressive GPs specifying the 8th column as data_fidelity."""
+        models = []
+        for i in range(train_Y.shape[-1]):
+            train_Y_i = train_Y[..., i:i+1]
+            model = SingleTaskMultiFidelityGP(
+                train_X, train_Y_i,
+                data_fidelity=7, 
+                input_transform=Normalize(d=train_X.shape[-1]),
+                outcome_transform=Standardize(m=1)
+            )
+            models.append(model)
         
-        algorithm = NSGA2(
-            pop_size=self.pop_size,
-            n_offsprings=40,
-            sampling=FloatRandomSampling(),
-            crossover=SBX(prob=0.9, eta=15),
-            mutation=PM(eta=20),
-            eliminate_duplicates=True
-        )
+        model_list = ModelListGP(*models)
+        mll = SumMarginalLogLikelihood(model_list.likelihood, model_list)
+        return model_list, mll
+
+    def run(self, n_iterations=20):
+        train_X, train_Y = self.initialize_multifidelity_surrogate()
         
-        res = minimize(
-            problem,
-            algorithm,
-            get_termination("n_gen", self.generations),
-            seed=1,
-            verbose=False 
-        )
+        print(f"\n[BoTorch] Phase 2: Hunting Target-Fidelity Pareto Front (qNEHVI)...")
+        for iteration in range(n_iterations):
+            model, mll = self.build_model_list(train_X, train_Y)
+            fit_gpytorch_mll(mll)
+            
+            acq_func = qNoisyExpectedHypervolumeImprovement(
+                model=model,
+                ref_point=self.ref_point,
+                X_baseline=train_X[train_X[:, -1] == 1.0], # Compare against HF baseline only
+                prune_baseline=True
+            )
+            
+            # Constrain the acquisition function to only explore the High-Fidelity surface
+            fixed_acq_func = FixedFeatureAcquisitionFunction(
+                acq_function=acq_func,
+                d=8,
+                columns=[7], 
+                values=[1.0] 
+            )
+            
+            # Optimize over the 7 mechanical parameters
+            candidates, _ = optimize_acqf(
+                acq_function=fixed_acq_func,
+                bounds=self.bounds[:, :-1], 
+                q=1,
+                num_restarts=5,
+                raw_samples=128,
+            )
+            
+            # Append fidelity = 1.0 back onto the candidate for evaluation
+            new_X = torch.cat([candidates.detach(), torch.tensor([[1.0]], **tkwargs)], dim=-1)
+            new_Y = self.evaluate_physics(new_X)
+            
+            print(f"   > Active Learning Iter {iteration+1:02d}: Evaluated HF Obj=[Grip: {new_Y[0,0]:.3f} Gs, Stability: {new_Y[0,1]:.3f}]")
+            
+            train_X = torch.cat([train_X, new_X])
+            train_Y = torch.cat([train_Y, new_Y])
+
+        # Filter strictly for High-Fidelity Pareto Optimal Setups
+        hf_mask = train_X[:, -1] == 1.0
+        hf_X, hf_Y = train_X[hf_mask], train_Y[hf_mask]
         
-        print(f"[Optimizer] GA Complete. Found {len(res.X)} Pareto-optimal setups.")
+        pareto_mask = is_non_dominated(hf_Y)
+        pareto_X = hf_X[pareto_mask].cpu().numpy()
+        pareto_Y = hf_Y[pareto_mask].cpu().numpy()
         
-        final_pop = [{k: v for k, v in zip(problem.var_keys, row)} for row in res.X]
-        return final_pop, res.F
+        pareto_Y[:, 1] = -pareto_Y[:, 1] 
+        final_pop = [{k: v for k, v in zip(self.var_keys, row[:-1])} for row in pareto_X]
+        return final_pop, pareto_Y
 
 if __name__ == "__main__":
-    opt = SetupOptimizer(pop_size=100, generations=50) # Now we can afford huge populations!
-    final_pop, final_obj = opt.run()
+    optimizer = MultiFidelitySetupOptimizer()
+    final_pop, final_obj = optimizer.run(n_iterations=20)
     
     df = pd.DataFrame(final_pop)
     df['Lat_G_Score'] = final_obj[:, 0]
     df['Stability_Overshoot'] = final_obj[:, 1]
     
+    print("\n[BoTorch] Multi-Fidelity Optimization Complete. Target-Fidelity Pareto Front:")
+    print(df.sort_values('Lat_G_Score', ascending=False).to_string(index=False))
+    
     out_file = os.path.join(project_root, 'optimization_results.csv')
     df.to_csv(out_file, index=False)
-    print(f"\n[Success] Results saved to {out_file}")
+    print(f"\n[Success] Results mapped via Multi-Fidelity Tensors and saved to {out_file}")

@@ -6,7 +6,7 @@ class MultiBodyVehicle:
     """
     14-DOF Vehicle Dynamics Model (Time Domain).
     Used by: Surrogate Optimizer (Ground Truth Generation).
-    Upgraded to support 3-Node (Surface/Core/Gas) Thermal Physics.
+    Upgraded to support 5-Node (Inner/Mid/Outer/Core/Gas) Thermal Physics & Dynamic Camber.
     """
     def __init__(self, vehicle_params, tire_coeffs):
         self.vp = vehicle_params
@@ -15,25 +15,28 @@ class MultiBodyVehicle:
     def simulate_step(self, x, u, setup_params, dt=0.005):
         """
         Forward integration for one time step.
-        State x (14): 
+        State x (17): 
           [X, Y, psi, vx, vy, r, delta, 
-           T_core_f, T_surf_f, T_gas_f, 
-           T_core_r, T_surf_r, T_gas_r, unused]
+           T_core_f, T_in_f, T_mid_f, T_out_f, T_gas_f, 
+           T_core_r, T_in_r, T_mid_r, T_out_r, T_gas_r]
         """
         # 1. Unpack Kinematic State
         X, Y, psi = x[0], x[1], x[2]
         vx, vy, r = x[3], x[4], x[5]
         delta     = x[6] 
         
-        # 2. Unpack 3-Node Thermal States (Initialize if zero/invalid)
-        # Assuming nominal cold temp is 25C, core/surf start slightly warm
-        T_core_f = x[7] if x[7] > 10 else 60.0
-        T_surf_f = x[8] if x[8] > 10 else 60.0
-        T_gas_f  = x[9] if x[9] > 10 else 25.0
+        # 2. Unpack 5-Node Thermal States (Initialize if zero/invalid)
+        T_core_f = x[7]  if x[7]  > 10 else 60.0
+        T_in_f   = x[8]  if x[8]  > 10 else 60.0
+        T_mid_f  = x[9]  if x[9]  > 10 else 60.0
+        T_out_f  = x[10] if x[10] > 10 else 60.0
+        T_gas_f  = x[11] if x[11] > 10 else 25.0
         
-        T_core_r = x[10] if x[10] > 10 else 60.0
-        T_surf_r = x[11] if x[11] > 10 else 60.0
-        T_gas_r  = x[12] if x[12] > 10 else 25.0
+        T_core_r = x[12] if x[12] > 10 else 60.0
+        T_in_r   = x[13] if x[13] > 10 else 60.0
+        T_mid_r  = x[14] if x[14] > 10 else 60.0
+        T_out_r  = x[15] if x[15] > 10 else 60.0
+        T_gas_r  = x[16] if x[16] > 10 else 25.0
 
         # 3. Unpack Setup (Optimization Variables)
         k_f, k_r = setup_params[0], setup_params[1]
@@ -42,7 +45,7 @@ class MultiBodyVehicle:
         steer_req = u[0]
         d_delta = (steer_req - delta) * 15.0 # Simple actuator lag
         
-        # 5. Vertical Loads (Static + Aero + Weight Transfer)
+        # 5. Vertical Loads & Chassis Roll (Weight Transfer)
         m = self.vp['m']
         lf, lr = self.vp['lf'], self.vp['lr']
         h_cg = self.vp.get('h_cg', 0.3)
@@ -57,13 +60,22 @@ class MultiBodyVehicle:
         Fz_f_static = (m * 9.81 * lr) / (lf + lr) + Fz_aero * 0.4
         Fz_r_static = (m * 9.81 * lf) / (lf + lr) + Fz_aero * 0.6
         
-        # Lateral Weight Transfer (Elastic)
+        # Lateral Weight Transfer & Roll Angle
         roll_stiff_f = k_f 
         roll_stiff_r = k_r
         total_stiff = roll_stiff_f + roll_stiff_r + 1.0
         
         ay = (vx * r + vy * 0) 
         W_transfer = (m * ay * h_cg) / track_w
+        
+        # Roll angle approximation [rad] -> [deg]
+        phi = (m * ay * h_cg) / total_stiff 
+        phi_deg = np.rad2deg(phi)
+        
+        # Dynamic Camber = Static Camber + Roll Camber Gain
+        # As the chassis rolls, the outer loaded tire gains positive camber relative to the road
+        gamma_f = -2.0 + (phi_deg * 0.6) 
+        gamma_r = -1.5 + (phi_deg * 0.4)
         
         dFz_f = W_transfer * (roll_stiff_f / total_stiff)
         dFz_r = W_transfer * (roll_stiff_r / total_stiff)
@@ -75,28 +87,30 @@ class MultiBodyVehicle:
 
         # 6. Tire Kinematics (Slip Angles)
         beta = np.arctan2(vy, vx) if vx > 1.0 else 0.0
-        
         alpha_f = delta - (beta + lf*r/vx)
         alpha_r = - (beta - lr*r/vx)
         
-        # 7. Tire Forces (Pressure-Coupled)
+        # 7. Tire Forces (Asymmetric & Pressure-Coupled)
         # Front
-        Fx_fl, Fy_fl = self.tire.compute_force(alpha_f, 0, Fz_f_l, T_surf_f, T_gas_f)
-        Fx_fr, Fy_fr = self.tire.compute_force(alpha_f, 0, Fz_f_r, T_surf_f, T_gas_f)
+        T_ribs_f = [T_in_f, T_mid_f, T_out_f]
+        Fx_fl, Fy_fl = self.tire.compute_force(alpha_f, 0, Fz_f_l, gamma_f, T_ribs_f, T_gas_f, vx)
+        Fx_fr, Fy_fr = self.tire.compute_force(alpha_f, 0, Fz_f_r, gamma_f, T_ribs_f, T_gas_f, vx)
         Fy_f_tot = Fy_fl + Fy_fr
         
         # Rear
-        Fx_rl, Fy_rl = self.tire.compute_force(alpha_r, 0, Fz_r_l, T_surf_r, T_gas_r)
-        Fx_rr, Fy_rr = self.tire.compute_force(alpha_r, 0, Fz_r_r, T_surf_r, T_gas_r)
+        T_ribs_r = [T_in_r, T_mid_r, T_out_r]
+        Fx_rl, Fy_rl = self.tire.compute_force(alpha_r, 0, Fz_r_l, gamma_r, T_ribs_r, T_gas_r, vx)
+        Fx_rr, Fy_rr = self.tire.compute_force(alpha_r, 0, Fz_r_r, gamma_r, T_ribs_r, T_gas_r, vx)
         Fy_r_tot = Fy_rl + Fy_rr
         
-        # 8. Thermal Dynamics (3-Node ODEs)
-        dt_core_f, dt_surf_f, dt_gas_f = self.tire.compute_thermal_dynamics(
-            0, Fy_f_tot/2, Fz_f_static, alpha_f, 0, vx, T_core_f, T_surf_f, T_gas_f
+        # 8. Thermal Dynamics (5-Node ODEs)
+        # Averages the left/right loads for a single generalized axle thermal state
+        dT_ribs_f, dt_core_f, dt_gas_f = self.tire.compute_thermal_dynamics(
+            0, Fy_f_tot/2, Fz_f_static, gamma_f, alpha_f, 0, vx, T_core_f, T_ribs_f, T_gas_f
         )
         
-        dt_core_r, dt_surf_r, dt_gas_r = self.tire.compute_thermal_dynamics(
-            0, Fy_r_tot/2, Fz_r_static, alpha_r, 0, vx, T_core_r, T_surf_r, T_gas_r
+        dT_ribs_r, dt_core_r, dt_gas_r = self.tire.compute_thermal_dynamics(
+            0, Fy_r_tot/2, Fz_r_static, gamma_r, alpha_r, 0, vx, T_core_r, T_ribs_r, T_gas_r
         )
 
         # 9. Equations of Motion (Body Frame - Bicycle approx)
@@ -106,22 +120,32 @@ class MultiBodyVehicle:
         
         # 10. Integration
         x_next = np.zeros_like(x)
-        x_next[0] = X + dt * (vx * np.cos(psi) - vy * np.sin(psi))
-        x_next[1] = Y + dt * (vx * np.sin(psi) + vy * np.cos(psi))
-        x_next[2] = psi + dt * r
-        x_next[3] = vx + dt * vx_dot
-        x_next[4] = vy + dt * vy_dot
-        x_next[5] = r + dt * r_dot
-        x_next[6] = delta + dt * d_delta
+        x_next[0:7] = [
+            X + dt * (vx * np.cos(psi) - vy * np.sin(psi)),
+            Y + dt * (vx * np.sin(psi) + vy * np.cos(psi)),
+            psi + dt * r,
+            vx + dt * vx_dot,
+            vy + dt * vy_dot,
+            r + dt * r_dot,
+            delta + dt * d_delta
+        ]
         
         # Thermal Integration
-        x_next[7] = T_core_f + dt * dt_core_f
-        x_next[8] = T_surf_f + dt * dt_surf_f
-        x_next[9] = T_gas_f + dt * dt_gas_f
+        x_next[7:12] = [
+            T_core_f + dt * dt_core_f,
+            T_in_f   + dt * dT_ribs_f[0],
+            T_mid_f  + dt * dT_ribs_f[1],
+            T_out_f  + dt * dT_ribs_f[2],
+            T_gas_f  + dt * dt_gas_f
+        ]
         
-        x_next[10] = T_core_r + dt * dt_core_r
-        x_next[11] = T_surf_r + dt * dt_surf_r
-        x_next[12] = T_gas_r + dt * dt_gas_r
+        x_next[12:17] = [
+            T_core_r + dt * dt_core_r,
+            T_in_r   + dt * dT_ribs_r[0],
+            T_mid_r  + dt * dT_ribs_r[1],
+            T_out_r  + dt * dT_ribs_r[2],
+            T_gas_r  + dt * dt_gas_r
+        ]
         
         return x_next
 
@@ -138,43 +162,29 @@ class DynamicBicycleModel:
         """
         Returns a CasADi function: f_dyn(state, control, curvature) -> derivatives
         """
-        # Symbols for mechanical states
-        n = ca.MX.sym('n')
-        alpha = ca.MX.sym('alpha') 
-        v = ca.MX.sym('v')
-        delta = ca.MX.sym('delta')
-        r = ca.MX.sym('r')
-        
+        n, alpha, v, delta, r = [ca.MX.sym(name) for name in ['n', 'alpha', 'v', 'delta', 'r']]
         x_mech = ca.vertcat(n, alpha, v, delta, r)
         
-        # Control
-        u_d_delta = ca.MX.sym('u_d_delta')
-        u_fx = ca.MX.sym('u_fx')
+        u_d_delta, u_fx = ca.MX.sym('u_d_delta'), ca.MX.sym('u_fx')
         u = ca.vertcat(u_d_delta, u_fx)
-        
-        # Curvature
         k_c = ca.MX.sym('k_c') 
         
-        # Parameters
         m, Iz = self.vp['m'], self.vp['Iz']
         lf, lr = self.vp['lf'], self.vp['lr']
         
-        # Vertical Loads
         rho, A, Cl = 1.225, self.vp['A'], self.vp['Cl']
         Fz_aero = 0.5 * rho * Cl * A * v**2
         Fz_f = m * 9.81 * lr / (lf + lr) + Fz_aero/2
         Fz_r = m * 9.81 * lf / (lf + lr) + Fz_aero/2
         
-        # Slip Angles
         alpha_f = delta - (alpha + lf*r/v)
         alpha_r = - (alpha - lr*r/v)
         
-        # Decoupled Thermal Assumptions for the Mechanical OCP Phase
-        # We assume optimal grip temp (90.0) and optimal hot inflation pressure (60.0)
-        Fx_f, Fy_f = self.tire.compute_force(alpha_f, 0, Fz_f, T_surf=90.0, T_gas=60.0)
-        Fx_r, Fy_r = self.tire.compute_force(alpha_r, 0, Fz_r, T_surf=90.0, T_gas=60.0)
+        # Mechanical phase uses dummy neutral 5-Node thermal assumptions
+        T_ribs_dummy = [90.0, 90.0, 90.0]
+        Fx_f, Fy_f = self.tire.compute_force(alpha_f, 0, Fz_f, -1.5, T_ribs_dummy, 60.0, v)
+        Fx_r, Fy_r = self.tire.compute_force(alpha_r, 0, Fz_r, -1.0, T_ribs_dummy, 60.0, v)
         
-        # Derivatives (Spatial -> Time mapping)
         n_dot = v * ca.sin(alpha)
         alpha_dot = ((Fy_f * ca.cos(delta) + Fy_r) / m - v * r) / v
         v_dot = u_fx / m
@@ -182,5 +192,4 @@ class DynamicBicycleModel:
         delta_dot = u_d_delta
         
         rhs = ca.vertcat(n_dot, alpha_dot, v_dot, delta_dot, r_dot)
-        
         return ca.Function('f_dyn', [x_mech, u, k_c], [rhs])

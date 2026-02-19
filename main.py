@@ -14,7 +14,7 @@ try:
     from telemetry.log_ingestion import LogIngestion
     from telemetry.track_generator import TrackGenerator
     from optimization.ocp_solver import OptimalLapSolver
-    from optimization.evolutionary import SetupOptimizer  # <-- The New SOTA AI
+    from optimization.evolutionary import MultiFidelitySetupOptimizer  # <-- The SOTA AI
 except ImportError as e:
     print(f"[Critical Error] Module import failed: {e}")
     sys.exit(1)
@@ -45,9 +45,9 @@ def generate_synthetic_track():
     }
 
 def run_ocp_pipeline(track_data):
-    """Executes the Optimal Control Problem."""
+    """Executes the Optimal Control Problem (acados 10-State Multi-Rib)."""
     print("\n" + "="*50)
-    print("PHASE 1: GHOST CAR GENERATION (OCP)")
+    print("PHASE 1: GHOST CAR GENERATION (acados OCP)")
     print("="*50)
     
     solver = OptimalLapSolver()
@@ -76,14 +76,14 @@ def run_ocp_pipeline(track_data):
         print(f"[OCP] Crash: {e}")
 
 def run_optimization_pipeline():
-    """Executes the Surrogate-Assisted Multi-Fidelity Setup Optimization."""
+    """Executes the BoTorch Multi-Fidelity Setup Optimization."""
     print("\n" + "="*50)
-    print("PHASE 2: SETUP OPTIMIZATION (Multi-Fidelity Co-Kriging & NSGA-II)")
+    print("PHASE 2: SETUP OPTIMIZATION (BoTorch MF-HVKG)")
     print("="*50)
     
     # Instantiate the new SOTA optimizer
-    opt = SetupOptimizer(pop_size=100, generations=50)
-    final_pop, final_obj = opt.run()
+    opt = MultiFidelitySetupOptimizer()
+    final_pop, final_obj = opt.run(n_iterations=20)
     
     # Convert Pareto Front results to DataFrame
     df = pd.DataFrame(final_pop)
@@ -91,31 +91,32 @@ def run_optimization_pipeline():
     df['Stability_Overshoot'] = final_obj[:, 1]
     
     # Identify the extreme ends of the Pareto Front for the user
-    best_grip = df.sort_values('Lat_G_Score', ascending=True).head(5)
+    # Note: BoTorch maximized Grip (so higher is better) and we reverted Overshoot to positive (lower is better)
+    best_grip = df.sort_values('Lat_G_Score', ascending=False).head(5)
     best_stable = df.sort_values('Stability_Overshoot', ascending=True).head(5)
     
     print("\n[Results] Best Grip Configurations (Max Cornering):")
-    print(best_grip[['Lat_G_Score', 'Stability_Overshoot', 'k_f', 'k_r', 'arb_f', 'arb_r', 'h_cg']].to_string(index=False))
+    print(best_grip[['Lat_G_Score', 'Stability_Overshoot', 'k_f', 'k_r', 'arb_f', 'arb_r', 'c_f', 'c_r', 'h_cg']].to_string(index=False))
     
     print("\n[Results] Best Stability Configurations (Zero Overshoot):")
-    print(best_stable[['Lat_G_Score', 'Stability_Overshoot', 'k_f', 'k_r', 'arb_f', 'arb_r', 'h_cg']].to_string(index=False))
+    print(best_stable[['Lat_G_Score', 'Stability_Overshoot', 'k_f', 'k_r', 'arb_f', 'arb_r', 'c_f', 'c_r', 'h_cg']].to_string(index=False))
     
     # Save Full Pareto Front
     out_file = os.path.join(current_dir, 'optimization_results.csv')
     df.to_csv(out_file, index=False)
     print(f"\n[Main] Full Pareto Front saved to {out_file}")
 
-
 def main():
-    parser = argparse.ArgumentParser(description="Project-GP Digital Twin Engine")
+    parser = argparse.ArgumentParser(description="Project-GP Digital Twin Engine (SOTA Edition)")
     parser.add_argument('--mode', type=str, default='all', choices=['ocp', 'opt', 'all'])
     parser.add_argument('--log', type=str, default=None)
     args = parser.parse_args()
 
-    # 1. Track Prep
+    # 1. Track Prep & Ghost Car
     track_data = None
     if args.mode in ['ocp', 'all']:
         if args.log:
+            print("\n[Main] Executing FGO iSAM2 Telemetry Ingestion & C4 B-Spline Generation...")
             ingestor = LogIngestion(args.log)
             df = ingestor.process()
             gen = TrackGenerator(df)
@@ -125,11 +126,11 @@ def main():
             
         run_ocp_pipeline(track_data)
 
-    # 2. Optimization
+    # 2. Setup Optimization
     if args.mode in ['opt', 'all']:
         run_optimization_pipeline()
         
-    print("\n[Main] Full Execution Complete.")
+    print("\n[Main] Full SOTA Execution Complete.")
 
 if __name__ == "__main__":
     main()

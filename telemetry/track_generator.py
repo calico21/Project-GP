@@ -1,21 +1,21 @@
 import numpy as np
 import pandas as pd
-from scipy.interpolate import interp1d
-from scipy.signal import find_peaks, savgol_filter
+from scipy.interpolate import splprep, splev
+from scipy.signal import find_peaks
 
 class TrackGenerator:
     """
     State-of-the-Art Track Generator.
-    Generates a G^2 Continuous Clothoid Spline (Euler Spirals) from telemetry.
-    Eliminates OCP solver jitter by enforcing piecewise-linear curvature.
+    Generates a Degree-5 Periodic Minimum-Curvature B-Spline from telemetry.
+    Provides exact algebraic coordinates for rapid OCP/acados evaluation.
     """
     def __init__(self, df_log):
         self.df = df_log
 
-    def generate(self, s_step=1.0, smoothing_s=5.0):
+    def generate(self, s_step=1.0, smoothing_s=2.0):
         """
         Input: DataFrame with ['x', 'y', 'v', 'time'].
-        Output: Dictionary with track definition.
+        Output: Dictionary with analytical track definition.
         """
         # 1. Validation
         if 'x' not in self.df.columns or 'y' not in self.df.columns:
@@ -63,68 +63,43 @@ class TrackGenerator:
                 x_filt.append(x_raw[i])
                 y_filt.append(y_raw[i])
         
-        x_filt.append(x_filt[0])
-        y_filt.append(y_filt[0])
+        # 5. CLOSED-FORM HIGH-DEGREE B-SPLINE GENERATION (The SOTA Upgrade)
+        # Degree 5 (k=5) ensures C4 continuity -> perfectly smooth Curvature/Jerk
+        # per=True enforces perfect mathematical closure of the loop
         
-        # 5. G^2 CLOTHOID SPLINE GENERATION (The Upgrade)
-        # Instead of B-Splines, we enforce G2 continuity by calculating raw heading/curvature,
-        # forcing curvature to be piecewise linear, and reintegrating (Fresnel approach).
+        print(f"[TrackGen] Fitting Degree-5 Periodic B-Spline...")
+        tck, u = splprep([x_filt, y_filt], s=smoothing_s * len(x_filt), k=5, per=True)
         
-        x_f, y_f = np.array(x_filt), np.array(y_filt)
-        dx_f = np.diff(x_f, append=x_f[1])
-        dy_f = np.diff(y_f, append=y_f[1])
-        ds_f = np.sqrt(dx_f**2 + dy_f**2)
-        s_f = np.cumsum(ds_f) - ds_f[0]
-        
-        # Raw Heading and Curvature
-        psi_f = np.unwrap(np.arctan2(dy_f, dx_f))
-        dpsi_f = np.diff(psi_f, append=psi_f[1])
-        kappa_raw = dpsi_f / (ds_f + 1e-6)
-        
-        # Heavy Savitzky-Golay filter to smooth curvature and extract underlying Clothoid segments
-        window_length = min(21, len(kappa_raw) // 2 * 2 + 1)
-        kappa_smooth = savgol_filter(kappa_raw, window_length, polyorder=2)
-        
-        # 6. RESAMPLE & RE-INTEGRATE (Euler Spirals)
-        n_nodes = int(s_f[-1] / s_step)
+        # Determine number of nodes based on required spatial step
+        total_estimated_length = len(x_filt) * min_dist
+        n_nodes = int(total_estimated_length / s_step)
         if n_nodes < 10: n_nodes = 10
-        s_new = np.linspace(0, s_f[-1], n_nodes)
         
-        # Linear interpolation of smooth curvature creates explicit Clothoids (linear k(s))
-        kappa_interp = interp1d(s_f, kappa_smooth, kind='linear', fill_value='extrapolate')
-        k_new = kappa_interp(s_new)
+        # Parameterize over the standardized spline variable 'u' [0, 1]
+        u_new = np.linspace(0, 1.0, n_nodes)
         
-        # Forward Euler Integration of Curvature -> Heading -> X/Y
-        ds_step = s_new[1] - s_new[0]
-        psi_new = psi_f[0] + np.cumsum(k_new) * ds_step
+        # Evaluate exact X, Y coordinates
+        x_new, y_new = splev(u_new, tck)
         
-        x_new = np.zeros_like(s_new)
-        y_new = np.zeros_like(s_new)
-        x_new[0], y_new[0] = x_f[0], y_f[0]
+        # 6. EXACT ANALYTICAL KINEMATICS
+        # Calculate precise derivatives instead of using noisy cumulative sums
+        dx, dy = splev(u_new, tck, der=1)
+        ddx, ddy = splev(u_new, tck, der=2)
         
-        for i in range(1, n_nodes):
-            x_new[i] = x_new[i-1] + np.cos(psi_new[i]) * ds_step
-            y_new[i] = y_new[i-1] + np.sin(psi_new[i]) * ds_step
-            
-        # 7. CLOSED-LOOP DRIFT CORRECTION
-        # Because we integrated an approximation, the start and end points might not perfectly align.
-        # We apply a linear error correction distributed across the entire lap.
-        err_x = x_f[-1] - x_new[-1]
-        err_y = y_f[-1] - y_new[-1]
+        # Exact Heading
+        psi_final = np.unwrap(np.arctan2(dy, dx))
         
-        correction_factor = s_new / s_new[-1]
-        x_new = x_new + err_x * correction_factor
-        y_new = y_new + err_y * correction_factor
+        # Exact Analytical Curvature: k = (x'y'' - y'x'') / (x'^2 + y'^2)^(3/2)
+        k_new = (dx * ddy - dy * ddx) / ((dx**2 + dy**2)**(1.5) + 1e-8)
         
-        # Recalculate true heading after drift correction
-        dx_new = np.gradient(x_new, ds_step)
-        dy_new = np.gradient(y_new, ds_step)
-        psi_final = np.unwrap(np.arctan2(dy_new, dx_new))
+        # 7. TRUE ARCLENGTH (S) MAPPING
+        ds_segs = np.sqrt(np.diff(x_new)**2 + np.diff(y_new)**2)
+        s_new = np.concatenate(([0], np.cumsum(ds_segs)))
         
         w_left = np.full_like(s_new, 3.5)
         w_right = np.full_like(s_new, 3.5)
 
-        print(f"[TrackGen] G2 Clothoid Track Generated. Length: {s_new[-1]:.1f}m, Nodes: {len(s_new)}")
+        print(f"[TrackGen] B-Spline Geometry Ready. True Length: {s_new[-1]:.1f}m, Nodes: {len(s_new)}")
 
         return {
             's': s_new,
