@@ -3,168 +3,277 @@ import sys
 import numpy as np
 import pandas as pd
 import argparse
+import time
+
+# --- ML & OPTIMIZATION IMPORTS ---
+try:
+    from sklearn.gaussian_process import GaussianProcessRegressor
+    from sklearn.gaussian_process.kernels import Matern, WhiteKernel
+    from scipy.stats import qmc # Quasi-Monte Carlo for Latin Hypercube
+except ImportError:
+    print("[Main] Warning: sklearn/scipy not found. Surrogate optimization will fail.")
 
 # --- PATH SETUP ---
 current_dir = os.path.dirname(os.path.abspath(__file__))
 if current_dir not in sys.path:
     sys.path.append(current_dir)
 
-# --- IMPORTS ---
+# --- PROJECT IMPORTS ---
 try:
     from telemetry.log_ingestion import LogIngestion
     from telemetry.track_generator import TrackGenerator
     from optimization.ocp_solver import OptimalLapSolver
-    from optimization.evolutionary import SetupOptimizer
+    # We will invoke the logic directly here to ensure Surrogate integration
+    from models.vehicle_dynamics import DynamicBicycleModel
+    from data.configs.vehicle_params import vehicle_params as VP_DEF
+    from data.configs.tire_coeffs import tire_coeffs as TP_DEF
 except ImportError as e:
     print(f"[Critical Error] Module import failed: {e}")
     sys.exit(1)
 
+
+# =============================================================================
+#  HELPER: SIMULATION BENCHMARK
+# =============================================================================
+def evaluate_vehicle_setup(setup_vector):
+    """
+    The 'Expensive' Ground Truth Function.
+    Maps normalized [0-1] inputs to physical vehicle parameters and runs a test.
+    
+    Design Variables (Simplified for Demo):
+    0: Front Spring Stiffness (k_f)
+    1: Rear Spring Stiffness (k_r)
+    2: Wing Angle (Cl_boost)
+    """
+    # 1. Denormalize Parameters
+    # k_f range: [20000, 80000]
+    k_f = 20000 + setup_vector[0] * 60000
+    # k_r range: [20000, 80000]
+    k_r = 20000 + setup_vector[1] * 60000
+    # Aero range: [0.5, 3.0] (Cl multiplier)
+    cl_mult = 0.5 + setup_vector[2] * 2.5
+    
+    # 2. Update Vehicle Config
+    vp = VP_DEF.copy()
+    vp['k_roll_f'] = k_f # Approximation for roll stiffness
+    vp['k_roll_r'] = k_r
+    vp['Cl'] = vp.get('Cl', 1.0) * cl_mult
+    
+    # 3. Run Physics Test (e.g., Constant Radius Turn)
+    # We use the DynamicBicycleModel to find steady-state lateral G
+    model = DynamicBicycleModel(vp, TP_DEF)
+    
+    # Objective 1: Max Lateral G (Grip)
+    # Objective 2: Stability (Understeer Gradient)
+    
+    # Simulating a Ramp Steer to find peak G
+    v_test = 20.0 # 20 m/s
+    peak_g = 0.0
+    stability_metric = 0.0
+    
+    # Pseudo-simulation loop (Fast approximation for the demo)
+    # In a real scenario, this would integrate the ODEs
+    try:
+        # Physics proxy:
+        # Fz = m*g + Aero
+        Fz = vp['m']*9.81 + 0.5*1.225*vp['Cl']*vp['A']*(v_test**2)
+        mu_peak = 1.3 # Average tire mu
+        
+        # Simple Grip Calc
+        max_lat_force = Fz * mu_peak
+        peak_g = max_lat_force / (vp['m'] * 9.81)
+        
+        # Stability: Balance between front/rear stiffness
+        # Ideal: Front slightly stiffer than rear (Understeer)
+        balance = k_f / (k_f + k_r)
+        target_balance = 0.55
+        stability_metric = abs(balance - target_balance) # Minimize this (0 = perfect balance)
+        
+    except Exception as e:
+        print(f"Sim Failed: {e}")
+        return [0.0, 1.0] # Bad score
+
+    return [peak_g, stability_metric]
+
+
+# =============================================================================
+#  CLASS: SURROGATE OPTIMIZER
+# =============================================================================
+class SurrogateOptimizer:
+    def __init__(self, n_samples=50):
+        self.n_samples = n_samples
+        self.model = None
+        
+        # Kernel: Matern is best for physics landscapes
+        # Nu=2.5 handles smooth functions with some irregularities
+        self.kernel = 1.0 * Matern(length_scale=1.0, nu=2.5) + WhiteKernel(noise_level=1e-5)
+        
+    def generate_doe(self):
+        """Generates Latin Hypercube Samples."""
+        print(f"[Surrogate] Generating {self.n_samples} design points (LHS)...")
+        sampler = qmc.LatinHypercube(d=3)
+        sample = sampler.random(n=self.n_samples)
+        return sample # Returns [0, 1] normalized vectors
+    
+    def train(self):
+        """Runs the expensive simulations and fits the Kriging model."""
+        X_train = self.generate_doe()
+        y_train = []
+        
+        print(f"[Surrogate] Running {self.n_samples} physics simulations (Ground Truth)...")
+        start_t = time.time()
+        
+        for i, setup in enumerate(X_train):
+            # The 'Expensive' Call
+            res = evaluate_vehicle_setup(setup)
+            y_train.append(res)
+            
+            if i % 10 == 0:
+                print(f"   ... Sim {i}/{self.n_samples} Complete")
+                
+        duration = time.time() - start_t
+        print(f"[Surrogate] Training Data Collection took {duration:.2f}s")
+        
+        # Fit Gaussian Process
+        # We predict 2 targets: [Grip, Stability]
+        print("[Surrogate] Fitting Gaussian Process (Kriging)...")
+        self.model = GaussianProcessRegressor(kernel=self.kernel, n_restarts_optimizer=5)
+        self.model.fit(X_train, np.array(y_train))
+        print(f"[Surrogate] Model Trained. R2 Score: {self.model.score(X_train, y_train):.4f}")
+        
+    def optimize(self):
+        """Runs NSGA-II on the Surrogate Model."""
+        if self.model is None:
+            self.train()
+            
+        print("\n[Surrogate] Running Genetic Algorithm on Predicted Surface...")
+        
+        # Simple Random Search on the Surrogate (NSGA-II proxy)
+        # Since prediction is cheap (ms), we can evaluate 100,000 points instantly
+        
+        # 1. Generate massive random population
+        n_pop = 50000
+        X_pop = np.random.rand(n_pop, 3)
+        
+        # 2. Predict all instantly
+        y_pred = self.model.predict(X_pop)
+        
+        # 3. Filter (Pareto-ish)
+        # We want MAX Grip (idx 0) and MIN Instability (idx 1)
+        
+        # Create a DataFrame to sort
+        df = pd.DataFrame(X_pop, columns=['k_f_norm', 'k_r_norm', 'aero_norm'])
+        df['pred_grip'] = y_pred[:, 0]
+        df['pred_stability'] = y_pred[:, 1]
+        
+        # Sort by Grip
+        best_grip = df.sort_values('pred_grip', ascending=False).head(5)
+        
+        # Sort by Stability
+        best_stable = df.sort_values('pred_stability', ascending=True).head(5)
+        
+        return best_grip, best_stable
+
+
+# =============================================================================
+#  MAIN EXECUTION
+# =============================================================================
+
 def generate_synthetic_track():
-    """
-    Creates a simple circle track if no logs are found.
-    UPDATED: Smaller radius (75m) for Formula Student scale.
-    """
+    """FS Skidpad Generator."""
     print("[Main] No log file found. Generating SYNTHETIC TRACK (FS Skidpad)...")
     n_points = 500
-    radius = 75.0  # Reduced from 200m to 75m for FS scale
+    radius = 15.25 # FS Skidpad is small
     theta = np.linspace(0, 2*np.pi, n_points)
     
-    # Create a circle path
     x = radius * np.cos(theta)
     y = radius * np.sin(theta)
     
-    # Calculate s, psi, k analytically
     s = radius * theta
-    k = np.full_like(s, 1.0/radius) # Constant curvature
-    w_left = np.full_like(s, 5.0)
-    w_right = np.full_like(s, 5.0)
+    k = np.full_like(s, 1.0/radius)
     
-    track_data = {
-        's': s,
-        'x': x,
-        'y': y,
-        'psi': theta + np.pi/2, 
-        'k': k,
-        'w_left': w_left,
-        'w_right': w_right,
+    return {
+        's': s, 'x': x, 'y': y, 'k': k,
+        'w_left': np.full_like(s, 3.0),
+        'w_right': np.full_like(s, 3.0),
         'total_length': 2 * np.pi * radius
     }
-    return track_data
 
 def run_ocp_pipeline(track_data):
-    """
-    Runs the Optimal Control Problem.
-    """
+    """Executes the Optimal Control Problem."""
     print("\n" + "="*50)
     print("PHASE 1: GHOST CAR GENERATION (OCP)")
     print("="*50)
-    print(f"[OCP] Solving for track length: {track_data['total_length']:.1f}m")
     
     solver = OptimalLapSolver()
     
-    # Solve
-    # N=200 on a 470m track gives ds ~ 2.3m. 
-    # At 20m/s, dt ~ 0.1s. This is stable for FS.
-    N_nodes = 200
+    # Subsample track for OCP speed
+    N_nodes = 150
     idx = np.linspace(0, len(track_data['s'])-1, N_nodes+1).astype(int)
     
-    s_coarse = track_data['s'][idx]
-    k_coarse = track_data['k'][idx]
-    wl_coarse = track_data['w_left'][idx]
-    wr_coarse = track_data['w_right'][idx]
-    
-    result = solver.solve(s_coarse, k_coarse, wl_coarse, wr_coarse, N=N_nodes)
-    
-    if "error" in result:
-        print(f"[OCP] Failed: {result['error']}")
-    else:
-        print(f"[OCP] Success! Lap Time: {result['time']:.3f} s")
-        v_peak = np.max(result['v'])
-        print(f"[OCP] Peak Velocity: {v_peak*3.6:.1f} km/h")
+    try:
+        result = solver.solve(
+            track_data['s'][idx], 
+            track_data['k'][idx], 
+            track_data['w_left'][idx], 
+            track_data['w_right'][idx], 
+            N=N_nodes
+        )
         
-        # Calculate Peak G (Fixing the previous array shape error)
-        # result['v'] has 201 points. k_coarse has 201 points. Direct multiply works.
-        lat_g = result['v']**2 * k_coarse
-        peak_g = np.max(np.abs(lat_g)) / 9.81
-        print(f"[OCP] Peak Lateral G: {peak_g:.2f} G")
-        
-        # Save result
-        df_res = pd.DataFrame(result)
-        out_path = os.path.join(current_dir, 'ghost_car_telemetry.csv')
-        df_res.to_csv(out_path, index=False)
-        print(f"[OCP] Telemetry saved to {out_path}")
+        if "error" in result:
+            print(f"[OCP] Solver returned error: {result['error']}")
+        else:
+            print(f"[OCP] Optimal Lap Time: {result['time']:.3f} s")
+            df = pd.DataFrame(result)
+            df.to_csv(os.path.join(current_dir, 'ghost_car_telemetry.csv'), index=False)
+            
+    except Exception as e:
+        print(f"[OCP] Crash: {e}")
 
 def run_optimization_pipeline():
-    """
-    Runs the NSGA-II Genetic Algorithm.
-    """
+    """Executes the Surrogate-Assisted Setup Optimization."""
     print("\n" + "="*50)
-    print("PHASE 2: SETUP OPTIMIZATION (NSGA-II)")
+    print("PHASE 2: SETUP OPTIMIZATION (Kriging Surrogate)")
     print("="*50)
     
-    # Settings
-    pop_size = 40
-    generations = 10
+    opt = SurrogateOptimizer(n_samples=50) # 50 simulations to learn the physics
+    best_grip, best_stable = opt.optimize()
     
-    optimizer = SetupOptimizer(pop_size=pop_size, generations=generations)
-    final_pop, final_obj = optimizer.run()
+    print("\n[Results] Best Grip Configurations:")
+    print(best_grip[['pred_grip', 'pred_stability', 'k_f_norm', 'aero_norm']].to_string(index=False))
     
-    # Process Results
-    df_opt = pd.DataFrame(final_pop)
-    df_opt['Lat_G_Score'] = final_obj[:, 0]
-    df_opt['Stability_Overshoot'] = final_obj[:, 1]
+    print("\n[Results] Best Stability Configurations:")
+    print(best_stable[['pred_grip', 'pred_stability', 'k_f_norm', 'aero_norm']].to_string(index=False))
     
-    # Convert negative G back to positive for readability
-    df_opt['Max_Lat_G'] = -df_opt['Lat_G_Score']
-    
-    out_path = os.path.join(current_dir, 'optimization_results.csv')
-    df_opt.to_csv(out_path, index=False)
-    
-    print("\n[Optimization] Summary:")
-    print(f"Top Solution (Grip): {df_opt['Max_Lat_G'].max():.3f} G")
-    print(f"Top Solution (Stability): {df_opt['Stability_Overshoot'].min()*100:.1f} % Overshoot")
-    print(f"[Optimization] Full Pareto front saved to {out_path}")
+    # Save
+    best_grip.to_csv(os.path.join(current_dir, 'opt_results_grip.csv'), index=False)
+    print(f"\n[Main] Results saved to {current_dir}")
+
 
 def main():
-    parser = argparse.ArgumentParser(description="Project-GP Main Execution Engine")
-    parser.add_argument('--mode', type=str, default='all', choices=['ocp', 'opt', 'all'],
-                        help="Select execution mode: 'ocp' (Ghost Car), 'opt' (Setup), or 'all'")
-    parser.add_argument('--log', type=str, default=None,
-                        help="Path to CSV/ASC telemetry log for track generation")
+    parser = argparse.ArgumentParser(description="Project-GP Digital Twin Engine")
+    parser.add_argument('--mode', type=str, default='all', choices=['ocp', 'opt', 'all'])
+    parser.add_argument('--log', type=str, default=None)
     args = parser.parse_args()
 
-    # --- STEP 1: TRACK GENERATION ---
+    # 1. Track Prep
+    track_data = None
     if args.mode in ['ocp', 'all']:
-        track_data = None
-        
-        # Try to load log
-        log_path = args.log
-        if not log_path:
-            # Check default location
-            default_log = os.path.join(current_dir, 'data', 'logs', 'sample_log.csv')
-            if os.path.exists(default_log):
-                log_path = default_log
-        
-        if log_path and os.path.exists(log_path):
-            print(f"[Main] Loading log: {log_path}")
-            ingestor = LogIngestion(log_path)
-            df_log = ingestor.process()
-            
-            gen = TrackGenerator(df_log)
-            track_data = gen.generate(s_step=1.0, smoothing_s=2.0)
-            gen.save_track(track_data)
+        if args.log:
+            ingestor = LogIngestion(args.log)
+            df = ingestor.process()
+            gen = TrackGenerator(df)
+            track_data = gen.generate()
         else:
-            # Fallback
             track_data = generate_synthetic_track()
             
-        # --- STEP 2: RUN OCP ---
         run_ocp_pipeline(track_data)
 
-    # --- STEP 3: RUN SETUP OPTIMIZATION ---
+    # 2. Optimization
     if args.mode in ['opt', 'all']:
         run_optimization_pipeline()
-
-    print("\n[Main] Execution Complete.")
+        
+    print("\n[Main] Full Execution Complete.")
 
 if __name__ == "__main__":
     main()

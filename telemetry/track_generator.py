@@ -1,119 +1,203 @@
 import numpy as np
 import pandas as pd
-from scipy.interpolate import splprep, splev
+from scipy.interpolate import interp1d
+from scipy.signal import find_peaks, savgol_filter
 
 class TrackGenerator:
     """
-    Converts raw GPS data (lat/lon) into a smooth path-coordinate track model.
-    Critical for the OCP solver, which requires continuous curvature derivatives.
+    State-of-the-Art Track Generator.
+    Generates a G^2 Continuous Clothoid Spline (Euler Spirals) from telemetry.
+    Eliminates OCP solver jitter by enforcing piecewise-linear curvature.
     """
     def __init__(self, df_log):
         self.df = df_log
-        
-    def generate(self, s_step=2.0, smoothing_s=1.0):
+
+    def generate(self, s_step=1.0, smoothing_s=5.0):
         """
-        Generates track model [s, x, y, psi, k]
-        
-        Args:
-            s_step: Distance between nodes [m] (Lower = more precision, slower OCP)
-            smoothing_s: Spline smoothing factor (Higher = smoother but less accurate to GPS)
+        Input: DataFrame with ['x', 'y', 'v', 'time'].
+        Output: Dictionary with track definition.
         """
-        # 1. Extract and Center Coordinates
-        # (Assuming df has 'x_m' and 'y_m' converted from Lat/Lon already)
-        if 'x_m' not in self.df.columns:
-            # Fallback if raw lat/lon
-            # Simple equirectangular projection (sufficient for race tracks)
-            R_earth = 6371000
-            lat0 = self.df['lat'].mean()
-            self.df['x_m'] = (self.df['lon'] - self.df['lon'].mean()) * (np.pi/180) * R_earth * np.cos(lat0 * np.pi/180)
-            self.df['y_m'] = (self.df['lat'] - self.df['lat'].mean()) * (np.pi/180) * R_earth
+        # 1. Validation
+        if 'x' not in self.df.columns or 'y' not in self.df.columns:
+            if 'lat' in self.df.columns:
+                print("[TrackGen] 'x'/'y' missing. Converting from 'lat'/'lon'...")
+                self._convert_gps_to_xy()
+            else:
+                raise ValueError("[TrackGenerator] Input dataframe missing 'x'/'y' columns.")
 
-        x_raw = self.df['x_m'].values
-        y_raw = self.df['y_m'].values
+        # 2. EXTRACT BEST LAP
+        df_lap = self._extract_fastest_lap(self.df)
         
-        # Close the loop explicitly for the spline
-        x_raw = np.append(x_raw, x_raw[0])
-        y_raw = np.append(y_raw, y_raw[0])
+        # 3. GEOMETRY CORRECTION (The True Distance Fix)
+        dt_lap = np.diff(df_lap['time'], prepend=df_lap['time'].iloc[0])
+        dt_lap[0] = 0.02 
+        
+        true_length = np.sum(df_lap['v'] * dt_lap)
+        
+        x_raw = df_lap['x'].values
+        y_raw = df_lap['y'].values
+        gps_dist_segs = np.sqrt(np.diff(x_raw)**2 + np.diff(y_raw)**2)
+        gps_length = np.sum(gps_dist_segs)
+        
+        print(f"[TrackGen] Correction Check:")
+        print(f"   > GPS Measured Length: {gps_length:.1f} m")
+        print(f"   > CAN Speed Integral:  {true_length:.1f} m")
+        
+        scale_factor = 1.0
+        if gps_length > 0:
+            scale_factor = true_length / gps_length
+            
+        if abs(scale_factor - 1.0) > 0.1:
+            print(f"[TrackGen] WARNING: Significant GPS scaling error detected.")
+            print(f"   > Applying Scale Factor: {scale_factor:.4f} to match physics.")
+            x_raw = (x_raw - x_raw[0]) * scale_factor + x_raw[0]
+            y_raw = (y_raw - y_raw[0]) * scale_factor + y_raw[0]
 
-        # 2. Fit Spline (B-Spline representation)
-        # k=3 (Cubic spline) ensures continuous 2nd derivative (Curvature)
-        # s=smoothing_s handles GPS noise
-        try:
-            tck, u = splprep([x_raw, y_raw], s=smoothing_s, k=3, per=True)
-        except Exception as e:
-            print(f"[TrackGen] Spline fit failed: {e}. Trying without periodic constraint...")
-            tck, u = splprep([x_raw, y_raw], s=smoothing_s, k=3, per=False)
+        # 4. SPATIAL DOWNSAMPLING
+        x_filt, y_filt = [x_raw[0]], [y_raw[0]]
+        min_dist = 2.0 
+        
+        for i in range(1, len(x_raw)):
+            dist = np.sqrt((x_raw[i] - x_filt[-1])**2 + (y_raw[i] - y_filt[-1])**2)
+            if dist >= min_dist:
+                x_filt.append(x_raw[i])
+                y_filt.append(y_raw[i])
+        
+        x_filt.append(x_filt[0])
+        y_filt.append(y_filt[0])
+        
+        # 5. G^2 CLOTHOID SPLINE GENERATION (The Upgrade)
+        # Instead of B-Splines, we enforce G2 continuity by calculating raw heading/curvature,
+        # forcing curvature to be piecewise linear, and reintegrating (Fresnel approach).
+        
+        x_f, y_f = np.array(x_filt), np.array(y_filt)
+        dx_f = np.diff(x_f, append=x_f[1])
+        dy_f = np.diff(y_f, append=y_f[1])
+        ds_f = np.sqrt(dx_f**2 + dy_f**2)
+        s_f = np.cumsum(ds_f) - ds_f[0]
+        
+        # Raw Heading and Curvature
+        psi_f = np.unwrap(np.arctan2(dy_f, dx_f))
+        dpsi_f = np.diff(psi_f, append=psi_f[1])
+        kappa_raw = dpsi_f / (ds_f + 1e-6)
+        
+        # Heavy Savitzky-Golay filter to smooth curvature and extract underlying Clothoid segments
+        window_length = min(21, len(kappa_raw) // 2 * 2 + 1)
+        kappa_smooth = savgol_filter(kappa_raw, window_length, polyorder=2)
+        
+        # 6. RESAMPLE & RE-INTEGRATE (Euler Spirals)
+        n_nodes = int(s_f[-1] / s_step)
+        if n_nodes < 10: n_nodes = 10
+        s_new = np.linspace(0, s_f[-1], n_nodes)
+        
+        # Linear interpolation of smooth curvature creates explicit Clothoids (linear k(s))
+        kappa_interp = interp1d(s_f, kappa_smooth, kind='linear', fill_value='extrapolate')
+        k_new = kappa_interp(s_new)
+        
+        # Forward Euler Integration of Curvature -> Heading -> X/Y
+        ds_step = s_new[1] - s_new[0]
+        psi_new = psi_f[0] + np.cumsum(k_new) * ds_step
+        
+        x_new = np.zeros_like(s_new)
+        y_new = np.zeros_like(s_new)
+        x_new[0], y_new[0] = x_f[0], y_f[0]
+        
+        for i in range(1, n_nodes):
+            x_new[i] = x_new[i-1] + np.cos(psi_new[i]) * ds_step
+            y_new[i] = y_new[i-1] + np.sin(psi_new[i]) * ds_step
+            
+        # 7. CLOSED-LOOP DRIFT CORRECTION
+        # Because we integrated an approximation, the start and end points might not perfectly align.
+        # We apply a linear error correction distributed across the entire lap.
+        err_x = x_f[-1] - x_new[-1]
+        err_y = y_f[-1] - y_new[-1]
+        
+        correction_factor = s_new / s_new[-1]
+        x_new = x_new + err_x * correction_factor
+        y_new = y_new + err_y * correction_factor
+        
+        # Recalculate true heading after drift correction
+        dx_new = np.gradient(x_new, ds_step)
+        dy_new = np.gradient(y_new, ds_step)
+        psi_final = np.unwrap(np.arctan2(dy_new, dx_new))
+        
+        w_left = np.full_like(s_new, 3.5)
+        w_right = np.full_like(s_new, 3.5)
 
-        # 3. Resample at fixed distance intervals
-        # First, evaluate at high resolution to measure total length
-        u_fine = np.linspace(0, 1, 10000)
-        x_fine, y_fine = splev(u_fine, tck)
-        
-        # Calculate cumulative distance 's'
-        dx = np.diff(x_fine)
-        dy = np.diff(y_fine)
-        ds = np.sqrt(dx**2 + dy**2)
-        total_length = np.sum(ds)
-        
-        # Create evaluation points based on desired s_step
-        n_nodes = int(total_length / s_step)
-        u_new = np.linspace(0, 1, n_nodes)
-        
-        # 4. Evaluate Spline and Derivatives
-        # der=0 -> Position (x, y)
-        x_smooth, y_smooth = splev(u_new, tck)
-        
-        # der=1 -> Velocity vector (dx/du, dy/du) -> Heading
-        dx_du, dy_du = splev(u_new, tck, der=1)
-        psi = np.arctan2(dy_du, dx_du)
-        
-        # der=2 -> Acceleration vector -> Curvature
-        ddx_du, ddy_du = splev(u_new, tck, der=2)
-        
-        # Curvature formula: k = (x'y'' - y'x'') / (x'^2 + y'^2)^(3/2)
-        # This is the "Analytical Curvature" (Noise free!)
-        num = dx_du * ddy_du - dy_du * ddx_du
-        den = (dx_du**2 + dy_du**2)**1.5
-        curvature = num / (den + 1e-6) # Avoid div/0
+        print(f"[TrackGen] G2 Clothoid Track Generated. Length: {s_new[-1]:.1f}m, Nodes: {len(s_new)}")
 
-        # Calculate exact 's' for these nodes
-        s_array = np.zeros(n_nodes)
-        # We integrate the actual spline distance roughly
-        # For OCP, s must be strictly increasing.
-        # We approximate it by scaling u_new by total_length
-        # (A simplified arc-length parameterization)
-        s_array = u_new * total_length
-
-        # 5. Track Width (Simple estimation)
-        # In a real tool, you would extract this from left/right boundary GPS
-        # Here we assume constant 10m width
-        w_left = np.full(n_nodes, 5.0)
-        w_right = np.full(n_nodes, 5.0)
-
-        # 6. Format Output
-        track_data = {
-            's': s_array,
-            'x': x_smooth,
-            'y': y_smooth,
-            'psi': psi,
-            'k': curvature,
+        return {
+            's': s_new,
+            'x': x_new,
+            'y': y_new,
+            'psi': psi_final,
+            'k': k_new,
             'w_left': w_left,
             'w_right': w_right,
-            'total_length': total_length
+            'total_length': s_new[-1]
         }
+    
+    def _extract_fastest_lap(self, df):
+        """
+        Analyzes the trajectory to find loops and selects the fastest valid lap.
+        """
+        print("[TrackGen] Analyzing session for laps...")
         
-        print(f"[TrackGen] Track generated. Length: {total_length:.1f}m, Nodes: {n_nodes}")
-        return track_data
+        df = df[df['v'] > 1.0].reset_index(drop=True)
+        if len(df) < 100:
+            return df
+            
+        points = df[['x', 'y']].values
+        times = df['time'].values
+        
+        start_node = points[0]
+        dists = np.sqrt(np.sum((points - start_node)**2, axis=1))
+        
+        peaks, _ = find_peaks(-dists, height=-20.0, distance=200) 
+        
+        if len(peaks) < 2:
+            print("[TrackGen] No distinct laps found. Using full path.")
+            return df
+            
+        print(f"[TrackGen] Found {len(peaks)-1} potential laps.")
+        
+        best_lap_idx = -1
+        min_lap_time = float('inf')
+        
+        for i in range(len(peaks) - 1):
+            idx_start = peaks[i]
+            idx_end = peaks[i+1]
+            
+            lap_time = times[idx_end] - times[idx_start]
+            
+            if lap_time < 4.0: 
+                continue
+                
+            if lap_time < min_lap_time:
+                min_lap_time = lap_time
+                best_lap_idx = i
+                
+        if best_lap_idx != -1:
+            idx_s = peaks[best_lap_idx]
+            idx_e = peaks[best_lap_idx+1]
+            print(f"[TrackGen] Selected Lap {best_lap_idx+1} (Time: {min_lap_time:.2f}s) as Reference.")
+            return df.iloc[idx_s:idx_e].copy()
+        else:
+            print("[TrackGen] No valid laps found. Using full path.")
+            return df
 
-    def save_track(self, track_data, filename="track_model.csv"):
-        df = pd.DataFrame({
-            's': track_data['s'],
-            'x': track_data['x'],
-            'y': track_data['y'],
-            'psi': track_data['psi'],
-            'k': track_data['k'],
-            'w_left': track_data['w_left'],
-            'w_right': track_data['w_right']
-        })
-        df.to_csv(filename, index=False)
-        print(f"[TrackGen] Saved to {filename}")
+    def _convert_gps_to_xy(self):
+        lat0 = self.df['lat'].mean()
+        lon0 = self.df['lon'].mean()
+        R_earth = 6378137.0
+        
+        def to_xy(row):
+            dlat = np.deg2rad(row['lat'] - lat0)
+            dlon = np.deg2rad(row['lon'] - lon0)
+            x = R_earth * dlon * np.cos(np.deg2rad(lat0))
+            y = R_earth * dlat
+            return x, y
+            
+        coords = self.df.apply(to_xy, axis=1)
+        self.df['x'] = [c[0] for c in coords]
+        self.df['y'] = [c[1] for c in coords]

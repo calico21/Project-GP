@@ -1,0 +1,8 @@
+& "C:\Users\alexr\AppData\Local\Programs\Python\Python310\python.exe" "c:\Users\alexr\Desktop\Ter26\Ter26 Carmaker\FS_Driver_Setup_Optimizer\main.py" --log "C:\Users\alexr\Desktop\Ter26\Ter26 Carmaker\FS_Driver_Setup_Optimizer\data\logs\20250816_185811.asc"
+
+git reset --soft HEAD~1
+git rm --cached data/logs/20250816_185811.asc
+echo "data/logs/*.asc" >> .gitignore
+git add .
+git commit -m "1.0 - code updates (ignoring large logs)"
+git push
