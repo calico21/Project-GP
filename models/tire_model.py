@@ -104,17 +104,15 @@ class PacejkaTire:
         lambda_mu_x = (1.0 - 0.08 * d_fz) * pressure_modifier
         
         # 4. Asymmetric Thermal Sensitivity (Camber Driven)
-        # Heavily loaded ribs dictate grip more than lightly loaded ribs
         Fz_in  = Fz * (0.333 + 0.15 * gamma)
         Fz_mid = Fz * 0.334
         Fz_out = Fz * (0.333 - 0.15 * gamma)
         
-        T_eff = (T_surf_in * Fz_in + T_surf_mid * Fz_mid + T_surf_out * Fz_out) / Fz
+        # Added +1e-6 to prevent division by zero during acados initialization
+        T_eff = (T_surf_in * Fz_in + T_surf_mid * Fz_mid + T_surf_out * Fz_out) / (Fz + 1e-6)
         therm_factor = _max(0.5, _min(1.0, 1.0 - 0.002 * (T_eff - self.T_opt)**2))
 
         # 5. PINN Transient Modulation
-        # Note: If running inside CasADi symbolic graph, PINN weights must be exported via PyTorch->CasADi 
-        # For simplicity in this hybrid script, we approximate a neutral forward pass if symbolic
         if self._is_symbolic(alpha):
             mu_x_mod, mu_y_mod = 1.0, 1.0
         else:
@@ -138,7 +136,9 @@ class PacejkaTire:
         5-Node Thermal ODEs with Asymmetric Heat Generation and Lateral Conduction.
         """
         if self._is_symbolic(Fx) or self._is_symbolic(alpha):
-            _abs, _tan = ca.sqrt(ca.SX.sym('x')**2 + 1e-6), ca.tan # Symbolic safe abs
+            # FIX: Properly defined lambda function for CasADi symbolic math
+            _abs = lambda x: ca.sqrt(x**2 + 1e-6)
+            _tan = ca.tan
         else:
             _abs, _tan = abs, np.tan
             

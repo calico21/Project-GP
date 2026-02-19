@@ -6,3 +6,16 @@ echo "data/logs/*.asc" >> .gitignore
 git add .
 git commit -m "1.0 - code updates (ignoring large logs)"
 git push
+
+
+
+
+# 1. Activate the AI Python environment
+source ~/project_gp_env/bin/activate
+
+# 2. Tell Linux where the compiled acados C-libraries are
+export ACADOS_SOURCE_DIR=~/acados
+export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:~/acados/lib
+
+# 3. Run the orchestrator
+python main.py --mode all

@@ -11,15 +11,15 @@ try:
     from botorch.models import SingleTaskMultiFidelityGP, ModelListGP
     from gpytorch.mlls import SumMarginalLogLikelihood
     from botorch.fit import fit_gpytorch_mll
-    from botorch.acquisition.multi_objective.monte_carlo import qNoisyExpectedHypervolumeImprovement
+    from botorch.acquisition.multi_objective.logei import qLogNoisyExpectedHypervolumeImprovement
     from botorch.acquisition.fixed_feature import FixedFeatureAcquisitionFunction
     from botorch.optim import optimize_acqf
     from botorch.utils.multi_objective.pareto import is_non_dominated
     from botorch.utils.sampling import draw_sobol_samples
     from botorch.models.transforms.input import Normalize
     from botorch.models.transforms.outcome import Standardize
-except ImportError:
-    print("[Error] BoTorch or GPyTorch missing. Please run: pip install botorch gpytorch")
+except ImportError as e:
+    print(f"[Error] BoTorch Import Failed: {e}")
     sys.exit(1)
 
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -48,19 +48,21 @@ class MultiFidelitySetupOptimizer:
     """
     def __init__(self):
         # Setup Parameter Bounds: [k_f, k_r, arb_f, arb_r, c_f, c_r, h_cg, fidelity]
-        # Fidelity dimension appended to the end (0.0 = Algebraic Proxy, 1.0 = 14-DOF Physics)
         self.bounds = torch.tensor([
             [15000., 15000., 0.,    0.,    1000., 1000., 0.25, 0.0],
             [60000., 60000., 2000., 1500., 5000., 5000., 0.35, 1.0]
         ], **tkwargs)
         
         self.var_keys = ['k_f', 'k_r', 'arb_f', 'arb_r', 'c_f', 'c_r', 'h_cg']
-        self.ref_point = torch.tensor([0.0, -5.0], **tkwargs) 
+        
+        # --- THE FIX: RELAXED REFERENCE POINT ---
+        # Adjusting the baseline so BoTorch doesn't prune valid transient setups
+        self.ref_point = torch.tensor([0.5, -2.0], **tkwargs) 
 
     def evaluate_algebraic_proxy(self, X_tensor):
         """
         LOW-FIDELITY EVALUATOR (fidelity = 0.0)
-        Vectorized steady-state calculation. Extremely cheap (evaluates thousands per second).
+        Vectorized steady-state calculation. Extremely cheap.
         """
         k_f, k_r = X_tensor[:, 0], X_tensor[:, 1]
         arb_f, arb_r = X_tensor[:, 2], X_tensor[:, 3]
@@ -69,14 +71,10 @@ class MultiFidelitySetupOptimizer:
 
         total_k_f = k_f + arb_f
         total_k_r = k_r + arb_r
-        
-        # Lateral Load Transfer Distribution (LLTD) -> Dictates balance
         lltd = total_k_f / (total_k_f + total_k_r)
         
-        # Proxy Grip: Lower CG is better. LLTD near 0.5 maximizes total axle grip.
         grip_proxy = 1.6 - 2.5 * (h_cg - 0.25) - 1.2 * torch.abs(lltd - 0.5)
         
-        # Proxy Stability: Higher damping reduces overshoot. Extreme LLTD causes instability.
         c_total = c_f + c_r
         overshoot_proxy = 0.8 - 0.00005 * c_total + 1.5 * torch.abs(lltd - 0.5)
         
@@ -93,16 +91,19 @@ class MultiFidelitySetupOptimizer:
             params = [x[0], x[1], x[2], x[3], x[4], x[5]]
             vehicle = MultiBodyVehicle(VP_DICT, TP_DICT)
             
-            dt, T_max = 0.005, 2.5
+            dt, T_max = 0.005, 3.0 # Extended slightly for the full slalom
             steps = int(T_max / dt)
-            x_curr = np.zeros(17) # Updated for 5-Node Tire States
+            x_curr = np.zeros(17) 
             x_curr[3] = 20.0 
             
             yaw_rates, lat_accels = [], []
             crashed = False
 
             for t in np.linspace(0, T_max, steps):
-                steer = 0.1 if t > 0.2 else 0.0
+                # --- THE FIX: DYNAMIC SLALOM MANEUVER ---
+                # A 1 Hz sine sweep violently shifts weight, forcing dampers and ARBs to work.
+                steer = 0.15 * np.sin(2.0 * np.pi * 1.0 * t) if t > 0.2 else 0.0
+                
                 try:
                     x_next = vehicle.simulate_step(x_curr, [steer, 0], params, dt=dt)
                     if not np.all(np.isfinite(x_next)): crashed = True; break
@@ -121,9 +122,10 @@ class MultiFidelitySetupOptimizer:
                 Y_list.append([0.0, -5.0]) 
                 continue
             
-            steady_ay = np.mean(lat_accels[-int(steps*0.2):])
-            f_score = abs(steady_ay) 
+            # Metric 1: Maximize average absolute lateral Gs during the slalom
+            f_score = np.mean(np.abs(lat_accels)) 
             
+            # Metric 2: Minimize overshoot/instability peak variance
             peak_yaw = np.max(np.abs(yaw_rates))
             steady_yaw = np.mean(np.abs(yaw_rates[-int(steps*0.2):]))
             overshoot = 0.0 if steady_yaw < 0.01 else (peak_yaw - steady_yaw) / steady_yaw
@@ -133,16 +135,15 @@ class MultiFidelitySetupOptimizer:
         return torch.tensor(Y_list, **tkwargs)
 
     def initialize_multifidelity_surrogate(self, n_lf=500, n_hf=10):
-        """Pre-maps the setup space using cheap physics, grounded by a few expensive solves."""
         print(f"\n[BoTorch] Phase 1: Co-Kriging Initialization...")
         print(f"   > Evaluating {n_lf} Low-Fidelity (Algebraic) Samples")
         train_X_lf = draw_sobol_samples(bounds=self.bounds, n=n_lf, q=1).squeeze(1)
-        train_X_lf[:, -1] = 0.0 # Force fidelity to 0.0
+        train_X_lf[:, -1] = 0.0
         train_Y_lf = self.evaluate_algebraic_proxy(train_X_lf)
 
         print(f"   > Evaluating {n_hf} High-Fidelity (14-DOF Thermal) Samples")
         train_X_hf = draw_sobol_samples(bounds=self.bounds, n=n_hf, q=1).squeeze(1)
-        train_X_hf[:, -1] = 1.0 # Force fidelity to 1.0
+        train_X_hf[:, -1] = 1.0 
         train_Y_hf = self.evaluate_physics(train_X_hf)
 
         train_X = torch.cat([train_X_lf, train_X_hf])
@@ -151,13 +152,12 @@ class MultiFidelitySetupOptimizer:
         return train_X, train_Y
 
     def build_model_list(self, train_X, train_Y):
-        """Constructs Auto-Regressive GPs specifying the 8th column as data_fidelity."""
         models = []
         for i in range(train_Y.shape[-1]):
             train_Y_i = train_Y[..., i:i+1]
             model = SingleTaskMultiFidelityGP(
                 train_X, train_Y_i,
-                data_fidelity=7, 
+                data_fidelities=[7], 
                 input_transform=Normalize(d=train_X.shape[-1]),
                 outcome_transform=Standardize(m=1)
             )
@@ -170,19 +170,18 @@ class MultiFidelitySetupOptimizer:
     def run(self, n_iterations=20):
         train_X, train_Y = self.initialize_multifidelity_surrogate()
         
-        print(f"\n[BoTorch] Phase 2: Hunting Target-Fidelity Pareto Front (qNEHVI)...")
+        print(f"\n[BoTorch] Phase 2: Hunting Target-Fidelity Pareto Front (qLogNEHVI)...")
         for iteration in range(n_iterations):
             model, mll = self.build_model_list(train_X, train_Y)
             fit_gpytorch_mll(mll)
             
-            acq_func = qNoisyExpectedHypervolumeImprovement(
+            acq_func = qLogNoisyExpectedHypervolumeImprovement(
                 model=model,
                 ref_point=self.ref_point,
-                X_baseline=train_X[train_X[:, -1] == 1.0], # Compare against HF baseline only
+                X_baseline=train_X[train_X[:, -1] == 1.0],
                 prune_baseline=True
             )
             
-            # Constrain the acquisition function to only explore the High-Fidelity surface
             fixed_acq_func = FixedFeatureAcquisitionFunction(
                 acq_function=acq_func,
                 d=8,
@@ -190,7 +189,6 @@ class MultiFidelitySetupOptimizer:
                 values=[1.0] 
             )
             
-            # Optimize over the 7 mechanical parameters
             candidates, _ = optimize_acqf(
                 acq_function=fixed_acq_func,
                 bounds=self.bounds[:, :-1], 
@@ -199,7 +197,6 @@ class MultiFidelitySetupOptimizer:
                 raw_samples=128,
             )
             
-            # Append fidelity = 1.0 back onto the candidate for evaluation
             new_X = torch.cat([candidates.detach(), torch.tensor([[1.0]], **tkwargs)], dim=-1)
             new_Y = self.evaluate_physics(new_X)
             
@@ -208,7 +205,6 @@ class MultiFidelitySetupOptimizer:
             train_X = torch.cat([train_X, new_X])
             train_Y = torch.cat([train_Y, new_Y])
 
-        # Filter strictly for High-Fidelity Pareto Optimal Setups
         hf_mask = train_X[:, -1] == 1.0
         hf_X, hf_Y = train_X[hf_mask], train_Y[hf_mask]
         
