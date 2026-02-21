@@ -4,133 +4,166 @@ import numpy as np
 import pandas as pd
 import argparse
 
+# --- JAX / XLA ENVIRONMENT SETUP ---
+os.environ['XLA_PYTHON_CLIENT_PREALLOCATE'] = 'false'
+os.environ['XLA_PYTHON_CLIENT_MEM_FRACTION'] = '0.7' 
+
+import jax
+import jax.numpy as jnp
+
 # --- PATH SETUP ---
 current_dir = os.path.dirname(os.path.abspath(__file__))
 if current_dir not in sys.path:
     sys.path.append(current_dir)
 
-# --- PROJECT IMPORTS ---
+# --- ADVANCED DIGITAL TWIN IMPORTS ---
 try:
+    # 1. Telemetry & Manifolds
     from telemetry.log_ingestion import LogIngestion
-    from telemetry.track_generator import TrackGenerator
-    from optimization.ocp_solver import OptimalLapSolver
-    from optimization.evolutionary import MultiFidelitySetupOptimizer  # <-- The SOTA AI
+    from telemetry.filtering import ContinuousTimeTrajectoryEstimator, SE3Manifold
+    from telemetry.track_generator import ContinuousManifoldTrackGenerator
+    
+    # 2. Optimal Control (The Final Diff-WMPC Upgrade)
+    from optimization.ocp_solver import DiffWMPCSolver
+    
+    # 3. AI Setup & Coaching (The Final MORL-DB / SB-TRPO Upgrade)
+    from optimization.evolutionary import MORL_SB_TRPO_Optimizer
+    from telemetry.driver_coaching import ActorCriticPolicyEvaluator
 except ImportError as e:
-    print(f"[Critical Error] Module import failed: {e}")
+    print(f"[Critical Error] Architecture Import Failed: {e}")
+    print("Ensure JAX, Flax, Optax, and Acados are properly installed in the WSL environment.")
     sys.exit(1)
 
 
 # =============================================================================
-#  MAIN EXECUTION
+#  MASTER EXECUTION PIPELINE
 # =============================================================================
 
-def generate_synthetic_track():
-    """FS Skidpad Generator."""
-    print("[Main] No log file found. Generating SYNTHETIC TRACK (FS Skidpad)...")
-    n_points = 500
-    radius = 15.25 # FS Skidpad is small
-    theta = np.linspace(0, 2*np.pi, n_points)
+def execute_continuous_telemetry_pipeline(log_path):
+    print("\n" + "="*60)
+    print("PHASE 1: CONTINUOUS SE(3) MANIFOLD & TRACK GENERATION")
+    print("="*60)
     
-    x = radius * np.cos(theta)
-    y = radius * np.sin(theta)
+    ingestor = LogIngestion(log_path)
+    df_raw = ingestor.process()
     
-    s = radius * theta
-    k = np.full_like(s, 1.0/radius)
+    gps_times = jnp.array(df_raw['time'].values)
+    gps_meas = jnp.array(df_raw[['x', 'y', 'z']].values)
     
-    return {
-        's': s, 'x': x, 'y': y, 'k': k,
-        'w_left': np.full_like(s, 3.0),
-        'w_right': np.full_like(s, 3.0),
-        'total_length': 2 * np.pi * radius
-    }
+    duration = float(gps_times[-1])
+    dt_knot = 0.5 
+    num_knots = int(duration / dt_knot) + 5
+    
+    estimator = ContinuousTimeTrajectoryEstimator(num_knots, dt_knot=dt_knot)
+    
+    initial_T = jnp.tile(jnp.eye(4), (num_knots, 1, 1))
+    initial_w = jnp.zeros((num_knots, 6))
+    
+    optimized_params = estimator.optimize_trajectory(initial_T, initial_w, gps_times, gps_meas, iterations=150)
+    
+    track_gen = ContinuousManifoldTrackGenerator(estimator, optimized_params)
+    track_data = track_gen.generate(s_step=1.0) 
+    
+    return track_data, df_raw
 
-def run_ocp_pipeline(track_data):
-    """Executes the Optimal Control Problem (acados 10-State Multi-Rib)."""
-    print("\n" + "="*50)
-    print("PHASE 1: GHOST CAR GENERATION (acados OCP)")
-    print("="*50)
+def execute_stochastic_ghost_car(track_data):
+    print("\n" + "="*60)
+    print("PHASE 2: DIFF-WMPC STOCHASTIC GHOST CAR")
+    print("="*60)
     
-    solver = OptimalLapSolver()
+    # Updated to the Diff-WMPC Solver
+    solver = DiffWMPCSolver()
     
-    # Subsample track for OCP speed
-    N_nodes = 150
+    N_nodes = min(300, len(track_data['s']) - 1)
     idx = np.linspace(0, len(track_data['s'])-1, N_nodes+1).astype(int)
     
     try:
         result = solver.solve(
-            track_data['s'][idx], 
-            track_data['k'][idx], 
-            track_data['w_left'][idx], 
-            track_data['w_right'][idx], 
-            N=N_nodes
+            track_s = track_data['s'][idx], 
+            track_k = track_data['k'][idx], 
+            track_w_left = track_data['w_left'][idx], 
+            track_w_right = track_data['w_right'][idx], 
+            friction_uncertainty_map = track_data['w_mu'][idx],
+            N = N_nodes
         )
         
         if "error" in result:
-            print(f"[OCP] Solver returned error: {result['error']}")
+            print(f"[Diff-WMPC] Solver Failed: {result['error']}")
+            return None
         else:
-            print(f"[OCP] Optimal Lap Time: {result['time']:.3f} s")
+            print(f"[Diff-WMPC] Nominal Lap Time: {result['time']:.3f} s")
             df = pd.DataFrame(result)
-            df.to_csv(os.path.join(current_dir, 'ghost_car_telemetry.csv'), index=False)
+            df.to_csv(os.path.join(current_dir, 'stochastic_ghost_car.csv'), index=False)
+            return df
             
     except Exception as e:
-        print(f"[OCP] Crash: {e}")
+        print(f"[Diff-WMPC] Critical Failure: {e}")
+        return None
 
-def run_optimization_pipeline():
-    """Executes the BoTorch Multi-Fidelity Setup Optimization."""
-    print("\n" + "="*50)
-    print("PHASE 2: SETUP OPTIMIZATION (BoTorch MF-HVKG)")
-    print("="*50)
+def execute_ai_coaching(df_human, df_ghost):
+    print("\n" + "="*60)
+    print("PHASE 3: AC-MPC DRIVER & VEHICLE ADAPTATION")
+    print("="*60)
     
-    # Instantiate the new SOTA optimizer
-    opt = MultiFidelitySetupOptimizer()
-    final_pop, final_obj = opt.run(n_iterations=20)
+    evaluator = ActorCriticPolicyEvaluator()
+    report_df = evaluator.analyze_continuous_policy(df_human, df_ghost.to_dict(orient='list'))
     
-    # Convert Pareto Front results to DataFrame
-    df = pd.DataFrame(final_pop)
-    df['Lat_G_Score'] = final_obj[:, 0]
-    df['Stability_Overshoot'] = final_obj[:, 1]
+    if not report_df.empty:
+        print("\n[AC-MPC] Critical Intervention Zones:")
+        print(report_df.sort_values('Critic_Advantage', ascending=True).head(5).to_string(index=False))
+        
+        out_file = os.path.join(current_dir, 'ac_mpc_coaching_report.csv')
+        report_df.to_csv(out_file, index=False)
+        print(f"\n[AC-MPC] Full compensation matrix saved to {out_file}")
+    else:
+        print("\n[AC-MPC] Driver policy aligns perfectly with Tube-MPC manifold.")
+
+def execute_morl_setup():
+    print("\n" + "="*60)
+    print("PHASE 4: DYNAMIC AI SETUP DISCOVERY (MORL-DB & SB-TRPO)")
+    print("="*60)
     
-    # Identify the extreme ends of the Pareto Front for the user
-    # Note: BoTorch maximized Grip (so higher is better) and we reverted Overshoot to positive (lower is better)
-    best_grip = df.sort_values('Lat_G_Score', ascending=False).head(5)
-    best_stable = df.sort_values('Stability_Overshoot', ascending=True).head(5)
+    # Updated to the new Reinforcement Learning Setup AI
+    optimizer = MORL_SB_TRPO_Optimizer(ensemble_size=20, dim=7)
+    pareto_setups, pareto_grips, pareto_stabs = optimizer.run(iterations=100)
     
-    print("\n[Results] Best Grip Configurations (Max Cornering):")
-    print(best_grip[['Lat_G_Score', 'Stability_Overshoot', 'k_f', 'k_r', 'arb_f', 'arb_r', 'c_f', 'c_r', 'h_cg']].to_string(index=False))
+    df = pd.DataFrame(pareto_setups, columns=optimizer.var_keys)
+    df['Lat_G_Score'] = pareto_grips
+    df['Stability_Overshoot'] = pareto_stabs
     
-    print("\n[Results] Best Stability Configurations (Zero Overshoot):")
-    print(best_stable[['Lat_G_Score', 'Stability_Overshoot', 'k_f', 'k_r', 'arb_f', 'arb_r', 'c_f', 'c_r', 'h_cg']].to_string(index=False))
+    print("\n[MORL-DB] Target-Fidelity Pareto Front Discovery Complete:")
+    print(df.sort_values('Lat_G_Score', ascending=False).to_string(index=False))
     
-    # Save Full Pareto Front
-    out_file = os.path.join(current_dir, 'optimization_results.csv')
+    out_file = os.path.join(current_dir, 'morl_pareto_front.csv')
     df.to_csv(out_file, index=False)
-    print(f"\n[Main] Full Pareto Front saved to {out_file}")
+    print(f"\n[Success] Full Pareto array saved to {out_file}")
 
 def main():
-    parser = argparse.ArgumentParser(description="Project-GP Digital Twin Engine (SOTA Edition)")
-    parser.add_argument('--mode', type=str, default='all', choices=['ocp', 'opt', 'all'])
-    parser.add_argument('--log', type=str, default=None)
+    parser = argparse.ArgumentParser(description="Project-GP: End-to-End Differentiable Digital Twin")
+    parser.add_argument('--mode', type=str, default='full', choices=['telemetry', 'ghost', 'coach', 'setup', 'full'])
+    parser.add_argument('--log', type=str, default=None, help="Path to raw telemetry ASC/CSV")
     args = parser.parse_args()
 
-    # 1. Track Prep & Ghost Car
     track_data = None
-    if args.mode in ['ocp', 'all']:
-        if args.log:
-            print("\n[Main] Executing FGO iSAM2 Telemetry Ingestion & C4 B-Spline Generation...")
-            ingestor = LogIngestion(args.log)
-            df = ingestor.process()
-            gen = TrackGenerator(df)
-            track_data = gen.generate()
-        else:
-            track_data = generate_synthetic_track()
-            
-        run_ocp_pipeline(track_data)
+    df_human = None
+    df_ghost = None
 
-    # 2. Setup Optimization
-    if args.mode in ['opt', 'all']:
-        run_optimization_pipeline()
+    if args.mode in ['telemetry', 'ghost', 'coach', 'full']:
+        if not args.log:
+            print("[Error] A telemetry log is required. Use --log <path>")
+            sys.exit(1)
+        track_data, df_human = execute_continuous_telemetry_pipeline(args.log)
+
+    if args.mode in ['ghost', 'coach', 'full'] and track_data is not None:
+        df_ghost = execute_stochastic_ghost_car(track_data)
+
+    if args.mode in ['coach', 'full'] and df_human is not None and df_ghost is not None:
+        execute_ai_coaching(df_human, df_ghost)
+
+    if args.mode in ['setup', 'full']:
+        execute_morl_setup()
         
-    print("\n[Main] Full SOTA Execution Complete.")
+    print("\n[System] Project-GP Digital Twin Execution Concluded Successfully.")
 
 if __name__ == "__main__":
     main()
