@@ -17,7 +17,4 @@ source ~/project_gp_env/bin/activate
 export ACADOS_SOURCE_DIR=~/acados
 export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:~/acados/lib
 
-# 3. Run the orchestrator
-python main.py --mode all
-
 python main.py --mode setup

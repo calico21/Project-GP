@@ -15,48 +15,44 @@ class TireOperatorNSDE:
     def __init__(self, key):
         k1, k2, k3, k4, k5 = jax.random.split(key, 5)
         
-        # 1. LFNO Factorized Spectral Weights
-        # We only keep the lowest frequency modes to prevent overfitting to noise
         self.modes = 3 
         self.dim_hidden = 16
         self.w_fourier = jax.random.normal(k1, (self.modes, self.dim_hidden), dtype=jnp.complex64) * 0.02
-        
-        # Spatial bypass connection (to preserve high-frequency localized state spikes)
         self.w_local = jax.random.normal(k2, (5, self.dim_hidden)) * jnp.sqrt(2.0 / 5)
         self.b_local = jnp.zeros(self.dim_hidden)
         
-        # Projection to NSDE Latent Space
         self.w_proj = jax.random.normal(k3, (self.dim_hidden, 32)) * jnp.sqrt(2.0 / self.dim_hidden)
         self.b_proj = jnp.zeros(32)
         
-        # 2. Neural SDE Heads
-        # Drift Network Head (Deterministic Grip Expectation)
-        self.w_drift = jax.random.normal(k4, (32, 2)) * jnp.sqrt(2.0 / 32)
+        # ZERO INITIALIZATION: Ensures grip modification starts at 0.0
+        self.w_drift = jnp.zeros((32, 2))
         self.b_drift = jnp.zeros(2)
         
-        # Diffusion Network Head (Stochastic Friction Uncertainty)
-        self.w_diff = jax.random.normal(k5, (32, 2)) * jnp.sqrt(2.0 / 32)
-        self.b_diff = jnp.zeros(2)
+        # Initialize diffusion to a very small positive baseline uncertainty
+        self.w_diff = jnp.zeros((32, 2))
+        self.b_diff = jnp.full(2, -3.0)
 
     def apply(self, state_tensor, stochastic_key=None):
         """
         Forward pass executing the factorized spectral mapping and NSDE splitting.
         """
         # --- LFNO CORE ---
-        # Transform the state into the frequency domain
+        # Transform the state into the frequency domain -> shape: (3,)
         x_ft = jnp.fft.rfft(state_tensor)
         
-        # Factorized Spectral Convolution (only operating on the lowest modes)
-        x_ft_truncated = x_ft[:self.modes]
-        out_ft_transformed = jnp.dot(x_ft_truncated, self.w_fourier)
+        # Factorized Spectral Convolution
+        # Expand dims to multiply each mode by its 16 hidden channel weights -> shape: (3, 16)
+        out_ft_transformed = x_ft[:self.modes, None] * self.w_fourier
         
-        # Pad back to match the inverse FFT resolution requirements
-        padded_ft = jnp.pad(out_ft_transformed, ((0, 4 - self.modes), (0, 0)))
-        x_spectral = jnp.fft.irfft(padded_ft, n=self.dim_hidden, axis=0) 
+        # Inverse FFT back to spatial domain. (n=5 reconstructs the 5 original spatial nodes)
+        # shape: (5, 16)
+        x_spectral = jnp.fft.irfft(out_ft_transformed, n=5, axis=0) 
         
         # Add local spatial bypass and activation
-        x_local = jnp.dot(state_tensor, self.w_local) + self.b_local
-        x_combined = jnp.tanh(jnp.sum(x_spectral, axis=0) + x_local)
+        x_local = jnp.dot(state_tensor, self.w_local) + self.b_local # shape: (16,)
+        
+        # Sum spectral features over spatial dimension and combine
+        x_combined = jnp.tanh(jnp.sum(x_spectral, axis=0) + x_local) # shape: (16,)
         
         # Latent projection
         latent = jnp.tanh(jnp.dot(x_combined, self.w_proj) + self.b_proj)
@@ -116,10 +112,6 @@ class PacejkaTire:
         return isinstance(var, (ca.SX, ca.MX))
 
     def compute_force(self, alpha, kappa, Fz, gamma, T_ribs, T_gas, Vx=15.0, stochastic_key=None):
-        """
-        Calculates tire forces. Seamlessly routes between CasADi (Ghost Car) 
-        and JAX (Stochastic RL Agents).
-        """
         is_sym = self._is_symbolic(alpha) or self._is_symbolic(Fz)
         
         if is_sym:
@@ -174,9 +166,6 @@ class PacejkaTire:
         return Fx, Fy
 
     def compute_thermal_dynamics(self, Fx, Fy, Fz, gamma, alpha, kappa, Vx, T_core, T_ribs, T_gas):
-        """
-        Differentiable 5-Node PDEs. Vectorized with JAX primitives.
-        """
         is_sym = self._is_symbolic(Fx) or self._is_symbolic(alpha)
         
         if is_sym:
