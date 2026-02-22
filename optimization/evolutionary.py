@@ -180,16 +180,26 @@ class MORL_SB_TRPO_Optimizer:
             stab_np = np.nan_to_num(stabs, nan=-999.0)
             pareto_indices = self.get_non_dominated_indices(grip_np, stab_np)
             
-            # Generate next generation: mutate elites
+            # --- FIX: PREVENT POPULATION STAGNATION ---
+            # Force exploration by keeping a maximum of 50% of the population as unchanged "elites"
+            # (Ensures at least 1 elite survives to prevent random randint(0) errors)
+            num_elites = max(1, min(len(pareto_indices), self.ensemble_size // 2))
+            
+            # Sort the pareto indices by Grip score so we always keep the highest performers
+            elites = sorted(pareto_indices, key=lambda idx: grip_np[idx], reverse=True)[:num_elites]
+            
+            # Generate next generation: mutate from elites
             new_population = population.copy()
             for j in range(self.ensemble_size):
-                if j not in pareto_indices:
-                    parent_idx = pareto_indices[np.random.randint(len(pareto_indices))]
+                if j not in elites:
+                    parent_idx = elites[np.random.randint(len(elites))]
                     noise = np.random.randn(self.dim) * sigma
                     new_population[j] = np.clip(population[parent_idx] + noise, 0.0, 1.0)
             
             # Decay step size slowly
             sigma = max(sigma * 0.995, 0.02)
+            
+            # CRITICAL: Actually update the population for the next iteration
             population = new_population
             
             if i % 20 == 0:
