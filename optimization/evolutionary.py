@@ -11,6 +11,7 @@ from functools import partial
 from models.vehicle_dynamics import DifferentiableMultiBodyVehicle
 from data.configs.vehicle_params import vehicle_params as VP_DICT
 from data.configs.tire_coeffs import tire_coeffs as TP_DICT
+from optimization.objectives import compute_skidpad_objective, compute_frequency_response_objective
 
 class MORL_SB_TRPO_Optimizer:
     """
@@ -22,9 +23,10 @@ class MORL_SB_TRPO_Optimizer:
         self.ensemble_size = ensemble_size
         self.var_keys = ['k_f', 'k_r', 'arb_f', 'arb_r', 'c_f', 'c_r', 'h_cg']
         
+        # Dynamically reference VP_DICT to prevent mechanical impossibility
         self.raw_bounds = jnp.array([
-            [15000., 15000., 0.,    0.,    1000., 1000., 0.25],
-            [60000., 60000., 2000., 1500., 5000., 5000., 0.35]
+            [VP_DICT['min_spring'], VP_DICT['min_spring'], VP_DICT['min_arb'], VP_DICT['min_arb'], VP_DICT['min_damp'], VP_DICT['min_damp'], 0.25],
+            [VP_DICT['max_spring'], VP_DICT['max_spring'], VP_DICT['max_arb'], VP_DICT['max_arb'], VP_DICT['max_damp'], VP_DICT['max_damp'], 0.35]
         ])
         
         self.vehicle = DifferentiableMultiBodyVehicle(VP_DICT, TP_DICT)
@@ -47,50 +49,19 @@ class MORL_SB_TRPO_Optimizer:
         return self.raw_bounds[0] + x_norm * (self.raw_bounds[1] - self.raw_bounds[0])
 
     @partial(jax.jit, static_argnums=(0,))
-    def simulate_skidpad_jax(self, setup_norm):
+    def evaluate_setup_jax(self, setup_norm):
         params = self.unnormalize_setup(setup_norm)
 
-        # BPTT FIX: Reduced from 4.0s (800 steps) to 1.5s (300 steps).
-        # Full BPTT through 800 RK4 steps (3200 Jacobian products) causes gradient
-        # explosion by iteration 4 even with optimizer-level clipping, because
-        # clip_by_global_norm only fires AFTER JAX finishes the backward pass.
-        # 1.5s is sufficient to reach steady-state cornering at 12 m/s on a skidpad.
-        dt, T_max = 0.005, 1.5
-        steps = int(T_max / dt)  # 300 steps
+        # 1. Steady State Grip Evaluation
+        x_init_skidpad = jnp.zeros(46).at[14].set(12.0)
+        obj_grip, min_safety = compute_skidpad_objective(self.vehicle.simulate_step, params, x_init_skidpad)
         
-        x_init = jnp.zeros(38).at[14].set(12.0)
+        # 2. Transient Frequency Response Evaluation
+        x_init_freq = jnp.zeros(46).at[14].set(15.0)
+        resonance = compute_frequency_response_objective(self.vehicle.simulate_step, params, x_init_freq)
         
-        def step_fn(x, t):
-            steer = 0.16 * jnp.tanh(3.0 * jnp.sin(2.0 * jnp.pi * 0.25 * t))
-            
-            vx_error = 12.0 - x[14]
-            throttle_brake = 2500.0 * jnp.tanh(vx_error) 
-            
-            u = jnp.array([steer, throttle_brake])
-            x_next = self.vehicle.simulate_step(x, u, params, dt)
-            
-            vx = x_next[14]
-            yaw_rate = jnp.sqrt(x_next[19]**2 + 1e-6)
-            lat_g = jnp.sqrt((vx * x_next[19] / 9.81)**2 + 1e-6)
-            safety_margin = 3.0 - yaw_rate
-
-            # BPTT FIX (core): Apply stop_gradient to the scan carry (state).
-            # This implements truncated BPTT with a window of 1:
-            #   - Gradients still flow from setup_params → forces → instantaneous outputs
-            #     (lat_g, yaw_rate, safety_margin) at EVERY step. The optimizer sees
-            #     the full 300-step average of these signals.
-            #   - Gradients do NOT flow through state transitions (x_next → x_next+1),
-            #     which is where the 800-deep Jacobian chain was exploding.
-            # This is a valid approximation for setup optimization because we care about
-            # steady-state grip, not exact trajectory sensitivity.
-            return jax.lax.stop_gradient(x_next), (lat_g, yaw_rate, safety_margin)
-
-        t_array = jnp.linspace(0, T_max, steps)
-        _, (lat_gs, yaw_rates, safety_margins) = jax.lax.scan(step_fn, x_init, t_array)
-        
-        obj_grip = jnp.mean(lat_gs) 
-        obj_stability = -jnp.max(yaw_rates) 
-        min_safety = jnp.min(safety_margins) 
+        # Stability is the inverse of resonance (less resonant = more stable)
+        obj_stability = -resonance 
         return obj_grip, obj_stability, min_safety
 
     @partial(jax.jit, static_argnums=(0,))
@@ -101,7 +72,7 @@ class MORL_SB_TRPO_Optimizer:
         eps = jax.random.normal(key, mu.shape)
         setup_norm = jax.nn.sigmoid(mu + jnp.exp(log_std) * eps)
         
-        grip, stability, safety = self.simulate_skidpad_jax(setup_norm)
+        grip, stability, safety = self.evaluate_setup_jax(setup_norm)
         reward = omega * grip + (1.0 - omega) * stability
         
         safety_violation = jnp.clip(safety, -5.0, 0.0) 
@@ -134,6 +105,30 @@ class MORL_SB_TRPO_Optimizer:
                     is_efficient[i] = False
         return np.where(is_efficient)[0]
 
+    def compute_crowding_distance(self, objs):
+        """
+        NSGA-II Crowding Distance Implementation.
+        Assigns a distance metric to each point on the Pareto front to ensure
+        evolutionary crossover maintains a diverse spread of setups.
+        """
+        num_points = objs.shape[0]
+        distances = np.zeros(num_points)
+        if num_points <= 2:
+            return np.full(num_points, np.inf)
+
+        for m in range(objs.shape[1]):
+            sorted_indices = np.argsort(objs[:, m])
+            distances[sorted_indices[0]] = np.inf
+            distances[sorted_indices[-1]] = np.inf
+            
+            min_val = objs[sorted_indices[0], m]
+            max_val = objs[sorted_indices[-1], m]
+            scale = max_val - min_val if max_val != min_val else 1.0
+            
+            for i in range(1, num_points - 1):
+                distances[sorted_indices[i]] += (objs[sorted_indices[i+1], m] - objs[sorted_indices[i-1], m]) / scale
+        return distances
+
     def run(self, iterations=100):
         print("\n[MORL-DB] Initializing Pareto Policy Ensemble...")
         print("[SB-TRPO] Compiling 14-DOF Analytical Constraints and Physics Gradients via XLA...")
@@ -153,8 +148,6 @@ class MORL_SB_TRPO_Optimizer:
                 self.ensemble_params, old_params, self.omegas, opt_state, keys
             )
 
-            # NaN guard: if a gradient is somehow still NaN (e.g. from a degenerate
-            # policy sample), revert to old params rather than poisoning the ensemble.
             mu_grad_nan = jnp.any(jnp.isnan(grads['mu']))
             if mu_grad_nan:
                 print(f"   [WARNING i={i}] NaN gradient detected — skipping update, reverting params.")
@@ -164,7 +157,6 @@ class MORL_SB_TRPO_Optimizer:
             updates, opt_state = optimizer.update(grads, opt_state)
             new_params = optax.apply_updates(self.ensemble_params, updates)
             
-            # Archive valid, safe setups for UI telemetry rendering
             if i > 10 and i % 5 == 0:
                 current_setups_norm = jax.nn.sigmoid(self.ensemble_params['mu'])
                 current_setups_phys = np.array(jax.vmap(self.unnormalize_setup)(current_setups_norm))
@@ -181,9 +173,21 @@ class MORL_SB_TRPO_Optimizer:
                 pareto_indices = self.get_non_dominated_indices(grip_np, stab_np)
                 
                 if len(pareto_indices) > 0 and len(pareto_indices) < self.ensemble_size:
+                    
+                    # NSGA-II Diversity Maintenance
+                    pareto_objs = np.stack([grip_np[pareto_indices], stab_np[pareto_indices]], axis=1)
+                    crowding_dists = self.compute_crowding_distance(pareto_objs)
+                    
+                    # Convert distance to probability (favor less crowded regions)
+                    safe_dists = np.where(np.isinf(crowding_dists), np.max(np.nan_to_num(crowding_dists, nan=0.0)) * 2 + 1.0, crowding_dists)
+                    probs = safe_dists / np.sum(safe_dists) if np.sum(safe_dists) > 0 else np.ones(len(pareto_indices)) / len(pareto_indices)
+
                     for j in range(self.ensemble_size):
                         if j not in pareto_indices:
-                            elite_idx = np.random.choice(pareto_indices)
+                            # Sample parent based on crowding distance probability
+                            elite_local_idx = np.random.choice(len(pareto_indices), p=probs)
+                            elite_idx = pareto_indices[elite_local_idx]
+                            
                             mu_copy = np.array(new_params['mu'])
                             log_std_copy = np.array(new_params['log_std'])
                             mu_copy[j] = mu_copy[elite_idx]

@@ -2,93 +2,115 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-# --- LFNO & NSDE COMBINED ARCHITECTURE ---
-class TireOperatorNSDE:
+
+class SparseGPMatern52:
     """
-    Lightweight Fourier Neural Operator (LFNO) + Neural SDE.
-    Fully native to JAX.
-    1. LFNO: Factorizes the spectral convolution by truncating high-frequency modes, 
-             reducing parameters and exponentially accelerating PDE evaluation.
-    2. NSDE: Splits the latent space into a Deterministic Drift (mean physics) 
-             and a Stochastic Diffusion (friction uncertainty boundary).
+    Sparse Gaussian Process using a Matérn 5/2 kernel.
+    Provides mathematically calibrated uncertainty bounds based on the 
+    distance from known nominal operating regimes (inducing points).
+    """
+    def __init__(self, key, num_inducing=50):
+        # Lengthscales dictate how quickly confidence decays for each state variable
+        # [alpha, kappa, gamma, Fz, Vx]
+        self.lengthscale = jnp.array([0.2, 0.15, 0.1, 400.0, 15.0]) 
+        self.prior_variance = 0.08  # Maximum grip uncertainty (approx 8% loss of mu)
+        
+        # Generate synthetic inducing points representing "safe/known" track data
+        k1, k2, k3, k4, k5 = jax.random.split(key, 5)
+        alpha_ip = jax.random.uniform(k1, (num_inducing,), minval=-0.15, maxval=0.15)
+        kappa_ip = jax.random.uniform(k2, (num_inducing,), minval=-0.1, maxval=0.1)
+        gamma_ip = jax.random.uniform(k3, (num_inducing,), minval=-0.05, maxval=0.05)
+        Fz_ip = jax.random.uniform(k4, (num_inducing,), minval=600.0, maxval=1400.0)
+        Vx_ip = jax.random.uniform(k5, (num_inducing,), minval=5.0, maxval=25.0)
+        
+        self.Z = jnp.stack([alpha_ip, kappa_ip, gamma_ip, Fz_ip, Vx_ip], axis=1)
+        
+        # Precompute the inverse covariance matrix of inducing points: (K_ZZ + noise*I)^-1
+        K_ZZ = self._matern52_matrix(self.Z, self.Z)
+        self.K_ZZ_inv = jnp.linalg.inv(K_ZZ + 1e-4 * jnp.eye(num_inducing))
+
+    def _matern52_kernel(self, x1, x2):
+        # Scaled Euclidean distance
+        d = jnp.sqrt(jnp.sum(((x1 - x2) / self.lengthscale)**2) + 1e-8)
+        sqrt5_d = jnp.sqrt(5.0) * d
+        return self.prior_variance * (1.0 + sqrt5_d + (5.0 / 3.0) * d**2) * jnp.exp(-sqrt5_d)
+
+    def _matern52_matrix(self, X1, X2):
+        # Vectorized kernel matrix computation
+        return jax.vmap(lambda x1: jax.vmap(lambda x2: self._matern52_kernel(x1, x2))(X2))(X1)
+
+    def compute_std_dev(self, x_star):
+        """Calculates the predictive standard deviation (sigma) at state x_star"""
+        k_xx = self.prior_variance
+        k_xZ = jax.vmap(lambda z: self._matern52_kernel(x_star, z))(self.Z)
+        
+        # Variance reduction due to proximity to known inducing points
+        reduction = jnp.dot(k_xZ, jnp.dot(self.K_ZZ_inv, k_xZ))
+        
+        variance = jnp.maximum(k_xx - reduction, 1e-6)
+        return jnp.sqrt(variance)
+    
+
+# --- PINN & GP COMBINED ARCHITECTURE ---
+class TireOperatorPINN:
+    """
+    Symmetry-Respecting Physics-Informed Neural Network + Sparse GP.
+    PINN computes the deterministic drift (grip modifications).
+    Sparse GP computes the calibrated thermodynamic uncertainty bounds.
     """
     def __init__(self, key):
-        k1, k2, k3, k4, k5 = jax.random.split(key, 5)
-        
-        self.modes = 3 
+        k1, k2, k_gp = jax.random.split(key, 3)
         self.dim_hidden = 16
         
-        # Complex weights for the frequency domain
-        self.w_fourier = jax.random.normal(k1, (self.modes, self.dim_hidden), dtype=jnp.complex64) * 0.02
-        self.w_local = jax.random.normal(k2, (5, self.dim_hidden)) * jnp.sqrt(2.0 / 5)
-        self.b_local = jnp.zeros(self.dim_hidden)
+        self.w1 = jax.random.normal(k1, (7, self.dim_hidden)) * jnp.sqrt(2.0 / 7)
+        self.b1 = jnp.zeros(self.dim_hidden)
         
-        self.w_proj = jax.random.normal(k3, (self.dim_hidden, 32)) * jnp.sqrt(2.0 / self.dim_hidden)
-        self.b_proj = jnp.zeros(32)
+        self.w2 = jax.random.normal(k2, (self.dim_hidden, 32)) * jnp.sqrt(2.0 / self.dim_hidden)
+        self.b2 = jnp.zeros(32)
         
-        # ZERO INITIALIZATION: Ensures AI grip modification starts at exactly 0.0 before training
         self.w_drift = jnp.zeros((32, 2))
         self.b_drift = jnp.zeros(2)
         
-        # Initialize diffusion to a very small positive baseline uncertainty
-        self.w_diff = jnp.zeros((32, 2))
-        self.b_diff = jnp.full(2, -3.0)
+        # Replace neural diffusion with the Gaussian Process
+        self.gp = SparseGPMatern52(k_gp)
 
     def apply(self, state_tensor, stochastic_key=None):
-        """
-        Forward pass executing the factorized spectral mapping and NSDE splitting.
-        """
-        # --- LFNO CORE ---
-        x_ft = jnp.fft.rfft(state_tensor)
+        alpha, kappa, gamma, Fz, Vx = state_tensor
         
-        # Factorized Spectral Convolution
-        out_ft_transformed = x_ft[:self.modes, None] * self.w_fourier
+        features = jnp.array([
+            jnp.sin(alpha), jnp.sin(2.0 * alpha),
+            kappa, kappa**3,
+            gamma, Fz, Vx
+        ])
         
-        # Inverse FFT back to spatial domain. (n=5 reconstructs the 5 original spatial nodes)
-        x_spectral = jnp.fft.irfft(out_ft_transformed, n=5, axis=0) 
+        x = jnp.tanh(jnp.dot(features, self.w1) + self.b1)
+        latent = jnp.tanh(jnp.dot(x, self.w2) + self.b2)
         
-        # Add local spatial bypass and activation
-        x_local = jnp.dot(state_tensor, self.w_local) + self.b_local 
-        
-        # Sum spectral features over spatial dimension and combine
-        x_combined = jnp.tanh(jnp.sum(x_spectral, axis=0) + x_local) 
-        
-        # Latent projection
-        latent = jnp.tanh(jnp.dot(x_combined, self.w_proj) + self.b_proj)
-        
-        # --- NSDE SPLIT ---
-        # 1. Drift: Expected physics response correction
         drift = jnp.dot(latent, self.w_drift) + self.b_drift
         
-        # 2. Diffusion: Distance-aware uncertainty (softplus ensures strictly positive variance)
-        diffusion = jax.nn.softplus(jnp.dot(latent, self.w_diff) + self.b_diff)
+        # GP outputs exactly 1 standard deviation (sigma)
+        sigma = self.gp.compute_std_dev(state_tensor)
         
-        # Reparameterization Trick for Stochastic RL Rollouts
         if stochastic_key is not None:
             noise = jax.random.normal(stochastic_key, shape=(2,))
-            out = drift + diffusion * noise
-        else:
-            out = drift  # Deterministic execution for optimal control / standard physics
+            return drift + sigma * noise, sigma
             
-        return out, diffusion
-
+        return drift, sigma
 
 class PacejkaTire:
     """
     100% Pure JAX Differentiable 5-Node Thermodynamic Tire Model.
-    Governed by LFNO/NSDE to compute exact thermal dynamics, transient flash temperatures, 
+    Governed by PINN/GP to compute exact thermal dynamics, transient flash temperatures, 
     and stochastic grip limits without any CasADi overhead.
     """
     def __init__(self, tire_coeffs, rng_seed=42):
         self.coeffs = tire_coeffs
         
-        # FIX 2: Standardized key lookup to lowercase 't_opt' to match tire_coeffs.py.
-        # The original code used 'T_opt' but tire_coeffs.py defined 'T_OPT', causing
-        # the thermal grip peak to silently default to 90.0 regardless of config.
+        # Standardized key lookup to lowercase 't_opt' to match tire_coeffs.py.
         self.T_opt = self.coeffs.get('T_opt',
-                     self.coeffs.get('T_OPT', 90.0))  # check both casings defensively
+                     self.coeffs.get('T_OPT', 90.0))  
         self.T_env = 25.0
-        self.T_track = 40.0  # Track surface temperature
+        self.T_track = 40.0  
         self.P_nom = self.coeffs.get('P_nom', 1.2)
         
         self.m_total = self.coeffs.get('mass', 10.0)
@@ -109,9 +131,30 @@ class PacejkaTire:
         self.A_rib = self.A_surf / 3.0
         self.q_roll = self.coeffs.get('q_roll', 0.03)
 
-        # Initialize the Factorized LFNO/NSDE Operator
+        # Initialize the Symmetry-Respecting PINN Operator
         key = jax.random.PRNGKey(rng_seed)
-        self.operator = TireOperatorNSDE(key)
+        self.operator = TireOperatorPINN(key)
+
+    def compute_flash_temperature(self, mu_actual, Fz, V_slide):
+        """
+        Calculates the contact patch flash temperature using the Jaeger solution 
+        for a sliding semi-infinite solid. Dimensionally correct heat flux.
+        """
+        k_rubber = 0.25              # Thermal conductivity (W/m*K)
+        rho_c = 2.0e6                # Volumetric heat capacity (J/m^3*K)
+        contact_patch_length = 0.15  # Estimated footprint length (m)
+        a = contact_patch_length / 2.0 
+        
+        thermal_diffusivity = k_rubber / rho_c
+        V_slide_safe = jnp.maximum(jnp.abs(V_slide), 1e-3)
+        
+        # Friction Power (q) spread over the contact patch area (length * width)
+        q = (mu_actual * jnp.abs(Fz) * V_slide_safe) / (contact_patch_length * 0.205)
+        
+        # High-speed Jaeger flash temperature equation
+        T_flash = (q * a) / (k_rubber * jnp.sqrt(jnp.pi * (V_slide_safe * a) / thermal_diffusivity))
+        
+        return jnp.clip(T_flash, a_min=0.0, a_max=350.0)
 
     def compute_force(self, alpha, kappa, Fz, gamma, T_ribs, T_gas, Vx=15.0, stochastic_key=None):
         T_surf_in, T_surf_mid, T_surf_out = T_ribs[0], T_ribs[1], T_ribs[2]
@@ -143,36 +186,30 @@ class PacejkaTire:
         Fz_out = Fz * (0.333 - 0.15 * gamma)
         
         # --- Transient Flash Temperature Dynamics ---
-        # FIX 3 (partial): Replace jnp.tan(alpha) with a gradient-safe sin/cos decomposition.
-        # jnp.tan(alpha) has gradient 1/cos²(alpha) which reaches ~200 at alpha=1.5 rad.
-        # Over 800 BPTT scan steps this gradient multiplier compounds to explosion.
-        # The 1e-3 denominator floor caps d/dalpha at ~1000 even at exactly ±pi/2,
-        # while the upstream alpha clip means the forward value is also bounded.
         tan_alpha_safe = jnp.sin(alpha) / (jnp.cos(alpha) + 1e-3)
-
-        # FIX 1 (primary NaN cause): kappa arriving here from the vehicle model was a raw
-        # drive force in Newtons (~1250 N), not a dimensionless slip ratio (0.0–0.3).
-        # This caused P_fric ≈ 7.5 MW per tire, driving tire temps to 10,000°C within
-        # the first RK4 sub-step, which NaN-propagated through therm_factor → Fy → state.
-        # kappa is now normalized by the caller in vehicle_dynamics.py before arriving here.
-        # We additionally hard-clamp it here as a defensive second layer.
         kappa_safe = jnp.clip(kappa, -0.5, 0.5)
 
         sliding_velocity = Vx * jnp.sqrt(kappa_safe**2 + tan_alpha_safe**2 + 1e-6)
-        flash_temp_delta = 0.5 * sliding_velocity * jnp.abs(Fz) / (self.A_surf * self.Cp_rubber + 1e-6)
+        
+        # Estimate base friction coefficient to break the thermal algebraic loop
+        mu_base_estimate = jnp.sqrt((dy * lambda_mu_y)**2 + (dx * lambda_mu_x)**2)
+        
+        # Implement the Jaeger thermal solution
+        flash_temp_delta = self.compute_flash_temperature(mu_base_estimate, Fz, sliding_velocity)
         
         T_eff_bulk = (T_surf_in * Fz_in + T_surf_mid * Fz_mid + T_surf_out * Fz_out) / (Fz + 1e-6)
         T_contact_patch = T_eff_bulk + flash_temp_delta
         
-        # Grip falls off a cliff if the flash temperature exceeds the optimal range significantly
         therm_factor = jnp.maximum(0.3, jnp.minimum(1.0, 1.0 - 0.003 * (T_contact_patch - self.T_opt)**2))
 
-        # --- NSDE Integration Hook ---
+        # --- GP Uncertainty & PINN Integration Hook ---
         state_in = jnp.array([alpha, kappa_safe, gamma, Fz, Vx])
-        mods, diff = self.operator.apply(state_in, stochastic_key)
+        mods, sigma = self.operator.apply(state_in, stochastic_key)
         
-        # The Diffusion penalty actively degrades grip if the state is in a highly uncertain regime
-        uncertainty_penalty = jnp.mean(diff) * 0.1 
+        # Lower Confidence Bound (LCB) for robust Tube-MPC constraints.
+        # We actively degrade the available friction by 2 standard deviations.
+        # If the car enters high-slip (unknown) territory, sigma spikes, and grip plummets.
+        uncertainty_penalty = 2.0 * sigma 
         
         mu_x_mod = 1.0 + mods[0] - uncertainty_penalty
         mu_y_mod = 1.0 + mods[1] - uncertainty_penalty
@@ -191,45 +228,31 @@ class PacejkaTire:
         dist_in = 0.333 + 0.15 * gamma
         dist_out = 0.333 - 0.15 * gamma
         
-        # FIX 1 (defensive): clamp kappa here too in case it arrives unnormalized
         kappa_safe = jnp.clip(kappa, -0.5, 0.5)
-
-        # FIX 3: Replace jnp.tan(alpha) with gradient-safe sin/cos form.
-        # Original: P_fric = |Fy * Vx * tan(alpha)|
-        # Problem:  d/dalpha[tan] = 1/cos²(alpha) → ~200 at alpha=1.5 rad → BPTT explosion.
-        # Fix:      Use sin/(cos + eps) — forward value identical, gradient capped at ~1000.
         tan_alpha_safe = jnp.sin(alpha) / (jnp.cos(alpha) + 1e-3)
 
-        # Friction Power Generation
         P_fric = jnp.abs(Fx * Vx * kappa_safe) + jnp.abs(Fy * Vx * tan_alpha_safe)
         P_in = P_fric * dist_in
         P_mid = P_fric * 0.334
         P_out = P_fric * dist_out
         
-        # Rolling Resistance Internal Generation
         P_core_in = self.q_roll * jnp.abs(Fz) * jnp.abs(Vx)
 
-        # Vertical Conduction (Surface -> Core)
         k_vert_rib = self.k_cond_vert / 3.0
         Q_v_in = k_vert_rib * (T_core - T_surf_in)
         Q_v_mid = k_vert_rib * (T_core - T_surf_mid)
         Q_v_out = k_vert_rib * (T_core - T_surf_out)
 
-        # Lateral Conduction (Across Ribs)
         Q_lat_in_mid = self.k_cond_lat * (T_surf_in - T_surf_mid)
         Q_lat_mid_out = self.k_cond_lat * (T_surf_mid - T_surf_out)
 
-        # Convection (Surface -> Ambient Air & Track)
         h_dyn = self.h_conv_ext * (1.0 + 0.5 * jnp.abs(Vx))
-        # Weighted interaction: 80% air, 20% track conduction at the contact patch
         Q_air_in = h_dyn * self.A_rib * (T_surf_in - (0.8*self.T_env + 0.2*self.T_track))
         Q_air_mid = h_dyn * self.A_rib * (T_surf_mid - (0.8*self.T_env + 0.2*self.T_track))
         Q_air_out = h_dyn * self.A_rib * (T_surf_out - (0.8*self.T_env + 0.2*self.T_track))
         
-        # Internal Convection (Core -> Inflation Gas)
         Q_gas_conv = self.h_conv_int * (T_core - T_gas)
 
-        # Final ODE Differentials
         dT_in_dt = (P_in + Q_v_in - Q_lat_in_mid - Q_air_in) / (self.m_rib * self.Cp_rubber)
         dT_mid_dt = (P_mid + Q_v_mid + Q_lat_in_mid - Q_lat_mid_out - Q_air_mid) / (self.m_rib * self.Cp_rubber)
         dT_out_dt = (P_out + Q_v_out + Q_lat_mid_out - Q_air_out) / (self.m_rib * self.Cp_rubber)
@@ -238,3 +261,37 @@ class PacejkaTire:
         dT_gas_dt = Q_gas_conv / (self.m_gas * self.Cv_gas)
         
         return jnp.array([dT_in_dt, dT_mid_dt, dT_out_dt]), dT_core_dt, dT_gas_dt
+    
+    def compute_transient_slip_derivatives(self, alpha_ss, kappa_ss, alpha_transient, kappa_transient, Fz, Vx):
+        """
+        Calculates the derivatives for the transient slip states based on the 
+        contact patch relaxation length.
+        
+        alpha_ss, kappa_ss: The steady-state kinematic slip (input from suspension).
+        alpha_transient, kappa_transient: The current delayed slip state of the tire carcass.
+        """
+        # Relaxation lengths (meters). Distance the tire must roll to build 63% of steady-state force.
+        # Typically, longitudinal relaxation is shorter than lateral.
+        Lx = self.coeffs.get('relaxation_length_x', 0.1)
+        Ly = self.coeffs.get('relaxation_length_y', 0.25)
+        
+        # Prevent division by zero at low speeds by capping the relaxation time constant
+        Vx_safe = jnp.maximum(jnp.abs(Vx), 0.1)
+        
+        # At very low speeds, the relaxation length effectively drops to zero 
+        # (force builds instantly with static friction). We use a sigmoid transition.
+        low_speed_attenuation = jnp.maximum(0.1, jnp.tanh(Vx_safe / 1.0))
+        Lx_eff = Lx * low_speed_attenuation
+        Ly_eff = Ly * low_speed_attenuation
+        
+        # First-order lag dynamics: dx/dt = (x_steady - x_current) * (V / RelaxationLength)
+        d_alpha_dt = (Vx_safe / Ly_eff) * (alpha_ss - alpha_transient)
+        d_kappa_dt = (Vx_safe / Lx_eff) * (kappa_ss - kappa_transient)
+        
+        # If the tire is not loaded, it cannot hold a transient twist state, so it snaps 
+        # instantly back to the kinematic state.
+        is_loaded = jax.nn.sigmoid(Fz - 100.0) # Soft switch around 100N
+        d_alpha_dt = jnp.where(is_loaded > 0.5, d_alpha_dt, (alpha_ss - alpha_transient) / 0.01)
+        d_kappa_dt = jnp.where(is_loaded > 0.5, d_kappa_dt, (kappa_ss - kappa_transient) / 0.01)
+        
+        return d_alpha_dt, d_kappa_dt

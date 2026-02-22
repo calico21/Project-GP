@@ -88,6 +88,93 @@ class GhostCarEvaluator:
         deterministic_weights, _ = self.actor.apply(actor_p, state)
         return deterministic_weights
 
+    def infer_driver_intent_irl(self, state_matrix, optimal_actions, iterations=100):
+        """
+        Maximum Entropy Inverse RL (MaxEnt IRL).
+        Reverse-engineers the human driver's implicit cost weights by finding the 
+        MPC parameters that mathematically explain their observed telemetry errors.
+        """
+        print("[Ghost-Car AI] Executing MaxEnt IRL: Inferring driver's implicit MPC cost weights...")
+        
+        # Start with the optimal weights as the prior guess
+        inferred_actions = jnp.array(optimal_actions)
+        
+        import optax
+        optimizer = optax.adam(learning_rate=0.05)
+        opt_state = optimizer.init(inferred_actions)
+        
+        @jax.jit
+        def irl_step(actions, opt_st):
+            def loss_fn(act):
+                # Enforce strictly positive weights
+                valid_act = jax.nn.softplus(act)
+                
+                # 1. Critic Evaluation of the inferred human actions vs optimal
+                q_hum = jax.vmap(self.critic_1.apply, in_axes=(None, 0, 0))(self.critic_1_params, state_matrix, valid_act)
+                q_opt = jax.vmap(self.critic_1.apply, in_axes=(None, 0, 0))(self.critic_1_params, state_matrix, optimal_actions)
+                
+                # 2. Observed Physical Severity (The true empirical disadvantage)
+                # state_matrix: [err_v, err_n, err_yaw, ...]
+                # Heavily penalize lateral deviation (missing apex) and velocity deviation (overshooting)
+                physical_disadvantage = - (0.5 * state_matrix[:, 0]**2 + 2.0 * state_matrix[:, 1]**2)
+                physical_disadvantage = jnp.expand_dims(physical_disadvantage, axis=-1)
+                
+                # 3. IRL Objective: The predicted Q-value difference (Advantage) must match the physical reality.
+                # We also add a MaxEnt regularization term (L2 on the actions) to prevent weight explosion.
+                advantage_loss = jnp.mean(((q_hum - q_opt) - physical_disadvantage)**2)
+                entropy_reg = 0.01 * jnp.mean(valid_act**2)
+                
+                return advantage_loss + entropy_reg
+                
+            loss, grads = jax.value_and_grad(loss_fn)(actions)
+            updates, opt_st = optimizer.update(grads, opt_st)
+            return optax.apply_updates(actions, updates), opt_st, loss
+
+        for _ in range(iterations):
+            inferred_actions, opt_state, _ = irl_step(inferred_actions, opt_state)
+            
+        return jax.nn.softplus(inferred_actions)
+
+    def pre_train_critic(self, dict_stochastic_mpc, iterations=300):
+        """
+        Generates synthetic suboptimal rollouts to train the Q-Networks 
+        before analyzing real driver telemetry.
+        """
+        print("[Ghost-Car AI] Pre-training SoftQNetwork Critic on synthetic perturbations...")
+        
+        s_mpc = dict_stochastic_mpc['s']
+        v_mpc = dict_stochastic_mpc['v']
+        n_mpc = dict_stochastic_mpc['n']
+        
+        # Synthetic errors: Late braking (velocity overshoot), Apex miss (lateral error)
+        err_v = jnp.sin(s_mpc / 20.0) * 2.0 
+        err_n = jnp.cos(s_mpc / 30.0) * 0.5
+        
+        state_matrix = jnp.stack([err_v, err_n, jnp.zeros_like(s_mpc), jnp.zeros_like(s_mpc), jnp.ones_like(s_mpc)*1.4], axis=-1)
+        suboptimal_actions = jnp.tile(jnp.array([5e-2, 5e-7, 0.05]), (len(s_mpc), 1))
+        
+        # Target TD Reward: Estimated time lost due to synthetic velocity error
+        target_q = jnp.expand_dims(err_v * -0.1, axis=-1) 
+        
+        import optax
+        optimizer = optax.adam(learning_rate=1e-3)
+        opt_state_1 = optimizer.init(self.critic_1_params)
+        
+        @jax.jit
+        def train_step(c1_p, opt_st):
+            def loss_fn(p):
+                q_preds = jax.vmap(self.critic_1.apply, in_axes=(None, 0, 0))(p, state_matrix, suboptimal_actions)
+                return jnp.mean((q_preds - target_q)**2)
+            
+            loss, grads = jax.value_and_grad(loss_fn)(c1_p)
+            updates, opt_st = optimizer.update(grads, opt_st)
+            return optax.apply_updates(c1_p, updates), opt_st, loss
+
+        for i in range(iterations):
+            self.critic_1_params, opt_state_1, loss = train_step(self.critic_1_params, opt_state_1)
+            
+        print(f"[Ghost-Car AI] Pre-training complete. Final MSE Loss: {loss:.4f}")
+
     def evaluate_continuous_policy(self, df_human, dict_stochastic_mpc):
         """
         Generates the dynamic AC-MPC coaching report using fully vectorized JAX ops.
@@ -115,8 +202,9 @@ class GhostCarEvaluator:
 
         # Base MPC nominal weights vs human implicit deviation weights (proxy for evaluation)
         optimal_actions = jnp.tile(jnp.array([1e-2, 1e-7, 0.02]), (len(s_mpc), 1))
-        # (In training, human_action is inferred via Inverse RL, here we mock a degraded cost map)
-        human_actions = jnp.tile(jnp.array([5e-2, 5e-7, 0.05]), (len(s_mpc), 1)) 
+        
+        # --- IRL FIX: Dynamically Infer Human Actions ---
+        human_actions = self.infer_driver_intent_irl(state_matrix, optimal_actions)
 
         # --- JAX VMAP: Instantaneous parallel evaluation across the entire track ---
         batch_advantage_fn = vmap(self._evaluate_node_advantage, in_axes=(0, 0, 0, None, None))

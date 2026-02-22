@@ -172,20 +172,75 @@ class ContinuousTimeTrajectoryEstimator:
         return total_loss
 
     @jax.jit
-    def total_loss(self, params, gps_times, gps_measurements):
+    def imu_measurement_loss(self, T_states, w_states, imu_times, accel_measurements, gyro_measurements):
+        """
+        Fuses high-frequency IMU derivatives to eliminate GPS multipath errors.
+        Penalizes deviations between the manifold's analytical twist/acceleration 
+        and the real physical sensor readings.
+        """
+        def compute_imu_residual(carry, idx):
+            t = imu_times[idx]
+            z_accel = accel_measurements[idx]
+            z_gyro = gyro_measurements[idx]
+            
+            # Interpolate to the exact IMU timestamp
+            T_tau, w_tau = self.interpolate_trajectory(t, T_states, w_states)
+            
+            # The manifold's twist 'w_tau' contains [vx, vy, vz, wx, wy, wz]
+            # IMU Gyroscope measures angular velocity directly (wx, wy, wz)
+            pred_gyro = w_tau[3:6]
+            
+            # To get acceleration for the IMU accelerometer, we need the derivative of twist.
+            # For the continuous WNA model, acceleration is approximately constant between knots:
+            knot_idx = jnp.floor(t / self.dt).astype(int)
+            w_i = w_states[knot_idx]
+            w_ip1 = w_states[knot_idx + 1]
+            a_tau = (w_ip1 - w_i) / self.dt 
+            
+            # Extract linear acceleration [ax, ay, az]
+            pred_accel = a_tau[:3] 
+            
+            # IMU Accelerometer measures proper acceleration (includes gravity rotated into local frame)
+            # R^T * g
+            R_inv = T_tau[:3, :3].T
+            g_vec = jnp.array([0.0, 0.0, 9.81])
+            pred_accel_proper = pred_accel + jnp.dot(R_inv, g_vec)
+            
+            # Compute residuals
+            res_accel = jnp.sum((pred_accel_proper - z_accel)**2)
+            res_gyro = jnp.sum((pred_gyro - z_gyro)**2)
+            
+            return carry + res_accel + res_gyro, None
+
+        total_imu_loss, _ = jax.lax.scan(compute_imu_residual, 0.0, jnp.arange(len(imu_times)))
+        return total_imu_loss
+
+    @jax.jit
+    def total_loss(self, params, gps_times, gps_measurements, imu_times, accel_measurements, gyro_measurements):
         """Unified objective function for JAX autodiff."""
         T_states = params['T']
         w_states = params['w']
         
         prior_cost = self.compute_gp_prior_factors(T_states, w_states)
-        meas_cost = self.measurement_loss(T_states, w_states, gps_times, gps_measurements)
+        gps_cost = self.measurement_loss(T_states, w_states, gps_times, gps_measurements)
         
-        return prior_cost + 50.0 * meas_cost
+        # Guard against missing IMU data gracefully
+        imu_cost = jax.lax.cond(
+            len(imu_times) > 0,
+            lambda _: self.imu_measurement_loss(T_states, w_states, imu_times, accel_measurements, gyro_measurements),
+            lambda _: 0.0,
+            operand=None
+        )
+        
+        # Weighting: IMU dictates local smoothness, GPS dictates global position
+        return prior_cost + 50.0 * gps_cost + 10.0 * imu_cost
 
-    def optimize_trajectory(self, initial_T, initial_w, gps_times, gps_measurements, iterations=100):
+    def optimize_trajectory(self, initial_T, initial_w, gps_times, gps_measurements, 
+                            imu_times=jnp.array([]), accel_measurements=jnp.array([]), gyro_measurements=jnp.array([]), 
+                            iterations=100):
         """
         Executes gradient descent directly on the Lie Group to find the 
-        mathematically optimal continuous trajectory.
+        mathematically optimal continuous trajectory, fusing GPS and IMU.
         """
         params = {'T': initial_T, 'w': initial_w}
         
@@ -194,9 +249,9 @@ class ContinuousTimeTrajectoryEstimator:
         
         grad_fn = jax.value_and_grad(self.total_loss)
         
-        print(f"[CT-GP] Optimizing Continuous-Time SE(3) Trajectory ({self.num_knots} support knots)...")
+        print(f"[CT-GP] Optimizing SE(3) Trajectory ({self.num_knots} knots) with Sensor Fusion...")
         for i in range(iterations):
-            loss, grads = grad_fn(params, gps_times, gps_measurements)
+            loss, grads = grad_fn(params, gps_times, gps_measurements, imu_times, accel_measurements, gyro_measurements)
             
             # Apply gradients
             updates, opt_state = optimizer.update(grads, opt_state)

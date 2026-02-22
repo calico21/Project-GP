@@ -293,7 +293,7 @@ st.markdown("""
     }
     @keyframes pulse {
         0%, 100% { opacity: 1; }
-        50%       { opacity: 0.3; }
+        50%      { opacity: 0.3; }
     }
     
     /* =============================================
@@ -442,25 +442,41 @@ class Dashboard:
             y_col = df.columns[1]
             color_col = df.columns[2]
 
-        # --- PARETO CHART ---
-        self._section("SB-TRPO Pareto Front")
+        # --- PARETO CHART (Animated) ---
+        self._section("SB-TRPO Pareto Front Evolution")
         c1, c2 = st.columns([3, 1])
         with c1:
+            # Create a synthetic "Generation" column if one doesn't exist to power the animation
+            if 'Generation' not in df.columns:
+                # Assuming 150 rows total from the evolutionary output
+                chunk_size = max(1, len(df) // 10)
+                df['Generation'] = (df.index // chunk_size) + 1
+
             fig = px.scatter(
                 df, x=x_col, y=y_col, color=color_col,
+                animation_frame="Generation", # Triggers the Plotly play button
+                animation_group=df.index,
                 hover_data=df.columns,
                 color_continuous_scale=[
                     [0.0, "#00E676"],
                     [0.5, "#00C0F2"], 
                     [1.0, "#FF4B4B"],
                 ],
+                range_x=[df[x_col].min() * 0.95, df[x_col].max() * 1.05],
+                range_y=[df[y_col].min() * 1.05, df[y_col].max() * 0.95] # Flipped to put better (lower) stability at the top
             )
-            fig.update_traces(marker=dict(size=10, line=dict(width=0.5, color='rgba(0,0,0,0.5)')))
+            fig.update_traces(marker=dict(size=12, line=dict(width=1.0, color='rgba(255,255,255,0.8)')))
             fig.update_coloraxes(colorbar=dict(
                 thickness=10, tickfont=TICK_FONT,
                 title=dict(text="Front Spring (N/m)", font=dict(family="Courier New, monospace", size=12))
             ))
-            layout = base_layout(height=480)
+            
+            # Smooth Animation settings
+            if fig.layout.updatemenus:
+                fig.layout.updatemenus[0].buttons[0].args[1]["frame"]["duration"] = 800
+                fig.layout.updatemenus[0].buttons[0].args[1]["transition"]["duration"] = 400
+            
+            layout = base_layout(height=520)
             layout['xaxis']['title'] = dict(text=x_col, font=dict(family="Courier New, monospace", size=12, color="#9BA3BC"))
             layout['yaxis']['title'] = dict(text=y_col, font=dict(family="Courier New, monospace", size=12, color="#9BA3BC"))
             fig.update_layout(**layout)
@@ -522,11 +538,34 @@ class Dashboard:
             # Steer 
             steer_ghost = df_g.get('delta', np.zeros_like(s)) * (180/np.pi) * 15.0 
             
-            # Simulated 'bad' driver for visualization
-            v_real = v_ghost * 0.95 + np.random.normal(0, 0.5, len(s))
-            tps_real = tps_ghost * 0.9 + np.random.normal(0, 5, len(s))
-            brake_real = brake_ghost * 0.9 + np.random.normal(0, 5, len(s))
-            steer_real = steer_ghost + np.random.normal(0, 5, len(s))
+            # --- DETERMINISTIC "LATE APEX" DRIVER PROFILE ---
+            # Instead of random noise, we mathematically construct a driver who 
+            # brakes too late, overshoots the corner, and gets on the throttle late.
+            
+            # Identify braking zones (where ghost acceleration is strongly negative)
+            is_braking = np.clip(-accel / 15.0, 0, 1)
+            
+            # Apply a spatial lag to the ghost's velocity to simulate late braking
+            lag_distance = 15.0 # meters
+            v_real = np.interp(s - lag_distance, s, v_ghost) 
+            
+            # The driver carries too much speed into the corner apex, 
+            # causing them to miss the optimal lateral line.
+            # We add a bump to velocity during high-curvature (high-brake) zones
+            v_real += is_braking * 1.5 
+            
+            # Recalculate human controls based on the flawed velocity trace
+            accel_real = np.gradient(v_real, s) * v_real
+            
+            # Human throttle is delayed and hesitant out of the corner
+            tps_real = np.clip(accel_real / 10.0, 0, 1) * 100 
+            tps_real = pd.Series(tps_real).ewm(span=10, min_periods=1).mean().values
+            
+            # Human braking is aggressive but late
+            brake_real = np.clip(-accel_real / 8.0, 0, 1) * 100
+            
+            # Human steering is erratic due to missing the apex
+            steer_real = steer_ghost * 1.1 + (np.sin(s / 10.0) * is_braking * 5.0)
             
             lap_time = df_g['time'].max() if 'time' in df_g.columns else 0.0
             

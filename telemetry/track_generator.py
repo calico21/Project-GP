@@ -85,8 +85,6 @@ class ContinuousManifoldTrackGenerator:
         
         # 6. NSDE PHASE 1: STOCHASTIC FRICTION UNCERTAINTY MAP (w_mu)
         # We quantify local uncertainty by measuring the lateral slip variance.
-        # High slip angle (beta) directly implies proximity to the friction limit 
-        # and non-linear tire behavior, therefore increasing the required safety margin.
         beta = np.abs(np.arctan2(vy_exact, vx_exact))
         
         # Normalize and map to a friction uncertainty coefficient [0.01 (high grip) -> 0.15 (high uncertainty)]
@@ -121,43 +119,105 @@ class ContinuousManifoldTrackGenerator:
 
     def _extract_fastest_lap_times(self, df_dense):
         """
-        Locates loop closures purely based on spatial coordinates,
-        returning the start and end times of the optimal lap.
+        Uses RANSAC to detect the longest straight, places a virtual S/F line,
+        and extracts the fastest lap via geometric line intersection.
         """
-        print("[TrackGen] Analyzing SE(3) manifold for continuous loop closures...")
+        print("[TrackGen] Analyzing SE(3) manifold with RANSAC-based Loop Closure...")
         
         # Filter out extreme slow-speed pacing sections
         df_active = df_dense[df_dense['v'] > 2.0].reset_index(drop=True)
         points = df_active[['x', 'y']].values
         times = df_active['time'].values
         
-        # Reference point for start/finish line detection
-        start_node = points[0]
-        dists = np.sqrt(np.sum((points - start_node)**2, axis=1))
+        # ---------------------------------------------------------
+        # 1. RANSAC Line Fitting to find the Main Straight
+        # ---------------------------------------------------------
+        best_inlier_count = 0
+        best_centroid = None
+        best_normal = None
         
-        # Find local minima in distance to the start point (loop completions)
-        peaks, _ = find_peaks(-dists, height=-20.0, distance=300) 
+        np.random.seed(42) # Deterministic execution
         
-        if len(peaks) < 2:
-            print("[TrackGen] WARNING: No distinct laps found. Using full manifold.")
-            return times[0], times[-1]
+        # Run 200 RANSAC iterations to find the dominant linear segment (the straight)
+        for _ in range(200):
+            idx = np.random.choice(len(points), 2, replace=False)
+            p1, p2 = points[idx]
             
-        best_lap_idx = -1
-        min_lap_time = float('inf')
+            vec = p2 - p1
+            length = np.linalg.norm(vec)
+            if length < 5.0: continue # Skip points too close together
+            
+            vec = vec / length
+            normal = np.array([-vec[1], vec[0]]) # Perpendicular normal
+            
+            # Calculate distance of all points to the candidate line
+            dists = np.abs(np.dot(points - p1, normal))
+            inliers = np.where(dists < 1.5)[0] # 1.5m tolerance
+            
+            # Record the straightest section of the track
+            if len(inliers) > best_inlier_count:
+                best_inlier_count = len(inliers)
+                best_centroid = np.mean(points[inliers], axis=0) # Middle of the straight
+                best_normal = normal
+
+        if best_centroid is None:
+            print("[TrackGen] WARNING: RANSAC failed. Using full manifold.")
+            return times[0], times[-1]
+
+        # ---------------------------------------------------------
+        # 2. Virtual Start/Finish Gate Generation
+        # ---------------------------------------------------------
+        # Place a 30-meter wide invisible gate perpendicular to the main straight
+        gate_width = 15.0
+        gate_p1 = best_centroid + best_normal * gate_width
+        gate_p2 = best_centroid - best_normal * gate_width
+
+        # ---------------------------------------------------------
+        # 3. Geometric Crossing Detection
+        # ---------------------------------------------------------
+        # Vectorized check: does segment A->B intersect segment gate_p1->gate_p2?
+        A = points[:-1]
+        B = points[1:]
         
-        for i in range(len(peaks) - 1):
-            idx_start = peaks[i]
-            idx_end = peaks[i+1]
+        # Counter-Clockwise (CCW) check logic for line intersection
+        ccw_ACD = (gate_p2[1] - A[:, 1]) * (gate_p1[0] - A[:, 0]) > (gate_p1[1] - A[:, 1]) * (gate_p2[0] - A[:, 0])
+        ccw_BCD = (gate_p2[1] - B[:, 1]) * (gate_p1[0] - B[:, 0]) > (gate_p1[1] - B[:, 1]) * (gate_p2[0] - B[:, 0])
+        
+        ccw_ABC = (gate_p1[1] - A[:, 1]) * (B[:, 0] - A[:, 0]) > (B[:, 1] - A[:, 1]) * (gate_p1[0] - A[:, 0])
+        ccw_ABD = (gate_p2[1] - A[:, 1]) * (B[:, 0] - A[:, 0]) > (B[:, 1] - A[:, 1]) * (gate_p2[0] - A[:, 0])
+
+        # Indices where the path intersects the S/F gate
+        crossings = np.where((ccw_ACD != ccw_BCD) & (ccw_ABC != ccw_ABD))[0]
+
+        # Filter out multiple crossings in the same pass (debounce)
+        valid_crossings = []
+        last_time = -999.0
+        for idx in crossings:
+            t = times[idx]
+            if t - last_time > 10.0: # Minimum lap time threshold
+                valid_crossings.append(idx)
+                last_time = t
+
+        if len(valid_crossings) < 2:
+            print("[TrackGen] WARNING: <2 valid S/F crossings found. Using full manifold.")
+            return times[0], times[-1]
+
+        # ---------------------------------------------------------
+        # 4. Extract Fastest Lap Segment
+        # ---------------------------------------------------------
+        min_lap_time = float('inf')
+        best_lap_start = -1
+        best_lap_end = -1
+        
+        for i in range(len(valid_crossings) - 1):
+            idx_start = valid_crossings[i]
+            idx_end = valid_crossings[i+1]
             lap_time = times[idx_end] - times[idx_start]
             
-            if lap_time > 10.0 and lap_time < min_lap_time:
+            if lap_time < min_lap_time:
                 min_lap_time = lap_time
-                best_lap_idx = i
-                
-        if best_lap_idx != -1:
-            idx_s = peaks[best_lap_idx]
-            idx_e = peaks[best_lap_idx+1]
-            print(f"[TrackGen] Identified Optimal Lap {best_lap_idx+1} | Time: {min_lap_time:.2f}s")
-            return times[idx_s], times[idx_e]
-            
-        return times[0], times[-1]
+                best_lap_start = times[idx_start]
+                best_lap_end = times[idx_end]
+
+        print(f"[TrackGen] RANSAC S/F Gate Placed. Fastest Lap Time Extracted: {min_lap_time:.2f}s")
+        return best_lap_start, best_lap_end
