@@ -36,7 +36,7 @@ def compute_skidpad_objective(simulate_step_fn, params, x_init, dt=0.005, T_max=
     lr  = VP.get('lr', 0.765)
     t_w = 1.2
     g   = 9.81
-    PDY1 = 2.218
+    PDY1 = 2.218 * 0.65 # Adjusted for 1.5G target (was 2.218 for ~2.2G peak)
     PDY2 = -0.25
     Fz0  = 1000.0
 
@@ -44,8 +44,8 @@ def compute_skidpad_objective(simulate_step_fn, params, x_init, dt=0.005, T_max=
     Fz_f_static = m * g * lr / (lf + lr)
     Fz_r_static = m * g * lf / (lf + lr)
     
-    # Sweep lateral G from 0.5 to 2.5 G
-    ay_sweep = jnp.linspace(0.5, 2.5, 40)
+    # Sweep lateral G from 1.2G to 1.8G and compute balance metric
+    ay_sweep = jnp.linspace(1.2, 1.8, 200)
     
     def compute_balance_at_ay(ay_g):
         ay = ay_g * g
@@ -96,7 +96,7 @@ def compute_skidpad_objective(simulate_step_fn, params, x_init, dt=0.005, T_max=
         2.0 * PDY1 * (1.0 + PDY2 * ((Fz_f_static/2 - m*g*h_cg/t_w*lltd_f - 1000)/1000)) * 
         jnp.maximum(Fz_f_static/2, 10.0) + 1e-3
     )
-    safety_margin = lltd_r - lltd_f   # positive = understeer bias = safe
+    safety_margin = lltd_f - lltd_r   # positive = understeer bias = safe
     
     return obj_grip, safety_margin
 

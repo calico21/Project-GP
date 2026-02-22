@@ -1,0 +1,22 @@
+
+[MORL-DB] Initializing Pareto Policy Ensemble...
+[SB-TRPO] Compiling 14-DOF Analytical Constraints and Physics Gradients via XLA...
+   [DIAGNOSTIC] Soft setup grip: 1.3831 G | Hard setup grip: 1.3739 G
+   [DIAGNOSTIC] If these are identical, setup_params are not reaching the physics.
+   [SB-TRPO] i=0 | Safe: 9/20 | Grip: 1.402 G | Stab: -0.002 | sigma: 0.150
+   [SB-TRPO] i=20 | Safe: 9/20 | Grip: 1.402 G | Stab: -0.002 | sigma: 0.150
+   [SB-TRPO] i=40 | Safe: 9/20 | Grip: 1.402 G | Stab: -0.002 | sigma: 0.150
+   [SB-TRPO] i=60 | Safe: 9/20 | Grip: 1.402 G | Stab: -0.002 | sigma: 0.150
+   [SB-TRPO] i=80 | Safe: 9/20 | Grip: 1.402 G | Stab: -0.002 | sigma: 0.150
+   [SB-TRPO] i=100 | Safe: 9/20 | Grip: 1.402 G | Stab: -0.002 | sigma: 0.150
+   [SB-TRPO] i=120 | Safe: 9/20 | Grip: 1.402 G | Stab: -0.002 | sigma: 0.150
+   [SB-TRPO] i=140 | Safe: 9/20 | Grip: 1.402 G | Stab: -0.002 | sigma: 0.150
+   [SB-TRPO] i=160 | Safe: 9/20 | Grip: 1.402 G | Stab: -0.002 | sigma: 0.150
+   [SB-TRPO] i=180 | Safe: 9/20 | Grip: 1.402 G | Stab: -0.002 | sigma: 0.150
+   [SB-TRPO] i=200 | Safe: 9/20 | Grip: 1.402 G | Stab: -0.002 | sigma: 0.150
+   [SB-TRPO] i=220 | Safe: 9/20 | Grip: 1.402 G | Stab: -0.002 | sigma: 0.150
+   [SB-TRPO] i=240 | Safe: 9/20 | Grip: 1.402 G | Stab: -0.002 | sigma: 0.150
+   [SB-TRPO] i=260 | Safe: 9/20 | Grip: 1.402 G | Stab: -0.002 | sigma: 0.150
+   [SB-TRPO] i=280 | Safe: 9/20 | Grip: 1.402 G | Stab: -0.002 | sigma: 0.150
+   [SB-TRPO] i=300 | Safe: 9/20 | Grip: 1.402 G | Stab: -0.002 | sigma: 0.150
+   [SB-TRPO] i=320 | Safe: 9/20 | Grip: 1.402 G | Stab: -0.002 | sigma: 0.150
