@@ -5,8 +5,9 @@ import pandas as pd
 import argparse
 
 # --- JAX / XLA ENVIRONMENT SETUP ---
+# Pre-allocate memory for the massive 14-DOF and Wavelet Collocation operations
 os.environ['XLA_PYTHON_CLIENT_PREALLOCATE'] = 'false'
-os.environ['XLA_PYTHON_CLIENT_MEM_FRACTION'] = '0.7' 
+os.environ['XLA_PYTHON_CLIENT_MEM_FRACTION'] = '0.8' 
 
 import jax
 import jax.numpy as jnp
@@ -23,15 +24,15 @@ try:
     from telemetry.filtering import ContinuousTimeTrajectoryEstimator, SE3Manifold
     from telemetry.track_generator import ContinuousManifoldTrackGenerator
     
-    # 2. Optimal Control (The Final Diff-WMPC Upgrade)
+    # 2. Optimal Control (14-DOF Native JAX Diff-WMPC)
     from optimization.ocp_solver import DiffWMPCSolver
     
-    # 3. AI Setup & Coaching (The Final MORL-DB / SB-TRPO Upgrade)
+    # 3. AI Setup & Coaching (Ghost Car AC & MORL-DB)
     from optimization.evolutionary import MORL_SB_TRPO_Optimizer
-    from telemetry.driver_coaching import ActorCriticPolicyEvaluator
+    from telemetry.driver_coaching import GhostCarEvaluator
 except ImportError as e:
     print(f"[Critical Error] Architecture Import Failed: {e}")
-    print("Ensure JAX, Flax, Optax, and Acados are properly installed in the WSL environment.")
+    print("Ensure JAX, Flax, and Optax are properly installed in the hardware-accelerated environment.")
     sys.exit(1)
 
 
@@ -66,38 +67,33 @@ def execute_continuous_telemetry_pipeline(log_path):
     
     return track_data, df_raw
 
-def execute_stochastic_ghost_car(track_data):
+def execute_stochastic_ghost_car(track_data, ai_cost_map=None):
     print("\n" + "="*60)
     print("PHASE 2: DIFF-WMPC STOCHASTIC GHOST CAR")
     print("="*60)
     
-    # Updated to the Diff-WMPC Solver
-    solver = DiffWMPCSolver()
-    
-    N_nodes = min(300, len(track_data['s']) - 1)
-    idx = np.linspace(0, len(track_data['s'])-1, N_nodes+1).astype(int)
+    # Horizon must be a power of 2 for the Haar Wavelet Basis Transform
+    WAVELET_HORIZON = 128
+    solver = DiffWMPCSolver(N_horizon=WAVELET_HORIZON)
     
     try:
+        # The solver will now automatically handle padding/resizing internally
         result = solver.solve(
-            track_s = track_data['s'][idx], 
-            track_k = track_data['k'][idx], 
-            track_w_left = track_data['w_left'][idx], 
-            track_w_right = track_data['w_right'][idx], 
-            friction_uncertainty_map = track_data['w_mu'][idx],
-            N = N_nodes
+            track_s = track_data['s'], 
+            track_k = track_data['k'], 
+            track_w_left = track_data['w_left'], 
+            track_w_right = track_data['w_right'], 
+            friction_uncertainty_map = track_data.get('w_mu', None),
+            ai_cost_map = ai_cost_map
         )
         
-        if "error" in result:
-            print(f"[Diff-WMPC] Solver Failed: {result['error']}")
-            return None
-        else:
-            print(f"[Diff-WMPC] Nominal Lap Time: {result['time']:.3f} s")
-            df = pd.DataFrame(result)
-            df.to_csv(os.path.join(current_dir, 'stochastic_ghost_car.csv'), index=False)
-            return df
+        print(f"[Diff-WMPC] Wavelet Manifold Optimization Complete. Nominal Lap Time: {result['time']:.3f} s")
+        df = pd.DataFrame(result)
+        df.to_csv(os.path.join(current_dir, 'stochastic_ghost_car.csv'), index=False)
+        return df
             
     except Exception as e:
-        print(f"[Diff-WMPC] Critical Failure: {e}")
+        print(f"[Diff-WMPC] Critical XLA Compilation Failure: {e}")
         return None
 
 def execute_ai_coaching(df_human, df_ghost):
@@ -105,25 +101,31 @@ def execute_ai_coaching(df_human, df_ghost):
     print("PHASE 3: AC-MPC DRIVER & VEHICLE ADAPTATION")
     print("="*60)
     
-    evaluator = ActorCriticPolicyEvaluator()
-    report_df = evaluator.analyze_continuous_policy(df_human, df_ghost.to_dict(orient='list'))
+    # Instantiating the upgraded JAX vmap Actor-Critic
+    evaluator = GhostCarEvaluator()
+    
+    # The evaluator now returns both the human-readable report AND the active tensor weights
+    report_df, active_cost_map = evaluator.evaluate_continuous_policy(df_human, df_ghost.to_dict(orient='list'))
     
     if not report_df.empty:
-        print("\n[AC-MPC] Critical Intervention Zones:")
+        print("\n[Ghost-Car AI] Critical Intervention Zones:")
         print(report_df.sort_values('Critic_Advantage', ascending=True).head(5).to_string(index=False))
         
         out_file = os.path.join(current_dir, 'ac_mpc_coaching_report.csv')
         report_df.to_csv(out_file, index=False)
-        print(f"\n[AC-MPC] Full compensation matrix saved to {out_file}")
+        print(f"\n[Ghost-Car AI] Full compensation matrix saved to {out_file}")
+        
+        return active_cost_map
     else:
-        print("\n[AC-MPC] Driver policy aligns perfectly with Tube-MPC manifold.")
+        print("\n[Ghost-Car AI] Driver policy aligns perfectly with Tube-MPC manifold. No active weight adjustments needed.")
+        return None
 
 def execute_morl_setup():
     print("\n" + "="*60)
     print("PHASE 4: DYNAMIC AI SETUP DISCOVERY (MORL-DB & SB-TRPO)")
     print("="*60)
     
-    # Updated to the new Reinforcement Learning Setup AI
+    # Evolves populations natively through the 14-DOF Port-Hamiltonian Engine
     optimizer = MORL_SB_TRPO_Optimizer(ensemble_size=20, dim=7)
     pareto_setups, pareto_grips, pareto_stabs = optimizer.run(iterations=100)
     
@@ -131,36 +133,47 @@ def execute_morl_setup():
     df['Lat_G_Score'] = pareto_grips
     df['Stability_Overshoot'] = pareto_stabs
     
-    print("\n[MORL-DB] Target-Fidelity Pareto Front Discovery Complete:")
+    print("\n[MORL-DB] 14-DOF Target-Fidelity Pareto Front Discovery Complete:")
     print(df.sort_values('Lat_G_Score', ascending=False).to_string(index=False))
     
     out_file = os.path.join(current_dir, 'morl_pareto_front.csv')
     df.to_csv(out_file, index=False)
-    print(f"\n[Success] Full Pareto array saved to {out_file}")
+    print(f"\n[Success] Full 14-DOF Pareto array saved to {out_file}")
 
 def main():
     parser = argparse.ArgumentParser(description="Project-GP: End-to-End Differentiable Digital Twin")
-    parser.add_argument('--mode', type=str, default='full', choices=['telemetry', 'ghost', 'coach', 'setup', 'full'])
+    parser.add_argument('--mode', type=str, default='full', choices=['telemetry', 'ghost', 'coach', 'setup', 'full', 'closed_loop'])
     parser.add_argument('--log', type=str, default=None, help="Path to raw telemetry ASC/CSV")
     args = parser.parse_args()
 
     track_data = None
     df_human = None
     df_ghost = None
+    active_cost_map = None
 
-    if args.mode in ['telemetry', 'ghost', 'coach', 'full']:
+    if args.mode in ['telemetry', 'ghost', 'coach', 'full', 'closed_loop']:
         if not args.log:
             print("[Error] A telemetry log is required. Use --log <path>")
             sys.exit(1)
         track_data, df_human = execute_continuous_telemetry_pipeline(args.log)
 
-    if args.mode in ['ghost', 'coach', 'full'] and track_data is not None:
+    if args.mode in ['ghost', 'coach', 'full', 'closed_loop'] and track_data is not None:
+        # Base solve using default MPC weights
         df_ghost = execute_stochastic_ghost_car(track_data)
 
-    if args.mode in ['coach', 'full'] and df_human is not None and df_ghost is not None:
-        execute_ai_coaching(df_human, df_ghost)
+    if args.mode in ['coach', 'full', 'closed_loop'] and df_human is not None and df_ghost is not None:
+        # Ghost Car Actor-Critic evaluates human and outputs new active setup weights
+        active_cost_map = execute_ai_coaching(df_human, df_ghost)
 
-    if args.mode in ['setup', 'full']:
+    if args.mode == 'closed_loop' and active_cost_map is not None:
+        print("\n" + "="*60)
+        print("PHASE 3.5: CLOSED-LOOP MPC RE-SOLVE WITH AI WEIGHTS")
+        print("="*60)
+        # Feed the AI's dynamically generated weights directly back into the Diff-WMPC solver
+        df_ghost_adapted = execute_stochastic_ghost_car(track_data, ai_cost_map=active_cost_map)
+        df_ghost_adapted.to_csv(os.path.join(current_dir, 'stochastic_ghost_car_adapted.csv'), index=False)
+
+    if args.mode in ['setup', 'full', 'closed_loop']:
         execute_morl_setup()
         
     print("\n[System] Project-GP Digital Twin Execution Concluded Successfully.")

@@ -6,19 +6,19 @@ Physical properties for a typical FSAE vehicle.
 
 vehicle_params = {
     # --- MASS & INERTIA ---
-    'm': 250.0,           # Mass [kg] (Car + Driver)
+    'm': 300.0,           # Mass [kg] (Car + Driver)
     'Iz': 150.0,          # Yaw Inertia [kg*m^2]
     
     # --- GEOMETRY ---
-    'lf': 0.82,           # CG to Front Axle [m]
-    'lr': 0.73,           # CG to Rear Axle [m]
+    'lf': 0.8525,           # CG to Front Axle [m]
+    'lr': 0.68868,           # CG to Rear Axle [m]
     'track_width': 1.2,   # Track Width [m]
-    'h_cg': 0.28,         # CG Height [m]
+    'h_cg': 0.33,         # CG Height [m]
     
     # --- AERODYNAMICS ---
     # Adjusted for 1.5G target (Less downforce)
-    'A': 1.0,             # Frontal Area [m^2]
-    'Cl': 1.0,            # Downforce Coeff (Reduced from 3.5 -> 1.0)
+    'A': 1.1,             # Frontal Area [m^2]
+    'Cl': 4.14,            # Downforce Coeff 
     'Cd': 0.8,            # Drag Coeff
     
     # --- POWERTRAIN LIMITS ---

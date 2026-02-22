@@ -13,6 +13,10 @@ from data.configs.vehicle_params import vehicle_params as VP_DICT
 from data.configs.tire_coeffs import tire_coeffs as TP_DICT
 
 class MORL_SB_TRPO_Optimizer:
+    """
+    Multi-Objective Reinforcement Learning with Safety-Biased Trust Region Policy Optimization.
+    Searches the 14-DOF manifold for Pareto-optimal mechanical setup parameters (Grip vs. Stability).
+    """
     def __init__(self, ensemble_size=20, dim=7, rng_seed=42):
         self.dim = dim
         self.ensemble_size = ensemble_size
@@ -34,7 +38,6 @@ class MORL_SB_TRPO_Optimizer:
             'log_std': jnp.full((self.ensemble_size, self.dim), -1.0) 
         }
         
-        # --- NEW: ARCHIVE TO STORE HISTORY FOR THE DASHBOARD ---
         self.archive_setups = []
         self.archive_grips = []
         self.archive_stabs = []
@@ -44,25 +47,48 @@ class MORL_SB_TRPO_Optimizer:
         return self.raw_bounds[0] + x_norm * (self.raw_bounds[1] - self.raw_bounds[0])
 
     @partial(jax.jit, static_argnums=(0,))
-    def simulate_slalom_jax(self, setup_norm):
+    def simulate_skidpad_jax(self, setup_norm):
         params = self.unnormalize_setup(setup_norm)
-        dt, T_max = 0.005, 3.0
-        steps = int(T_max / dt)
-        x_init = jnp.zeros(17).at[3].set(20.0)
+
+        # BPTT FIX: Reduced from 4.0s (800 steps) to 1.5s (300 steps).
+        # Full BPTT through 800 RK4 steps (3200 Jacobian products) causes gradient
+        # explosion by iteration 4 even with optimizer-level clipping, because
+        # clip_by_global_norm only fires AFTER JAX finishes the backward pass.
+        # 1.5s is sufficient to reach steady-state cornering at 12 m/s on a skidpad.
+        dt, T_max = 0.005, 1.5
+        steps = int(T_max / dt)  # 300 steps
+        
+        x_init = jnp.zeros(38).at[14].set(12.0)
         
         def step_fn(x, t):
-            steer = jnp.where(t > 0.2, 0.15 * jnp.sin(2.0 * jnp.pi * 1.0 * t), 0.0)
-            u = jnp.array([steer, 0.0])
+            steer = 0.16 * jnp.tanh(3.0 * jnp.sin(2.0 * jnp.pi * 0.25 * t))
+            
+            vx_error = 12.0 - x[14]
+            throttle_brake = 2500.0 * jnp.tanh(vx_error) 
+            
+            u = jnp.array([steer, throttle_brake])
             x_next = self.vehicle.simulate_step(x, u, params, dt)
-            lat_g = jnp.abs(x_next[3] * x_next[5] / 9.81)
-            yaw_rate = jnp.abs(x_next[5])
-            safety_margin = 5.0 - yaw_rate 
-            return x_next, (lat_g, yaw_rate, safety_margin)
+            
+            vx = x_next[14]
+            yaw_rate = jnp.sqrt(x_next[19]**2 + 1e-6)
+            lat_g = jnp.sqrt((vx * x_next[19] / 9.81)**2 + 1e-6)
+            safety_margin = 3.0 - yaw_rate
+
+            # BPTT FIX (core): Apply stop_gradient to the scan carry (state).
+            # This implements truncated BPTT with a window of 1:
+            #   - Gradients still flow from setup_params → forces → instantaneous outputs
+            #     (lat_g, yaw_rate, safety_margin) at EVERY step. The optimizer sees
+            #     the full 300-step average of these signals.
+            #   - Gradients do NOT flow through state transitions (x_next → x_next+1),
+            #     which is where the 800-deep Jacobian chain was exploding.
+            # This is a valid approximation for setup optimization because we care about
+            # steady-state grip, not exact trajectory sensitivity.
+            return jax.lax.stop_gradient(x_next), (lat_g, yaw_rate, safety_margin)
 
         t_array = jnp.linspace(0, T_max, steps)
         _, (lat_gs, yaw_rates, safety_margins) = jax.lax.scan(step_fn, x_init, t_array)
         
-        obj_grip = jnp.mean(lat_gs)
+        obj_grip = jnp.mean(lat_gs) 
         obj_stability = -jnp.max(yaw_rates) 
         min_safety = jnp.min(safety_margins) 
         return obj_grip, obj_stability, min_safety
@@ -75,10 +101,10 @@ class MORL_SB_TRPO_Optimizer:
         eps = jax.random.normal(key, mu.shape)
         setup_norm = jax.nn.sigmoid(mu + jnp.exp(log_std) * eps)
         
-        grip, stability, safety = self.simulate_slalom_jax(setup_norm)
+        grip, stability, safety = self.simulate_skidpad_jax(setup_norm)
         reward = omega * grip + (1.0 - omega) * stability
         
-        safety_violation = jnp.minimum(0.0, safety)
+        safety_violation = jnp.clip(safety, -5.0, 0.0) 
         safety_cost = -1000.0 * safety_violation**2 
         
         var, old_var = jnp.exp(2*log_std), jnp.exp(2*old_log_std)
@@ -110,9 +136,12 @@ class MORL_SB_TRPO_Optimizer:
 
     def run(self, iterations=100):
         print("\n[MORL-DB] Initializing Pareto Policy Ensemble...")
-        print("[SB-TRPO] Compiling Exact Analytical Constraints and Physics Gradients...")
+        print("[SB-TRPO] Compiling 14-DOF Analytical Constraints and Physics Gradients via XLA...")
         
-        optimizer = optax.adam(learning_rate=0.01)
+        optimizer = optax.chain(
+            optax.clip_by_global_norm(1.0),
+            optax.adam(learning_rate=0.01)
+        )
         opt_state = optimizer.init(self.ensemble_params)
         old_params = self.ensemble_params
         
@@ -123,11 +152,19 @@ class MORL_SB_TRPO_Optimizer:
             grads, grips, stabs, safeties, kls = self.update_ensemble(
                 self.ensemble_params, old_params, self.omegas, opt_state, keys
             )
-            
+
+            # NaN guard: if a gradient is somehow still NaN (e.g. from a degenerate
+            # policy sample), revert to old params rather than poisoning the ensemble.
+            mu_grad_nan = jnp.any(jnp.isnan(grads['mu']))
+            if mu_grad_nan:
+                print(f"   [WARNING i={i}] NaN gradient detected — skipping update, reverting params.")
+                self.ensemble_params = old_params
+                continue
+
             updates, opt_state = optimizer.update(grads, opt_state)
             new_params = optax.apply_updates(self.ensemble_params, updates)
             
-            # --- NEW: RECORD VALID SETUPS TO ARCHIVE ---
+            # Archive valid, safe setups for UI telemetry rendering
             if i > 10 and i % 5 == 0:
                 current_setups_norm = jax.nn.sigmoid(self.ensemble_params['mu'])
                 current_setups_phys = np.array(jax.vmap(self.unnormalize_setup)(current_setups_norm))
@@ -137,8 +174,10 @@ class MORL_SB_TRPO_Optimizer:
                     self.archive_grips.extend(np.array(grips)[valid_mask])
                     self.archive_stabs.extend(np.array(stabs)[valid_mask])
 
+            # Evolutionary Crossover: Replace dominated setups with mutated elites
             if i % 10 == 0 and i > 0:
-                grip_np, stab_np = np.array(grips), np.array(stabs)
+                grip_np = np.nan_to_num(np.array(grips), nan=-999.0)
+                stab_np = np.nan_to_num(np.array(stabs), nan=-999.0)
                 pareto_indices = self.get_non_dominated_indices(grip_np, stab_np)
                 
                 if len(pareto_indices) > 0 and len(pareto_indices) < self.ensemble_size:
@@ -151,6 +190,7 @@ class MORL_SB_TRPO_Optimizer:
                             log_std_copy[j] = np.full(self.dim, -0.5) 
                             new_params['mu'] = jnp.array(mu_copy)
                             new_params['log_std'] = jnp.array(log_std_copy)
+                            
                             omegas_np = np.array(self.omegas)
                             omegas_np[j] = np.random.uniform(0.0, 1.0)
                             self.omegas = jnp.array(omegas_np)
@@ -162,13 +202,11 @@ class MORL_SB_TRPO_Optimizer:
                 safe_count = np.sum(np.array(safeties) > 0)
                 print(f"   [SB-TRPO] Active Policies Safe: {safe_count}/{self.ensemble_size} | Max Grip: {np.max(grips):.3f} G | Max Stab: {np.max(stabs):.3f}")
 
-        # Post-Processing: Return the top 100 setups from the historical archive
         if len(self.archive_grips) > 0:
             all_setups = np.array(self.archive_setups)
             all_grips = np.array(self.archive_grips)
-            all_stabs = -np.array(self.archive_stabs) # Invert for UI
+            all_stabs = -np.array(self.archive_stabs)
 
-            # Drop duplicates and sort by Grip
             df_archive = pd.DataFrame(all_setups, columns=self.var_keys)
             df_archive['grip'] = all_grips
             df_archive['stab'] = all_stabs
