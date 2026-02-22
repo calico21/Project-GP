@@ -85,6 +85,27 @@ def test_circular_track():
     track_y = 20.0 * (1.0 - np.cos(track_psi))
     
     print("Solving MPC for constant curvature (R=20m). Expected physical limit ~16.6 m/s...")
+    # --- DEBUG: Step-by-step NaN hunt ---
+    from models.vehicle_dynamics import DifferentiableMultiBodyVehicle
+    from data.configs.vehicle_params import vehicle_params as VP
+    from data.configs.tire_coeffs import tire_coeffs as TC
+    _veh = DifferentiableMultiBodyVehicle(VP, TC)
+    _x = jnp.zeros(46).at[14].set(15.0)
+    _u = jnp.array([0.15, 1000.0])
+    _sp = jnp.array([35000., 38000., 400., 450., 2500., 2800., 0.28])
+    nan_found = False
+    for _i in range(200):
+        _x_next = _veh.simulate_step(_x, _u, _sp, dt=0.01)
+        if not jnp.all(jnp.isfinite(_x_next)) or jnp.any(jnp.abs(_x_next) > 1e6):
+            nan_idx = jnp.where(~jnp.isfinite(_x_next))[0]
+            print(f"   [DEBUG] NaN first appeared at step {_i}, state indices: {nan_idx}")
+            print(f"   [DEBUG] State before NaN: vx={float(_x[14]):.3f} wz={float(_x[19]):.4f} Z={float(_x[2]):.4f} phi={float(_x[3]):.4f}")
+            nan_found = True
+            break
+        _x = _x_next
+    if not nan_found:
+        print(f"   [DEBUG] 200-step rollout clean. Final vx={float(_x[14]):.3f} m/s — physics is stable, NaN is in L-BFGS gradient.")
+    # --- END DEBUG ---
     try:
         solver = DiffWMPCSolver(N_horizon=N)
         

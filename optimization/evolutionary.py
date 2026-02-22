@@ -25,8 +25,8 @@ class MORL_SB_TRPO_Optimizer:
         
         # Dynamically reference VP_DICT to prevent mechanical impossibility
         self.raw_bounds = jnp.array([
-            [VP_DICT['min_spring'], VP_DICT['min_spring'], VP_DICT['min_arb'], VP_DICT['min_arb'], VP_DICT['min_damp'], VP_DICT['min_damp'], 0.25],
-            [VP_DICT['max_spring'], VP_DICT['max_spring'], VP_DICT['max_arb'], VP_DICT['max_arb'], VP_DICT['max_damp'], VP_DICT['max_damp'], 0.35]
+            [15000.0, 15000.0, 0.0,   0.0,   500.0,  500.0,  0.25],
+            [55000.0, 55000.0, 800.0, 800.0, 4000.0, 4000.0, 0.35]
         ])
         
         self.vehicle = DifferentiableMultiBodyVehicle(VP_DICT, TP_DICT)

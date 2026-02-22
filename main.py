@@ -161,7 +161,7 @@ def execute_morl_setup():
 
     # Evolves populations natively through the 46-DOF Port-Hamiltonian Engine
     optimizer = MORL_SB_TRPO_Optimizer(ensemble_size=20, dim=7)
-    pareto_setups, pareto_grips, pareto_stabs = optimizer.run(iterations=1000)
+    pareto_setups, pareto_grips, pareto_stabs = optimizer.run(iterations=400)
     
     # Log final metrics to W&B
     wandb.log({

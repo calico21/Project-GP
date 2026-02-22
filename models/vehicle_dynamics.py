@@ -184,6 +184,14 @@ class DifferentiableMultiBodyVehicle:
                 self.R_params = flax.serialization.from_bytes(self.R_params, f.read())
             print("[Physics Engine] Successfully loaded pre-trained R_net weights.")
 
+    def _damper_force(self, vz, c_low, c_high, v_transition=0.10):
+        abs_vz = jnp.abs(vz)
+        sign_vz = jnp.where(vz >= 0, 1.0, -1.0)
+        f_low  = c_low * abs_vz
+        f_high = c_low * v_transition + c_high * (abs_vz - v_transition)
+        f_mag  = jnp.where(abs_vz < v_transition, f_low, f_high)
+        return -sign_vz * f_mag
+
     @partial(jax.jit, static_argnums=(0,)) 
     def _compute_derivatives(self, x, u, setup_params):
         q = x[0:14]
@@ -204,6 +212,14 @@ class DifferentiableMultiBodyVehicle:
         
         X, Y, Z, phi_roll, theta_pitch, psi_yaw = q[0:6]
         vx, vy, vz, wx, wy, wz = v[0:6]
+
+        # Clamp to physical operating range to prevent NaN during MPC gradient exploration
+        vx      = jnp.clip(vx,      -80.0,  80.0)
+        vy      = jnp.clip(vy,      -30.0,  30.0)
+        wz      = jnp.clip(wz,       -8.0,   8.0)
+        Z       = jnp.clip(Z,        -0.3,   1.5)
+        phi_roll     = jnp.clip(phi_roll,    -0.3,   0.3)
+        theta_pitch  = jnp.clip(theta_pitch, -0.2,   0.2)
         
         Fz_aero, Fx_aero, My_aero, Mx_aero = self.aero_map.apply(
             self.Aero_params, vx, theta_pitch, phi_roll, Z
@@ -214,6 +230,8 @@ class DifferentiableMultiBodyVehicle:
         c_f, c_r = setup_params[4], setup_params[5] 
         h_cg = setup_params[6]
         
+    
+
         mr_f = self.vp.get('motion_ratio_f', 1.2)
         mr_r = self.vp.get('motion_ratio_r', 1.15)
         
@@ -228,17 +246,21 @@ class DifferentiableMultiBodyVehicle:
         total_stiff_r = wheel_rate_r + arb_rate_r
         total_stiff = total_stiff_f + total_stiff_r + 1.0
         
-        ay = vx * wz 
-        W_transfer = (self.m_s * ay * h_cg) / self.track_w
+        ay = vx * wz
+        h_rc_f = self.vp.get('h_rc_f', 0.030)
+        h_rc_r = self.vp.get('h_rc_r', 0.050)
+        a = self.lr / (self.lf + self.lr)
+        h_rc = h_rc_f + a * (h_rc_r - h_rc_f)
+        h_arm = h_cg - h_rc
+        W_transfer_geometric_f = (self.m_s * ay * h_rc_f) / self.track_w
+        W_transfer_geometric_r = (self.m_s * ay * h_rc_r) / self.track_w
+        W_transfer_elastic = (self.m_s * ay * h_arm) / self.track_w
         
         phi_chassis = (self.m_s * ay * h_cg) / total_stiff 
-        phi_deg = jnp.rad2deg(phi_chassis)
+        phi_deg = jnp.clip(jnp.rad2deg(phi_chassis), -15.0, 15.0)
         
-        gamma_f = -2.0 + (phi_deg * 0.6) 
-        gamma_r = -1.5 + (phi_deg * 0.4)
-        
-        dFz_f = W_transfer * (total_stiff_f / total_stiff)
-        dFz_r = W_transfer * (total_stiff_r / total_stiff)
+        dFz_f = W_transfer_geometric_f + W_transfer_elastic * (total_stiff_f / total_stiff)
+        dFz_r = W_transfer_geometric_r + W_transfer_elastic * (total_stiff_r / total_stiff)
 
         Fz_f_static = (self.m_s * self.g * self.lr) / (self.lf + self.lr) + (Fz_aero * 0.4)
         Fz_r_static = (self.m_s * self.g * self.lf) / (self.lf + self.lr) + (Fz_aero * 0.6)
@@ -258,10 +280,32 @@ class DifferentiableMultiBodyVehicle:
         vz_rl = vz - (self.track_w / 2) * wx + self.lr * wy
         vz_rr = vz + (self.track_w / 2) * wx + self.lr * wy
 
-        F_spring_fl = -wheel_rate_f * z_fl - damp_rate_f * vz_fl
-        F_spring_fr = -wheel_rate_f * z_fr - damp_rate_f * vz_fr
-        F_spring_rl = -wheel_rate_r * z_rl - damp_rate_r * vz_rl
-        F_spring_rr = -wheel_rate_r * z_rr - damp_rate_r * vz_rr
+        camber_gain_f = self.vp.get('camber_gain_f', -0.8)
+        camber_gain_r = self.vp.get('camber_gain_r', -0.6)
+        static_camber_f = self.vp.get('static_camber_f', -2.0)
+        static_camber_r = self.vp.get('static_camber_r', -1.5)
+
+        heave_f = (z_fl + z_fr) / 2.0
+        heave_r = (z_rl + z_rr) / 2.0
+
+        gamma_f = jnp.clip(static_camber_f + phi_deg * camber_gain_f + heave_f * self.vp.get('camber_per_m_travel_f', -25.0), -10.0, 5.0)
+        gamma_r = jnp.clip(static_camber_r + phi_deg * camber_gain_r + heave_r * self.vp.get('camber_per_m_travel_r', -20.0), -10.0, 5.0)
+
+        bump_stop_travel = 0.025
+        bump_stop_rate   = 50000.0
+
+        bump_fl = jnp.maximum(0.0, jnp.maximum(0.0, -z_fl) - bump_stop_travel)
+        bump_fr = jnp.maximum(0.0, jnp.maximum(0.0, -z_fr) - bump_stop_travel)
+        bump_rl = jnp.maximum(0.0, jnp.maximum(0.0, -z_rl) - bump_stop_travel)
+        bump_rr = jnp.maximum(0.0, jnp.maximum(0.0, -z_rr) - bump_stop_travel)
+
+        c_high_f = damp_rate_f * 0.4
+        c_high_r = damp_rate_r * 0.4
+
+        F_spring_fl = -wheel_rate_f * z_fl + self._damper_force(vz_fl, damp_rate_f, c_high_f) - bump_stop_rate * bump_fl
+        F_spring_fr = -wheel_rate_f * z_fr + self._damper_force(vz_fr, damp_rate_f, c_high_f) - bump_stop_rate * bump_fr
+        F_spring_rl = -wheel_rate_r * z_rl + self._damper_force(vz_rl, damp_rate_r, c_high_r) - bump_stop_rate * bump_rl
+        F_spring_rr = -wheel_rate_r * z_rr + self._damper_force(vz_rr, damp_rate_r, c_high_r) - bump_stop_rate * bump_rr
         
         F_arb_f_force = -arb_rate_f * (z_fl - z_fr)
         F_arb_r_force = -arb_rate_r * (z_rl - z_rr)
@@ -346,6 +390,7 @@ class DifferentiableMultiBodyVehicle:
             jnp.array([d_alpha_fl, d_kappa_fl, d_alpha_fr, d_kappa_fr, 
                        d_alpha_rl, d_kappa_rl, d_alpha_rr, d_kappa_rr])
         ])
+        dx_dt = jnp.where(jnp.isfinite(dx_dt), dx_dt, jnp.zeros_like(dx_dt))
         return dx_dt
 
     @partial(jax.jit, static_argnums=(0,))
@@ -370,7 +415,20 @@ class DifferentiableMultiBodyVehicle:
         therm_next = therm_half + 0.5 * dt * dx_dt_final[28:38]
         trans_next = trans_half + 0.5 * dt * dx_dt_final[38:46]
         
-        return x_next_q.at[14:28].set(v_next).at[28:38].set(therm_next).at[38:46].set(trans_next)
+        x_out = x_next_q.at[14:28].set(v_next).at[28:38].set(therm_next).at[38:46].set(trans_next)
+
+        # Clamp state to physical bounds to prevent L-BFGS gradient exploration from diverging
+        x_out = x_out.at[14].set(jnp.clip(x_out[14], -80.0,  80.0))  # vx
+        x_out = x_out.at[15].set(jnp.clip(x_out[15], -30.0,  30.0))  # vy
+        x_out = x_out.at[16].set(jnp.clip(x_out[16],  -5.0,   5.0))  # vz
+        x_out = x_out.at[17].set(jnp.clip(x_out[17],  -8.0,   8.0))  # wx
+        x_out = x_out.at[18].set(jnp.clip(x_out[18],  -8.0,   8.0))  # wy
+        x_out = x_out.at[19].set(jnp.clip(x_out[19],  -8.0,   8.0))  # wz
+        x_out = x_out.at[2].set(jnp.clip(x_out[2],   -0.5,   2.0))   # Z
+        x_out = x_out.at[3].set(jnp.clip(x_out[3],   -0.5,   0.5))   # phi_roll
+        x_out = x_out.at[4].set(jnp.clip(x_out[4],   -0.3,   0.3))   # theta_pitch
+        x_out = x_out.at[38:46].set(jnp.clip(x_out[38:46], -0.5, 0.5))  # transient slip
+        return x_out
 
 class DynamicBicycleModel:
     """Retained for Acados/CasADi legacy compatibility."""
