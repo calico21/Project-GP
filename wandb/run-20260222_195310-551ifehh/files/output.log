@@ -1,0 +1,7 @@
+
+[MORL-DB] Initializing Pareto Policy Ensemble...
+[SB-TRPO] Compiling 14-DOF Analytical Constraints and Physics Gradients via XLA...
+   [SB-TRPO] i=0 | Safe: 20/20 | Grip: 1.503 G | Stab: -2.905 | GradNorm: 1.62e-04 | MuMag: 0.241
+   [SB-TRPO] i=20 | Safe: 20/20 | Grip: 1.503 G | Stab: -2.905 | GradNorm: 1.59e-04 | MuMag: 0.200
+   [SB-TRPO] i=40 | Safe: 20/20 | Grip: 1.503 G | Stab: -2.905 | GradNorm: 1.71e-04 | MuMag: 0.214
+   [SB-TRPO] i=60 | Safe: 20/20 | Grip: 1.503 G | Stab: -2.905 | GradNorm: 1.67e-04 | MuMag: 0.249

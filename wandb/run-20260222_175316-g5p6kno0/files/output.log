@@ -1,0 +1,21 @@
+
+[MORL-DB] Initializing Pareto Policy Ensemble...
+[SB-TRPO] Compiling 14-DOF Analytical Constraints and Physics Gradients via XLA...
+   [SB-TRPO] Active Policies Safe: 20/20 | Max Grip: 1.503 G | Max Stab: -2.905
+/mnt/c/Users/alexr/Desktop/Ter26/Ter26 Carmaker/FS_Driver_Setup_Optimizer/optimization/evolutionary.py:182: RuntimeWarning: overflow encountered in scalar multiply
+  safe_dists = np.where(np.isinf(crowding_dists), np.max(np.nan_to_num(crowding_dists, nan=0.0)) * 2 + 1.0, crowding_dists)
+/mnt/c/Users/alexr/Desktop/Ter26/Ter26 Carmaker/FS_Driver_Setup_Optimizer/optimization/evolutionary.py:183: RuntimeWarning: invalid value encountered in divide
+  probs = safe_dists / np.sum(safe_dists) if np.sum(safe_dists) > 0 else np.ones(len(pareto_indices)) / len(pareto_indices)
+Traceback (most recent call last):
+  File "/mnt/c/Users/alexr/Desktop/Ter26/Ter26 Carmaker/FS_Driver_Setup_Optimizer/main.py", line 238, in <module>
+    main()
+  File "/mnt/c/Users/alexr/Desktop/Ter26/Ter26 Carmaker/FS_Driver_Setup_Optimizer/main.py", line 233, in main
+    execute_morl_setup()
+  File "/mnt/c/Users/alexr/Desktop/Ter26/Ter26 Carmaker/FS_Driver_Setup_Optimizer/main.py", line 164, in execute_morl_setup
+    pareto_setups, pareto_grips, pareto_stabs = optimizer.run(iterations=100)
+                                                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/mnt/c/Users/alexr/Desktop/Ter26/Ter26 Carmaker/FS_Driver_Setup_Optimizer/optimization/evolutionary.py", line 188, in run
+    elite_local_idx = np.random.choice(len(pareto_indices), p=probs)
+                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "numpy/random/mtrand.pyx", line 990, in numpy.random.mtrand.RandomState.choice
+ValueError: probabilities contain NaN

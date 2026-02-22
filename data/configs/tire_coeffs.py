@@ -6,18 +6,16 @@ tire_coeffs = {
     'FNOMIN': 1000.0,   # Nominal Load [N]
     
     # --- Lateral (Fy) ---
-    'PCY1': 1.45,       # Shape Factor
-    'PDY1': 1.45,       # Peak Friction (Mu). Reduced from 2.1 to 1.45
-    'PDY2': -0.15,      # Load Sensitivity (Grip drops slightly with load)
+    'PDY1': 2.218,    # Peak lateral friction - FITTED
+    'PDY2': -0.250,   # Load sensitivity - CORRECTED (raw fit gave -0.011, physically wrong)
+    'PCY1': 1.45,     # Replace with your mean C_Shape from master_pacejka
+    'PEY1': -0.15,    # Replace with your mean E_Curve from master_pacejka
+    'PKY1': 25.0,     # Keep generic until properly fitted from stiffness vs load curve
     
-    'PKY1': 25.0,       # Cornering Stiffness
-    'PKY2': -1.0,
-    'PEY1': 0.5,        # Curvature
-    
-    # --- Longitudinal (Fx) ---
-    'PCX1': 1.50,
-    'PDX1': 1.50,       # Traction matches cornering
-    'PDX2': -0.15,
+    # Longitudinal - no data, use conservative estimates
+    'PDX1': 2.44,     # PDY1 * 1.10 (longitudinal typically 5-15% higher)
+    'PCX1': 1.60,
+    'PEX1': -0.50,
     'PKX1': 30.0,
     
     # --- Combined Slip & Transient ---

@@ -53,7 +53,7 @@ class MORL_SB_TRPO_Optimizer:
         params = self.unnormalize_setup(setup_norm)
 
         # 1. Steady State Grip Evaluation
-        x_init_skidpad = jnp.zeros(46).at[14].set(12.0)
+        x_init_skidpad = jnp.zeros(46).at[14].set(15.0)
         obj_grip, min_safety = compute_skidpad_objective(self.vehicle.simulate_step, params, x_init_skidpad)
         
         # 2. Transient Frequency Response Evaluation
@@ -132,80 +132,72 @@ class MORL_SB_TRPO_Optimizer:
     def run(self, iterations=100):
         print("\n[MORL-DB] Initializing Pareto Policy Ensemble...")
         print("[SB-TRPO] Compiling 14-DOF Analytical Constraints and Physics Gradients via XLA...")
+        # Diagnostic: verify objective sensitivity to setup params
+        test_soft = jnp.array([0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1])  # soft setup
+        test_hard = jnp.array([0.9, 0.9, 0.9, 0.9, 0.9, 0.9, 0.3])  # hard setup
+        g_soft, s_soft, _ = self.evaluate_setup_jax(test_soft)
+        g_hard, s_hard, _ = self.evaluate_setup_jax(test_hard)
+        print(f"   [DIAGNOSTIC] Soft setup grip: {float(g_soft):.4f} G | Hard setup grip: {float(g_hard):.4f} G")
+        print(f"   [DIAGNOSTIC] If these are identical, setup_params are not reaching the physics.")
+        # Evaluate a single setup and return grip, stability, safety
+        def evaluate_single(setup_norm_np):
+            setup_norm = jnp.array(setup_norm_np)
+            grip, stab, safety = self.evaluate_setup_jax(setup_norm)
+            return float(grip), float(stab), float(safety)
         
-        optimizer = optax.chain(
-            optax.clip_by_global_norm(1.0),
-            optax.adam(learning_rate=0.01)
-        )
-        opt_state = optimizer.init(self.ensemble_params)
-        old_params = self.ensemble_params
+        # Initialize population in normalised [0,1] space using sigmoid of current mu
+        population = np.clip(
+            0.5 + np.array(self.ensemble_params['mu']) * 0.2,
+            0.0, 1.0
+        )  # shape (20, 7)
+        
+        sigma = 0.15  # Initial CMA-ES step size
         
         for i in range(iterations):
-            self.key, subkey = jax.random.split(self.key)
-            keys = jax.random.split(subkey, self.ensemble_size)
+            grips, stabs, safeties = [], [], []
             
-            grads, grips, stabs, safeties, kls = self.update_ensemble(
-                self.ensemble_params, old_params, self.omegas, opt_state, keys
-            )
-
-            mu_grad_nan = jnp.any(jnp.isnan(grads['mu']))
-            if mu_grad_nan:
-                print(f"   [WARNING i={i}] NaN gradient detected — skipping update, reverting params.")
-                self.ensemble_params = old_params
-                continue
-
-            updates, opt_state = optimizer.update(grads, opt_state)
-            new_params = optax.apply_updates(self.ensemble_params, updates)
+            # Evaluate current population
+            for k in range(self.ensemble_size):
+                g, s, sf = evaluate_single(population[k])
+                grips.append(g)
+                stabs.append(s)
+                safeties.append(sf)
             
-            if i > 10 and i % 5 == 0:
-                current_setups_norm = jax.nn.sigmoid(self.ensemble_params['mu'])
-                current_setups_phys = np.array(jax.vmap(self.unnormalize_setup)(current_setups_norm))
-                valid_mask = np.array(safeties) > 0
-                if np.any(valid_mask):
-                    self.archive_setups.extend(current_setups_phys[valid_mask])
-                    self.archive_grips.extend(np.array(grips)[valid_mask])
-                    self.archive_stabs.extend(np.array(stabs)[valid_mask])
-
-            # Evolutionary Crossover: Replace dominated setups with mutated elites
-            if i % 10 == 0 and i > 0:
-                grip_np = np.nan_to_num(np.array(grips), nan=-999.0)
-                stab_np = np.nan_to_num(np.array(stabs), nan=-999.0)
-                pareto_indices = self.get_non_dominated_indices(grip_np, stab_np)
-                
-                if len(pareto_indices) > 0 and len(pareto_indices) < self.ensemble_size:
-                    
-                    # NSGA-II Diversity Maintenance
-                    pareto_objs = np.stack([grip_np[pareto_indices], stab_np[pareto_indices]], axis=1)
-                    crowding_dists = self.compute_crowding_distance(pareto_objs)
-                    
-                    # Convert distance to probability (favor less crowded regions)
-                    safe_dists = np.where(np.isinf(crowding_dists), np.max(np.nan_to_num(crowding_dists, nan=0.0)) * 2 + 1.0, crowding_dists)
-                    probs = safe_dists / np.sum(safe_dists) if np.sum(safe_dists) > 0 else np.ones(len(pareto_indices)) / len(pareto_indices)
-
-                    for j in range(self.ensemble_size):
-                        if j not in pareto_indices:
-                            # Sample parent based on crowding distance probability
-                            elite_local_idx = np.random.choice(len(pareto_indices), p=probs)
-                            elite_idx = pareto_indices[elite_local_idx]
-                            
-                            mu_copy = np.array(new_params['mu'])
-                            log_std_copy = np.array(new_params['log_std'])
-                            mu_copy[j] = mu_copy[elite_idx]
-                            log_std_copy[j] = np.full(self.dim, -0.5) 
-                            new_params['mu'] = jnp.array(mu_copy)
-                            new_params['log_std'] = jnp.array(log_std_copy)
-                            
-                            omegas_np = np.array(self.omegas)
-                            omegas_np[j] = np.random.uniform(0.0, 1.0)
-                            self.omegas = jnp.array(omegas_np)
-                            
-            old_params = self.ensemble_params
-            self.ensemble_params = new_params
+            grips = np.array(grips)
+            stabs = np.array(stabs)
+            safeties = np.array(safeties)
+            
+            # Archive valid setups
+            valid_mask = safeties > 0
+            if np.any(valid_mask):
+                phys = np.array(jax.vmap(self.unnormalize_setup)(jnp.array(population)))
+                self.archive_setups.extend(phys[valid_mask])
+                self.archive_grips.extend(grips[valid_mask])
+                self.archive_stabs.extend(stabs[valid_mask])
+            
+            # Pareto selection
+            grip_np = np.nan_to_num(grips, nan=-999.0)
+            stab_np = np.nan_to_num(stabs, nan=-999.0)
+            pareto_indices = self.get_non_dominated_indices(grip_np, stab_np)
+            
+            # Generate next generation: mutate elites
+            new_population = population.copy()
+            for j in range(self.ensemble_size):
+                if j not in pareto_indices:
+                    parent_idx = pareto_indices[np.random.randint(len(pareto_indices))]
+                    noise = np.random.randn(self.dim) * sigma
+                    new_population[j] = np.clip(population[parent_idx] + noise, 0.0, 1.0)
+            
+            # Decay step size slowly
+            sigma = max(sigma * 0.995, 0.02)
+            population = new_population
             
             if i % 20 == 0:
-                safe_count = np.sum(np.array(safeties) > 0)
-                print(f"   [SB-TRPO] Active Policies Safe: {safe_count}/{self.ensemble_size} | Max Grip: {np.max(grips):.3f} G | Max Stab: {np.max(stabs):.3f}")
-
+                safe_count = np.sum(safeties > 0)
+                print(f"   [SB-TRPO] i={i} | Safe: {safe_count}/{self.ensemble_size} | "
+                    f"Grip: {np.max(grips):.3f} G | Stab: {np.max(stabs):.3f} | sigma: {sigma:.3f}")
+        
+        # Final archive processing (keep existing code below)
         if len(self.archive_grips) > 0:
             all_setups = np.array(self.archive_setups)
             all_grips = np.array(self.archive_grips)
@@ -217,6 +209,5 @@ class MORL_SB_TRPO_Optimizer:
             df_archive = df_archive.drop_duplicates().sort_values('grip', ascending=False).head(150)
             
             return df_archive[self.var_keys].values, df_archive['grip'].values, df_archive['stab'].values
-            
         else:
             return np.zeros((1,7)), np.array([0]), np.array([0])

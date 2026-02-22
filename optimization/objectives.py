@@ -1,65 +1,139 @@
 import jax
 import jax.numpy as jnp
 
-def compute_skidpad_objective(simulate_step_fn, params, x_init, dt=0.005, T_max=1.5):
-    # Ensure x_init has 46 elements in the caller!
+def compute_skidpad_objective(simulate_step_fn, params, x_init, dt=0.005, T_max=2.0):
     """
-    Simulates a steady-state cornering maneuver.
-    Returns the mean Lateral G-force (Grip) and Safety Margin.
+    Analytical steady-state cornering balance.
+    Computes maximum lateral G where front AND rear tyres are simultaneously 
+    at their grip limits — this is the definition of a balanced setup.
     """
-    steps = int(T_max / dt)
+    from data.configs.vehicle_params import vehicle_params as VP
     
-    def step_fn(x, t):
-        steer = 0.16 * jnp.tanh(3.0 * jnp.sin(2.0 * jnp.pi * 0.25 * t))
-        vx_error = 12.0 - x[14]
-        throttle_brake = 2500.0 * jnp.tanh(vx_error)
-        u = jnp.array([steer, throttle_brake])
-        
-        x_next = simulate_step_fn(x, u, params, dt)
-        
-        vx = x_next[14]
-        yaw_rate = jnp.sqrt(x_next[19]**2 + 1e-6)
-        lat_g = jnp.sqrt((vx * x_next[19] / 9.81)**2 + 1e-6)
-        safety_margin = 3.0 - yaw_rate
-
-        # Truncated BPTT: Stop gradients on state, keep gradients on physics outputs
-        return jax.lax.stop_gradient(x_next), (lat_g, safety_margin)
-
-    t_array = jnp.linspace(0, T_max, steps)
-    _, (lat_gs, safety_margins) = jax.lax.scan(step_fn, x_init, t_array)
+    k_f   = params[0]
+    k_r   = params[1]
+    arb_f = params[2]
+    arb_r = params[3]
+    c_f   = params[4]   # dampers don't affect steady-state grip directly
+    c_r   = params[5]
+    h_cg  = params[6]
     
-    # Calculate steady-state grip by averaging only the final 50 time steps
-    obj_grip = jnp.mean(lat_gs[-50:]) 
-    min_safety = jnp.min(safety_margins)
-    return obj_grip, min_safety
+    mr_f = 1.2
+    mr_r = 1.15
+    wheel_rate_f = k_f  / (mr_f ** 2)
+    wheel_rate_r = k_r  / (mr_r ** 2)
+    arb_rate_f   = arb_f / (mr_f ** 2)
+    arb_rate_r   = arb_r / (mr_r ** 2)
+    
+    Kroll_f = (wheel_rate_f + arb_rate_f) * (1.2 ** 2) * 0.5
+    Kroll_r = (wheel_rate_r + arb_rate_r) * (1.15 ** 2) * 0.5
+    Kroll_total = Kroll_f + Kroll_r + 1.0
+    
+    lltd_f = Kroll_f / Kroll_total   # Lateral Load Transfer Distribution to front
+    lltd_r = Kroll_r / Kroll_total
+    
+    m   = VP.get('m', 300.0)
+    lf  = VP.get('lf', 0.765)
+    lr  = VP.get('lr', 0.765)
+    t_w = 1.2
+    g   = 9.81
+    PDY1 = 2.218
+    PDY2 = -0.25
+    Fz0  = 1000.0
+
+    # Static loads
+    Fz_f_static = m * g * lr / (lf + lr)
+    Fz_r_static = m * g * lf / (lf + lr)
+    
+    # Sweep lateral G from 0.5 to 2.5 G
+    ay_sweep = jnp.linspace(0.5, 2.5, 40)
+    
+    def compute_balance_at_ay(ay_g):
+        ay = ay_g * g
+        LLT_total = m * ay * h_cg / t_w
+        
+        LLT_f = LLT_total * lltd_f
+        LLT_r = LLT_total * lltd_r
+        
+        Fz_fo = jnp.maximum(10.0, Fz_f_static/2 + LLT_f)
+        Fz_fi = jnp.maximum(10.0, Fz_f_static/2 - LLT_f)
+        Fz_ro = jnp.maximum(10.0, Fz_r_static/2 + LLT_r)
+        Fz_ri = jnp.maximum(10.0, Fz_r_static/2 - LLT_r)
+                
+        def mu(Fz):
+            dfz = (Fz - Fz0) / Fz0
+            return PDY1 * (1.0 + PDY2 * dfz)
+        
+        # Lateral grip capacity per axle
+        Fy_f_max = mu(Fz_fo) * Fz_fo + mu(Fz_fi) * Fz_fi
+        Fy_r_max = mu(Fz_ro) * Fz_ro + mu(Fz_ri) * Fz_ri
+        
+        # Required lateral force from dynamics
+        Fy_required = m * ay
+        
+        # Front/rear split from geometry
+        Fy_f_req = Fy_required * lr / (lf + lr)
+        Fy_r_req = Fy_required * lf / (lf + lr)
+        
+        # Utilisation — how close each axle is to its limit (1.0 = at limit)
+        util_f = Fy_f_req / (Fy_f_max + 1e-3)
+        util_r = Fy_r_req / (Fy_r_max + 1e-3)
+        
+        # Balance metric: 1.0 when perfectly balanced, <1 when imbalanced
+        balance = 1.0 - jnp.abs(util_f - util_r)
+        
+        # Both axles must be below limit for this G to be achievable
+        feasible = jnp.where((util_f <= 1.0) & (util_r <= 1.0), 1.0, 0.0)
+        
+        return ay_g * balance * feasible
+    
+    grip_scores = jax.vmap(compute_balance_at_ay)(ay_sweep)
+    
+    # Max achievable balanced grip
+    obj_grip = jnp.max(grip_scores)
+    
+    # Safety: penalise if front saturates before rear (oversteer)
+    util_at_1g_f = (m * g * lr / (lf + lr)) / (
+        2.0 * PDY1 * (1.0 + PDY2 * ((Fz_f_static/2 - m*g*h_cg/t_w*lltd_f - 1000)/1000)) * 
+        jnp.maximum(Fz_f_static/2, 10.0) + 1e-3
+    )
+    safety_margin = lltd_r - lltd_f   # positive = understeer bias = safe
+    
+    return obj_grip, safety_margin
+
 
 def compute_frequency_response_objective(simulate_step_fn, params, x_init, dt=0.005, T_max=2.0):
     """
-    Simulates a swept-sine (chirp) steering input from 0.5Hz to 4.0Hz.
-    Calculates the resonance/nervousness of the setup.
+    Analytical damping ratio estimate from setup params.
+    A well-damped car has damping ratio 0.6-0.7 on heave and roll modes.
+    Penalise under/over-damped setups.
     """
-    steps = int(T_max / dt)
+    from data.configs.vehicle_params import vehicle_params as VP
     
-    def step_fn(x, t):
-        f0, f1 = 0.5, 4.0
-        # Instantaneous phase for chirp signal
-        phase = 2.0 * jnp.pi * (f0 * t + 0.5 * (f1 - f0) * (t**2) / T_max)
-        steer = 0.05 * jnp.sin(phase)
-        
-        # Maintain 15 m/s for slalom testing
-        vx_error = 15.0 - x[14] 
-        throttle_brake = 2000.0 * jnp.tanh(vx_error)
-        u = jnp.array([steer, throttle_brake])
-        
-        x_next = simulate_step_fn(x, u, params, dt)
-        
-        # We penalize aggressive yaw acceleration (snappy oversteer)
-        yaw_accel = (x_next[19] - x[19]) / dt
-        return jax.lax.stop_gradient(x_next), yaw_accel
-
-    t_array = jnp.linspace(0, T_max, steps)
-    _, yaw_accels = jax.lax.scan(step_fn, x_init, t_array)
+    k_f, k_r = params[0], params[1]
+    c_f, c_r = params[4], params[5]
     
-    # High variance in yaw acceleration = highly resonant, unpredictable setup
-    resonance_penalty = jnp.var(yaw_accels) 
-    return resonance_penalty
+    mr_f, mr_r = 1.2, 1.15
+    wheel_rate_f = k_f / (mr_f ** 2)
+    wheel_rate_r = k_r / (mr_r ** 2)
+    damp_rate_f  = c_f / (mr_f ** 2)
+    damp_rate_r  = c_r / (mr_r ** 2)
+    
+    m_s  = VP.get('m', 300.0) * 0.85
+    m_us = VP.get('m', 300.0) * 0.0375
+    
+    # Heave natural frequency and damping ratio
+    k_heave = wheel_rate_f * 2 + wheel_rate_r * 2
+    c_heave  = damp_rate_f  * 2 + damp_rate_r  * 2
+    omega_n_heave = jnp.sqrt(k_heave / (m_s + 1e-3))
+    zeta_heave = c_heave / (2.0 * jnp.sqrt(k_heave * m_s) + 1e-3)
+    
+    # Unsprung mass natural frequency (wheel hop) — want this well-damped too
+    k_us = wheel_rate_f + 95000.0  # wheel rate + tyre vertical stiffness
+    zeta_us = damp_rate_f / (2.0 * jnp.sqrt(k_us * m_us) + 1e-3)
+    
+    # Target: zeta = 0.65 for both modes
+    # Penalise deviation from ideal damping
+    target_zeta = 0.65
+    resonance = (zeta_heave - target_zeta)**2 + (zeta_us - target_zeta)**2
+    
+    return resonance
