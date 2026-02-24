@@ -18,17 +18,19 @@ class MORL_SB_TRPO_Optimizer:
     Multi-Objective Reinforcement Learning with Safety-Biased Trust Region Policy Optimization.
     Searches the 14-DOF manifold for Pareto-optimal mechanical setup parameters (Grip vs. Stability).
     """
-    def __init__(self, ensemble_size=20, dim=7, rng_seed=42):
+    def __init__(self, ensemble_size=20, dim=8, rng_seed=42):
         self.dim = dim
         self.ensemble_size = ensemble_size
-        self.var_keys = ['k_f', 'k_r', 'arb_f', 'arb_r', 'c_f', 'c_r', 'h_cg']
+        
+        # --- UPGRADE 7.2: Add brake_bias_f to search space ---
+        self.var_keys = ['k_f', 'k_r', 'arb_f', 'arb_r', 'c_f', 'c_r', 'h_cg', 'brake_bias_f']
         
         # Dynamically reference VP_DICT to prevent mechanical impossibility
+        # Lower bounds, Upper bounds (Added Brake Bias as 8th parameter)
         self.raw_bounds = jnp.array([
-            [15000.0, 15000.0, 0.0,   0.0,   500.0,  500.0,  0.25],
-            [55000.0, 55000.0, 800.0, 800.0, 4000.0, 4000.0, 0.35]
+            [15000.0, 15000.0, 0.0,    0.0,    1000.0, 1000.0, 0.25, 0.45], # Lower
+            [60000.0, 60000.0, 2000.0, 2000.0, 6000.0, 6000.0, 0.35, 0.75]  # Upper
         ])
-        
         self.vehicle = DifferentiableMultiBodyVehicle(VP_DICT, TP_DICT)
         self.key = jax.random.PRNGKey(rng_seed)
         
@@ -132,13 +134,15 @@ class MORL_SB_TRPO_Optimizer:
     def run(self, iterations=100):
         print("\n[MORL-DB] Initializing Pareto Policy Ensemble...")
         print("[SB-TRPO] Compiling 14-DOF Analytical Constraints and Physics Gradients via XLA...")
-        # Diagnostic: verify objective sensitivity to setup params
-        test_soft = jnp.array([0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1])  # soft setup
-        test_hard = jnp.array([0.9, 0.9, 0.9, 0.9, 0.9, 0.9, 0.3])  # hard setup
+        
+        # Diagnostic: verify objective sensitivity to 8 setup params
+        test_soft = jnp.array([0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1])  # soft setup
+        test_hard = jnp.array([0.9, 0.9, 0.9, 0.9, 0.9, 0.9, 0.3, 0.9])  # hard setup
         g_soft, s_soft, _ = self.evaluate_setup_jax(test_soft)
         g_hard, s_hard, _ = self.evaluate_setup_jax(test_hard)
         print(f"   [DIAGNOSTIC] Soft setup grip: {float(g_soft):.4f} G | Hard setup grip: {float(g_hard):.4f} G")
         print(f"   [DIAGNOSTIC] If these are identical, setup_params are not reaching the physics.")
+        
         # Evaluate a single setup and return grip, stability, safety
         def evaluate_single(setup_norm_np):
             setup_norm = jnp.array(setup_norm_np)
@@ -149,7 +153,7 @@ class MORL_SB_TRPO_Optimizer:
         population = np.clip(
             0.5 + np.array(self.ensemble_params['mu']) * 0.2,
             0.0, 1.0
-        )  # shape (20, 7)
+        )  # shape (20, 8)
         
         sigma = 0.15  # Initial CMA-ES step size
         
@@ -168,7 +172,8 @@ class MORL_SB_TRPO_Optimizer:
             safeties = np.array(safeties)
             
             # Archive valid setups
-            valid_mask = safeties > 0
+            # Because objectives.py already subtracts 0.05, safeties > 0 mathematically means > 5% understeer margin
+            valid_mask = safeties > 0 
             if np.any(valid_mask):
                 phys = np.array(jax.vmap(self.unnormalize_setup)(jnp.array(population)))
                 self.archive_setups.extend(phys[valid_mask])
@@ -182,7 +187,6 @@ class MORL_SB_TRPO_Optimizer:
             
             # --- FIX: PREVENT POPULATION STAGNATION ---
             # Force exploration by keeping a maximum of 50% of the population as unchanged "elites"
-            # (Ensures at least 1 elite survives to prevent random randint(0) errors)
             num_elites = max(1, min(len(pareto_indices), self.ensemble_size // 2))
             
             # Sort the pareto indices by Grip score so we always keep the highest performers
@@ -205,9 +209,9 @@ class MORL_SB_TRPO_Optimizer:
             if i % 20 == 0:
                 safe_count = np.sum(safeties > 0)
                 print(f"   [SB-TRPO] i={i} | Safe: {safe_count}/{self.ensemble_size} | "
-                    f"Grip: {np.max(grips):.3f} G | Stab: {np.max(stabs):.3f} | sigma: {sigma:.3f}")
+                      f"Grip: {np.max(grips):.3f} G | Stab: {np.max(stabs):.3f} | sigma: {sigma:.3f}")
         
-        # Final archive processing (keep existing code below)
+        # Final archive processing
         if len(self.archive_grips) > 0:
             all_setups = np.array(self.archive_setups)
             all_grips = np.array(self.archive_grips)
@@ -216,8 +220,11 @@ class MORL_SB_TRPO_Optimizer:
             df_archive = pd.DataFrame(all_setups, columns=self.var_keys)
             df_archive['grip'] = all_grips
             df_archive['stab'] = all_stabs
+            # Nomenclature Correction from the initial analysis (Stability_Overshoot to Understeer_Margin)
+            df_archive.rename(columns={'stab': 'Understeer_Margin'}, inplace=True)
             df_archive = df_archive.drop_duplicates().sort_values('grip', ascending=False).head(150)
             
-            return df_archive[self.var_keys].values, df_archive['grip'].values, df_archive['stab'].values
+            return df_archive[self.var_keys].values, df_archive['grip'].values, df_archive['Understeer_Margin'].values
         else:
-            return np.zeros((1,7)), np.array([0]), np.array([0])
+            # Fallback to dimension 8
+            return np.zeros((1, 8)), np.array([0]), np.array([0])

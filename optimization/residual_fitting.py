@@ -18,7 +18,7 @@ def generate_synthetic_flex_data(num_samples=2000, key_seed=42):
     # Randomize vehicle states: suspension displacements (q) and momentums (p)
     q = jax.random.normal(k1, (num_samples, 14)) * 0.05  # +/- 50mm suspension travel
     p = jax.random.normal(k2, (num_samples, 14)) * 0.1   # minor velocities
-    setup_params = jax.random.normal(k3, (num_samples, 7))
+    setup_params = jax.random.normal(k3, (num_samples, 8))
 
     # Calculate synthetic diagonal chassis twist from suspension compressions
     # q[6]=FL, q[7]=FR, q[8]=RL, q[9]=RR

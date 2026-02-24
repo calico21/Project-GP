@@ -1,0 +1,40 @@
+
+[MORL-DB] Initializing Pareto Policy Ensemble...
+[SB-TRPO] Compiling 14-DOF Analytical Constraints and Physics Gradients via XLA...
+   [DIAGNOSTIC] Soft setup grip: -2.4839 G | Hard setup grip: -232.4886 G
+   [DIAGNOSTIC] If these are identical, setup_params are not reaching the physics.
+Traceback (most recent call last):
+  File "/home/alexr/FS_Driver_Setup_Optimizer/main.py", line 238, in <module>
+    main()
+  File "/home/alexr/FS_Driver_Setup_Optimizer/main.py", line 233, in main
+    execute_morl_setup()
+  File "/home/alexr/FS_Driver_Setup_Optimizer/main.py", line 164, in execute_morl_setup
+    pareto_setups, pareto_grips, pareto_stabs = optimizer.run(iterations=400)
+                                                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/alexr/FS_Driver_Setup_Optimizer/optimization/evolutionary.py", line 165, in run
+    g, s, sf = evaluate_single(population[k])
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/alexr/FS_Driver_Setup_Optimizer/optimization/evolutionary.py", line 149, in evaluate_single
+    grip, stab, safety = self.evaluate_setup_jax(setup_norm)
+                         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/alexr/FS_Driver_Setup_Optimizer/optimization/evolutionary.py", line 55, in evaluate_setup_jax
+    params = self.unnormalize_setup(setup_norm)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/alexr/FS_Driver_Setup_Optimizer/optimization/evolutionary.py", line 51, in unnormalize_setup
+    return self.raw_bounds[0] + x_norm * (self.raw_bounds[1] - self.raw_bounds[0])
+                                ~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  File "/home/alexr/project_gp_env/lib/python3.12/site-packages/jax/_src/numpy/array_methods.py", line 1146, in op
+    return getattr(self.aval, f"_{name}")(self, *args)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/alexr/project_gp_env/lib/python3.12/site-packages/jax/_src/numpy/array_methods.py", line 609, in deferring_binary_op
+    return binary_op(*args)
+           ^^^^^^^^^^^^^^^^
+  File "/home/alexr/project_gp_env/lib/python3.12/site-packages/jax/_src/numpy/ufunc_api.py", line 182, in __call__
+    return call(*args)
+           ^^^^^^^^^^^
+  File "/home/alexr/project_gp_env/lib/python3.12/site-packages/jax/_src/numpy/ufuncs.py", line 1281, in multiply
+    return lax.mul(x, y) if x.dtype != bool else lax.bitwise_and(x, y)
+           ^^^^^^^^^^^^^
+TypeError: mul got incompatible shapes for broadcasting: (7,), (8,).
+--------------------
+For simplicity, JAX has removed its internal frames from the traceback of the following exception. Set JAX_TRACEBACK_FILTERING=off to include these.

@@ -1,10 +1,10 @@
 import jax
 import jax.numpy as jnp
-from jax import jit, vmap
+from jax import jit, vmap, remat
 import numpy as np
 from functools import partial
-from jax.scipy.optimize import minimize
-
+from scipy.optimize import minimize as scipy_minimize
+from jax import value_and_grad
 from models.vehicle_dynamics import DifferentiableMultiBodyVehicle
 from data.configs.vehicle_params import vehicle_params as VP_DICT
 from data.configs.tire_coeffs import tire_coeffs as TP_DICT
@@ -49,23 +49,24 @@ class DiffWMPCSolver:
     def _simulate_trajectory(self, wavelet_coeffs, x0, setup_params, track_k, track_x, track_y, track_psi, track_w_left, track_w_right, w_mu, dt_control=0.05):
         """
         Unrolls the 46-DOF physics and computes Stochastic Covariance Tube over the horizon.
-        Uses JAX sub-stepping to maintain Störmer-Verlet integrator stability.
+        Uses jax.remat (Gradient Checkpointing) to prevent XLA compile times from exploding.
         """
-        # Inverse Wavelet Transform: Convert frequency domain coefficients to time domain controls
         U_time_domain = jnp.dot(self.W_inv, wavelet_coeffs)
-        
         dt_sub = dt_control / self.n_substeps
         
+        # --- FIX: Checkpoint the outer scan step ---
+        @remat
         def scan_fn(carry, step_data):
             x, var_n, var_alpha = carry
             u, k_c, x_ref, y_ref, psi_ref, mu_uncert = step_data
             
-            # Clip controls to physically realisable bounds before passing to physics
             u_clipped = jnp.array([
                 jnp.clip(u[0], -0.6, 0.6),        # Steering: ±34 degrees
                 jnp.clip(u[1], -3000.0, 2000.0)   # Longitudinal force: braking/driving limits
             ])
             
+            # --- FIX: Checkpoint the inner sub-step ---
+            @remat
             def substep(x_s, _):
                 return self.vehicle.simulate_step(x_s, u_clipped, setup_params, dt_sub), None
                 
@@ -73,7 +74,7 @@ class DiffWMPCSolver:
 
             v_safe = jnp.maximum(x_next[14], 5.0) # vx is at index 14
             
-            # Cap the variance growth to prevent the stochastic tube from exploding.
+            # Cap the variance growth to prevent the stochastic tube from exploding
             Q_n = 0.01 * mu_uncert * (v_safe ** 2)
             var_n_next = jnp.minimum(var_n * (1.0 + 0.001 * v_safe) + Q_n, 2.0)
             var_alpha_next = jnp.minimum(var_alpha * (1.0 + 0.001 * v_safe) + 0.05 * mu_uncert, 0.5)
@@ -83,12 +84,11 @@ class DiffWMPCSolver:
             dy = x_next[1] - y_ref
             n_deviation = dx * -jnp.sin(psi_ref) + dy * jnp.cos(psi_ref)
             
-            # Use the properly derived n_deviation for progression kinematics
             s_dot = (v_safe) / (1.0 - n_deviation * k_c + 1e-3)
             
             return (x_next, var_n_next, var_alpha_next), (x_next, n_deviation, var_n_next, s_dot)
 
-        carry_init = (x0, 0.0, 0.0) # x_init, var_n, var_alpha
+        carry_init = (x0, 0.0, 0.0) 
         step_inputs = (U_time_domain, track_k, track_x, track_y, track_psi, w_mu)
         
         _, (x_traj, n_traj, var_n_traj, s_dot_traj) = jax.lax.scan(scan_fn, carry_init, step_inputs)
@@ -181,15 +181,17 @@ class DiffWMPCSolver:
             w_accel = jnp.array(np.interp(s_wavelet, s_original, ai_cost_map['w_accel']))
 
         if setup_params is None:
+            # --- FIX: Expanded to 8 parameters to align with brake_bias_f ---
             setup_params = jnp.array([
-                self.vp.get('k_f', 40000.0),   # Front spring N/m
-                self.vp.get('k_r', 40000.0),   # Rear spring N/m
-                self.vp.get('arb_f', 500.0),   # Front ARB N/m
-                self.vp.get('arb_r', 500.0),   # Rear ARB N/m
-                self.vp.get('c_f', 3000.0),    # Front damper Ns/m
-                self.vp.get('c_r', 3000.0),    # Rear damper Ns/m
-                self.vp.get('h_cg', 0.3),      # CG height m
-    ])
+                self.vp.get('k_f', 40000.0),      # Front spring N/m
+                self.vp.get('k_r', 40000.0),      # Rear spring N/m
+                self.vp.get('arb_f', 500.0),      # Front ARB N/m
+                self.vp.get('arb_r', 500.0),      # Rear ARB N/m
+                self.vp.get('c_f', 3000.0),       # Front damper Ns/m
+                self.vp.get('c_r', 3000.0),       # Rear damper Ns/m
+                self.vp.get('h_cg', 0.3),         # CG height m
+                self.vp.get('brake_bias_f', 0.60) # Brake bias front
+            ])
             
         # Initialize 46-D state vector (14 q, 14 v, 10 thermal, 8 transient slip)
         x0 = jnp.zeros(46)
@@ -237,28 +239,39 @@ class DiffWMPCSolver:
         flat_coeffs_init = wavelet_coeffs_guess.flatten()
         
         # Wrapper to reshape the 1D BFGS array back to (N, 2) for your loss function
-        # Wrapper to reshape the 1D BFGS array back to (N, 2) for your loss function
-        @jit
         def objective_wrapper(flat_coeffs):
             coeffs = flat_coeffs.reshape((self.N, 2))
-            # Clip in wavelet domain before physics sees them.
-            # Haar coefficients scale with control amplitude - ±5 is generous.
             coeffs_safe = jnp.clip(coeffs, -5.0, 5.0)
             loss = self._loss_fn(
                 coeffs_safe, x0, setup_params, track_k, track_x, track_y,
                 track_psi, track_w_left, track_w_right, w_mu, w_steer, w_accel
             )
             return jnp.where(jnp.isfinite(loss), loss, 1e8)
+
+        # 1. Compile ONLY a single pass of the value and gradient (Super Fast!)
+        val_and_grad_fn = jit(value_and_grad(objective_wrapper))
+
+        # 2. Bridge JAX and standard SciPy
+        def scipy_obj(x_np):
+            # Convert numpy array to JAX array, run compiled physics, return standard python floats
+            loss_jax, grad_jax = val_and_grad_fn(jnp.array(x_np))
+            return float(loss_jax), np.array(grad_jax, dtype=np.float64)
         
-        print(f"[Diff-WMPC] Optimizing Wavelet Basis over Horizon {self.N} using JAX L-BFGS...")
+        print(f"[Diff-WMPC] Optimizing Wavelet Basis over Horizon {self.N} using SciPy L-BFGS-B...")
         
-        # Execute the BFGS optimization (50 iterations of BFGS usually outperforms 500 of Adam)
-        res = minimize(objective_wrapper, flat_coeffs_init, method='BFGS', options={'maxiter': 50})
+        # 3. Execute standard SciPy BFGS
+        res = scipy_minimize(
+            scipy_obj, 
+            np.array(flat_coeffs_init), 
+            method='L-BFGS-B', 
+            jac=True, 
+            options={'maxiter': 50, 'disp': True} # disp=True prints progress!
+        )
 
         # If BFGS failed (NaN in result), fall back to warm start
         opt_coeffs = jnp.where(
-            jnp.all(jnp.isfinite(res.x)), 
-            res.x, 
+            jnp.all(jnp.isfinite(jnp.array(res.x))), 
+            jnp.array(res.x), 
             flat_coeffs_init
         )
         wavelet_coeffs = opt_coeffs.reshape((self.N, 2))

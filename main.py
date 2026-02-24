@@ -160,7 +160,7 @@ def execute_morl_setup():
     wandb.init(project="Project-GP-Digital-Twin", name="MORL_Pareto_Evolution", config={"ensemble_size": 20})
 
     # Evolves populations natively through the 46-DOF Port-Hamiltonian Engine
-    optimizer = MORL_SB_TRPO_Optimizer(ensemble_size=20, dim=7)
+    optimizer = MORL_SB_TRPO_Optimizer(ensemble_size=20, dim=8)
     pareto_setups, pareto_grips, pareto_stabs = optimizer.run(iterations=400)
     
     # Log final metrics to W&B

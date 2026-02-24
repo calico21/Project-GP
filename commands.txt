@@ -4,7 +4,7 @@ git reset --soft HEAD~1
 git rm --cached data/logs/20250816_185811.asc
 echo "data/logs/*.asc" >> .gitignore
 git add .
-git commit -m "1.0 - code updates (ignoring large logs)"
+git commit -m ""
 git push
 
 
@@ -17,4 +17,12 @@ source ~/project_gp_env/bin/activate
 export ACADOS_SOURCE_DIR=~/acados
 export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:~/acados/lib
 
+
+python sanity_checks.py
+
+
 python main.py --mode setup
+
+streamlit run visualization/dashboard.py
+
+python sanity_checks.py
