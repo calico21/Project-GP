@@ -1,0 +1,8 @@
+
+[MORL-DB] Initializing Pareto Policy Ensemble...
+[SB-TRPO] Compiling 14-DOF Analytical Constraints and Physics Gradients via XLA...
+   [SB-TRPO] Active Policies Safe: 20/20 | Max Grip: 1.503 G | Max Stab: -2.905
+   [SB-TRPO] Active Policies Safe: 20/20 | Max Grip: 1.503 G | Max Stab: -2.904
+   [SB-TRPO] Active Policies Safe: 20/20 | Max Grip: 1.503 G | Max Stab: -2.904
+   [SB-TRPO] Active Policies Safe: 20/20 | Max Grip: 1.503 G | Max Stab: -2.903
+   [SB-TRPO] Active Policies Safe: 20/20 | Max Grip: 1.503 G | Max Stab: -2.904

@@ -1,0 +1,7 @@
+
+[MORL-DB] Initializing Pareto Policy Ensemble...
+[SB-TRPO] Compiling 14-DOF Analytical Constraints and Physics Gradients via XLA...
+   [DIAGNOSTIC] Soft setup grip: 3.2620 G | Hard setup grip: 3.2618 G
+   [DIAGNOSTIC] If these are identical, setup_params are not reaching the physics.
+   [SB-TRPO] i=0 | Safe: 20/20 | Grip: 3.263 G | Stab: -2.905 | sigma: 0.149
+   [SB-TRPO] i=20 | Safe: 20/20 | Grip: 3.265 G | Stab: -2.899 | sigma: 0.135

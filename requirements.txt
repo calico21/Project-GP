@@ -1,0 +1,9 @@
+numpy
+scipy
+pandas
+matplotlib
+casadi>=3.6.0
+pymoo>=0.6.0
+streamlit
+plotly
+pyyaml

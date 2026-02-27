@@ -1,0 +1,28 @@
+& "C:\Users\alexr\AppData\Local\Programs\Python\Python310\python.exe" "c:\Users\alexr\Desktop\Ter26\Ter26 Carmaker\FS_Driver_Setup_Optimizer\main.py" --log "C:\Users\alexr\Desktop\Ter26\Ter26 Carmaker\FS_Driver_Setup_Optimizer\data\logs\20250816_185811.asc"
+
+git reset --soft HEAD~1
+git rm --cached data/logs/20250816_185811.asc
+echo "data/logs/*.asc" >> .gitignore
+git add .
+git commit -m ""
+git push
+
+
+
+
+# 1. Activate the AI Python environment
+source ~/project_gp_env/bin/activate
+
+# 2. Tell Linux where the compiled acados C-libraries are
+export ACADOS_SOURCE_DIR=~/acados
+export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:~/acados/lib
+
+
+python sanity_checks.py
+
+
+python main.py --mode setup
+
+streamlit run visualization/dashboard.py
+
+python sanity_checks.py

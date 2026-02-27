@@ -1,12 +1,18 @@
-# Python
+# Python virtual environments & cache
+.venv/
+project_gp_env/
 __pycache__/
-*.py[cod]
+*.pyc
+
+# acados & CasADi compiled C-code / artifacts
+c_generated_code/
 *.so
+*.o
+*.json
+acados_solver_*.c
+formula_student_thermal_twin_model/
+formula_student_thermal_twin_cost/
 
-# Data Lake (Don't commit heavy logs)
-data/raw_telemetry/*
-data/cache/*
-
-# Environment
-.env
-venv/
+# Data outputs
+*.csv
+data/logs/*.asc

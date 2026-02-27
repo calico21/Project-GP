@@ -1,0 +1,23 @@
+
+[MORL-DB] Initializing Pareto Policy Ensemble...
+[SB-TRPO] Compiling 14-DOF Analytical Constraints and Physics Gradients via XLA...
+Traceback (most recent call last):
+  File "/mnt/c/Users/alexr/Desktop/Ter26/Ter26 Carmaker/FS_Driver_Setup_Optimizer/main.py", line 238, in <module>
+    main()
+  File "/mnt/c/Users/alexr/Desktop/Ter26/Ter26 Carmaker/FS_Driver_Setup_Optimizer/main.py", line 233, in main
+    execute_morl_setup()
+  File "/mnt/c/Users/alexr/Desktop/Ter26/Ter26 Carmaker/FS_Driver_Setup_Optimizer/main.py", line 164, in execute_morl_setup
+    pareto_setups, pareto_grips, pareto_stabs = optimizer.run(iterations=100)
+                                                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/mnt/c/Users/alexr/Desktop/Ter26/Ter26 Carmaker/FS_Driver_Setup_Optimizer/optimization/evolutionary.py", line 138, in run
+    g_soft, s_soft, _ = self.evaluate_setup_jax(test_soft)
+                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/mnt/c/Users/alexr/Desktop/Ter26/Ter26 Carmaker/FS_Driver_Setup_Optimizer/optimization/evolutionary.py", line 57, in evaluate_setup_jax
+    obj_grip, min_safety = compute_skidpad_objective(self.vehicle.simulate_step, params, x_init_skidpad)
+                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/mnt/c/Users/alexr/Desktop/Ter26/Ter26 Carmaker/FS_Driver_Setup_Optimizer/optimization/objectives.py", line 96, in compute_skidpad_objective
+    2.0 * PDY1 * (1.0 + PDY2 * ((Fz_f_static/2 - m*g*h_cg/t_w*lltd_f - 1000)/1000)) *
+         ^^^^
+NameError: name 'PDY1' is not defined
+--------------------
+For simplicity, JAX has removed its internal frames from the traceback of the following exception. Set JAX_TRACEBACK_FILTERING=off to include these.
