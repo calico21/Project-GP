@@ -2,6 +2,10 @@ import os
 import sys
 
 # --- JAX / XLA ENVIRONMENT SETUP ---
+# ADD THIS LINE TO FORCEFULLY DELETE THE BROKEN FLAGS:
+if 'XLA_FLAGS' in os.environ:
+    del os.environ['XLA_FLAGS']
+
 os.environ['JAX_PLATFORM_NAME'] = 'cpu'  # <--- ADD THIS LINE TO FORCE CPU
 os.environ['XLA_PYTHON_CLIENT_PREALLOCATE'] = 'false'
 os.environ['XLA_PYTHON_CLIENT_MEM_FRACTION'] = '0.8'
@@ -29,13 +33,43 @@ def test_neural_convergence():
     print("="*60)
     print("Training H_net and R_net for 1000 epochs (synthetic chassis flex)...")
     try:
+        # ── BUG FIX: use full package path, not bare module name ─────────────
+        # residual_fitting.py lives at optimization/residual_fitting.py.
+        # The bare `from residual_fitting import ...` fails because Python only
+        # searches sys.path entries, and the optimization/ subdirectory is not
+        # added to sys.path by the root-level sys.path.append above.
+        # The correct import is `from optimization.residual_fitting import ...`
+        # which is also consistent with the top-level import above.
+        # We import the module itself so we can read the live, updated variable later
+        from optimization.residual_fitting import train_neural_residuals
+        import optimization.residual_fitting as rf
+
         h_params, r_params = train_neural_residuals()
-        if h_params is not None and r_params is not None:
-            print("[PASS] Neural components successfully trained and returned parameters.")
-        else:
-            print("[FAIL] train_neural_residuals returned None.")
+
+        # Confirm weights were written to disk
+
+        # Confirm weights were written to disk (residual_fitting.py does this
+        # automatically, but we assert here so any path error is caught in
+        # Test 1 rather than causing a silent wrong result in Test 2).
+        _model_dir  = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'models')
+        _h_path     = os.path.join(_model_dir, 'h_net.bytes')
+        _scale_path = os.path.join(_model_dir, 'h_net_scale.txt')
+
+        assert os.path.exists(_h_path),     f"h_net.bytes not found at {_h_path}"
+        assert os.path.exists(_scale_path), f"h_net_scale.txt not found at {_scale_path}"
+
+        with open(_scale_path) as f:
+            saved_scale = float(f.read().strip())
+        assert abs(saved_scale - rf.TRAINED_H_SCALE) < 1e-3, \
+            f"Scale mismatch: disk={saved_scale}, module={rf.TRAINED_H_SCALE}"
+
+        print(f"[PASS] Weights saved → {_h_path}")
+        print(f"[PASS] Scale saved   → {_scale_path}  ({saved_scale:.2f} J)")
+        print("[PASS] Test 2 will load passivity-trained H_net from disk.")
+
     except Exception as e:
         print(f"[FAIL] Neural training crashed: {e}")
+        import traceback; traceback.print_exc()
 
 
 def test_forward_pass():
@@ -112,7 +146,7 @@ def test_circular_track():
     # --- END DEBUG ---
     
     try:
-        solver = DiffWMPCSolver(N_horizon=N, n_substeps=5)
+        solver = DiffWMPCSolver(N_horizon=N, n_substeps=5 , dev_mode=True)
         result = solver.solve(
             track_s=track_s, track_k=track_k, 
             track_x=track_x, track_y=track_y, track_psi=track_psi,
@@ -247,7 +281,7 @@ def test_spring_rate_not_pinned():
     try:
         print("Running brief MORL simulation to verify parameter bounding...")
         opt = MORL_SB_TRPO_Optimizer(ensemble_size=10, dim=8)
-        setups, _, _ = opt.run(iterations=2) 
+        setups, _, _, _ = opt.run(iterations=2)
         
         k_f_vals = setups[:, 0]
         lower_bound_count = sum(1 for k in k_f_vals if k < 16000)

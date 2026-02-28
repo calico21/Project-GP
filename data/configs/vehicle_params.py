@@ -65,7 +65,7 @@ vehicle_params = {
     'compliance_steer_r': -0.10,
 
     # Ackermann
-    'ackermann_factor': 0.50,   # 0=parallel, 1=full, -1=reverse 
+    'ackermann_factor': 0.0,   # 0=parallel, 1=full, -1=reverse 
 
     # Anti-pitch geometry
     'anti_squat':   0.30,
@@ -97,7 +97,7 @@ vehicle_params = {
     # ════════════════════════════════════════════════════════════════════════
     'Cl_ref':     4.14,     # downforce coefficient at h_aero_ref 
     'Cl':         4.14,     # [Legacy key alias]
-    'Cd_ref':     0.80,     # drag coefficient 
+    'Cd_ref':     2.50,     # drag coefficient 
     'Cd':         0.80,     # [Legacy key alias]
     'A_ref':      1.10,     # frontal area m² 
     'A':          1.10,     # [Legacy key alias]
@@ -114,7 +114,7 @@ vehicle_params = {
     # ════════════════════════════════════════════════════════════════════════
     # DRIVETRAIN
     # ════════════════════════════════════════════════════════════════════════
-    'motor_peak_torque':    140.0,    # N·m at wheel
+    'motor_peak_torque':    450.0,    # N·m at wheel
     'motor_peak_power':   80000.0,    # W (80 kW)
     'motor_max_rpm':       6000.0,
     'final_drive_ratio':      4.5,

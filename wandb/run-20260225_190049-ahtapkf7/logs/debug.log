@@ -1,0 +1,24 @@
+2026-02-25 19:00:49,829 INFO    MainThread:11445 [wandb_setup.py:_flush():81] Current SDK version is 0.25.0
+2026-02-25 19:00:49,829 INFO    MainThread:11445 [wandb_setup.py:_flush():81] Configure stats pid to 11445
+2026-02-25 19:00:49,829 INFO    MainThread:11445 [wandb_setup.py:_flush():81] Loading settings from environment variables
+2026-02-25 19:00:49,829 INFO    MainThread:11445 [wandb_init.py:setup_run_log_directory():717] Logging user logs to /home/alexr/FS_Driver_Setup_Optimizer/wandb/run-20260225_190049-ahtapkf7/logs/debug.log
+2026-02-25 19:00:49,830 INFO    MainThread:11445 [wandb_init.py:setup_run_log_directory():718] Logging internal logs to /home/alexr/FS_Driver_Setup_Optimizer/wandb/run-20260225_190049-ahtapkf7/logs/debug-internal.log
+2026-02-25 19:00:49,830 INFO    MainThread:11445 [wandb_init.py:init():844] calling init triggers
+2026-02-25 19:00:49,830 INFO    MainThread:11445 [wandb_init.py:init():849] wandb.init called with sweep_config: {}
+config: {'mode': 'setup', 'log': None, 'horizon': 128, 'iterations': 400, '_wandb': {}}
+2026-02-25 19:00:49,830 INFO    MainThread:11445 [wandb_init.py:init():892] starting backend
+2026-02-25 19:00:50,316 INFO    MainThread:11445 [wandb_init.py:init():895] sending inform_init request
+2026-02-25 19:00:50,328 INFO    MainThread:11445 [wandb_init.py:init():903] backend started and connected
+2026-02-25 19:00:50,330 INFO    MainThread:11445 [wandb_init.py:init():973] updated telemetry
+2026-02-25 19:00:50,339 INFO    MainThread:11445 [wandb_init.py:init():997] communicating run to backend with 90.0 second timeout
+2026-02-25 19:00:51,643 INFO    MainThread:11445 [wandb_init.py:init():1042] starting run threads in backend
+2026-02-25 19:00:51,930 INFO    MainThread:11445 [wandb_run.py:_console_start():2524] atexit reg
+2026-02-25 19:00:51,930 INFO    MainThread:11445 [wandb_run.py:_redirect():2373] redirect: wrap_raw
+2026-02-25 19:00:51,931 INFO    MainThread:11445 [wandb_run.py:_redirect():2442] Wrapping output streams.
+2026-02-25 19:00:51,931 INFO    MainThread:11445 [wandb_run.py:_redirect():2465] Redirects installed.
+2026-02-25 19:00:51,939 INFO    MainThread:11445 [wandb_init.py:init():1082] run started, returning control to user process
+2026-02-25 19:02:04,208 INFO    MainThread:11445 [wandb_run.py:_finish():2291] finishing run calico21-no-institution/Project-GP-Digital-Twin/ahtapkf7
+2026-02-25 19:02:04,209 INFO    MainThread:11445 [wandb_run.py:_atexit_cleanup():2490] got exitcode: 0
+2026-02-25 19:02:04,210 INFO    MainThread:11445 [wandb_run.py:_restore():2472] restore
+2026-02-25 19:02:04,210 INFO    MainThread:11445 [wandb_run.py:_restore():2478] restore done
+2026-02-25 19:02:05,990 INFO    MainThread:11445 [wandb_run.py:_footer_sync_info():3868] logging synced files

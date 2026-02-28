@@ -1,126 +1,80 @@
-"""
-fix_ordering_bug.py
-Moves the alpha_t / kappa_t state extraction to BEFORE the compliance steer
-block that uses those variables.
+# ═══════════════════════════════════════════════════════════════════════════════
+# PATCH for vehicle_dynamics.py — BUG 3 FIX (h_scale de-normalisation)
+# ═══════════════════════════════════════════════════════════════════════════════
+#
+# PROBLEM
+# ───────
+# H_net is trained on targets divided by h_scale ≈ 103.31 J, so its output is
+# in dimensionless normalised units (~1.0), not physical Joules.
+# vehicle_dynamics.py adds H_net's output directly to the Hamiltonian without
+# multiplying by h_scale, making the neural correction ~100× too small.
+# This is why "Speed: 10.000 → 10.002" persists even after the passivity fix —
+# H_net is having negligible effect in both directions.
+#
+# TWO CHANGES REQUIRED
+# ─────────────────────
+# Change 1: Load h_scale from disk in __init__
+# Change 2: Multiply H_net output by self.h_scale in _compute_derivatives (or __call__)
+#
+# ───────────────────────────────────────────────────────────────────────────────
+# CHANGE 1 — In DifferentiableMultiBodyVehicle.__init__
+# ───────────────────────────────────────────────────────────────────────────────
+# Find the block that loads h_net.bytes (looks roughly like this):
+#
+#   h_net_path = os.path.join(current_dir, 'h_net.bytes')
+#   if os.path.exists(h_net_path):
+#       with open(h_net_path, 'rb') as f:
+#           self.h_params = flax.serialization.from_bytes(self.h_params, f.read())
+#
+# Immediately AFTER that block, add:
 
-Usage:
-    python fix_ordering_bug.py models/vehicle_dynamics.py
-"""
-import sys
+    h_scale_path = os.path.join(current_dir, 'h_net_scale.txt')
+    if os.path.exists(h_scale_path):
+        with open(h_scale_path) as f:
+            self.h_scale = float(f.read().strip())
+        print(f"[VehicleDynamics] H_net scale loaded: {self.h_scale:.2f} J")
+    else:
+        self.h_scale = 1.0
+        print("[VehicleDynamics] WARNING: h_net_scale.txt not found — "
+              "H_net output will not be de-normalised. "
+              "Run `python residual_fitting.py` or `python main.py --mode pretrain` first.")
 
-# ── The compliance steer block (section 6) — must come AFTER alpha_t is defined
-COMPLIANCE_BLOCK = \
-"""        # ── Compliance Steer (§2.6) ──────────────────────────────────────────────
-        # Previous code approximated Fy with a hardcoded -50000 N/rad stiffness
-        # which ignored load sensitivity and had incorrect sign convention.
-        # Fix: estimate Fy from the previous timestep's transient slip angle
-        # (alpha_t is already in the state vector) with load-dependent Ky from MF6.2.
-        C_cs_f = jnp.deg2rad(self.vp.get('compliance_steer_f', -0.15)) / 1000.0  # rad/N
-        C_cs_r = jnp.deg2rad(self.vp.get('compliance_steer_r', -0.10)) / 1000.0
-
-        # Load-dependent cornering stiffness: Ky(Fz) = PKY1·Fz0·sin(PKY4·arctan(Fz/(PKY2·Fz0)))
-        _Fz0_tc = self.tire.coeffs.get('FNOMIN', 1000.0)
-        _PKY1   = self.tire.coeffs.get('PKY1',  15.324)
-        _PKY2   = self.tire.coeffs.get('PKY2',   1.715)
-        _PKY4   = self.tire.coeffs.get('PKY4',   2.0  )
-
-        def _Ky(Fz_c):
-            return _PKY1 * _Fz0_tc * jnp.sin(
-                _PKY4 * jnp.arctan(Fz_c / jnp.maximum(_PKY2 * _Fz0_tc, 1e-6))
-            )
-
-        # Fy estimate from previous step's transient slip angles (already in state)
-        Fy_prev_fl = _Ky(Fz_fl) * alpha_t_fl
-        Fy_prev_fr = _Ky(Fz_fr) * alpha_t_fr
-        Fy_prev_rl = _Ky(Fz_rl) * alpha_t_rl
-        Fy_prev_rr = _Ky(Fz_rr) * alpha_t_rr
-
-        alpha_ss_fl = jnp.clip(alpha_kin_fl + C_cs_f * Fy_prev_fl, -1.5, 1.5)
-        alpha_ss_fr = jnp.clip(alpha_kin_fr + C_cs_f * Fy_prev_fr, -1.5, 1.5)
-        alpha_ss_rl = jnp.clip(alpha_kin_rl + C_cs_r * Fy_prev_rl, -1.5, 1.5)
-        alpha_ss_rr = jnp.clip(alpha_kin_rr + C_cs_r * Fy_prev_rr, -1.5, 1.5)
-        kappa_ss_f = 0.0"""
-
-# ── Section 7 header — alpha_t extraction lives here currently
-OLD_SECTION_7 = \
-"""        # 7. Transient Slip Updates
-        alpha_t_fl, kappa_t_fl, alpha_t_fr, kappa_t_fr = x[38], x[39], x[40], x[41]
-        alpha_t_rl, kappa_t_rl, alpha_t_rr, kappa_t_rr = x[42], x[43], x[44], x[45]"""
-
-# ── What we replace section 7 with: extraction first, THEN compliance, THEN rest
-NEW_SECTION_7 = \
-"""        # 7. Transient Slip Updates
-        # Extract alpha_t / kappa_t BEFORE the compliance steer block below uses them.
-        alpha_t_fl, kappa_t_fl, alpha_t_fr, kappa_t_fr = x[38], x[39], x[40], x[41]
-        alpha_t_rl, kappa_t_rl, alpha_t_rr, kappa_t_rr = x[42], x[43], x[44], x[45]"""
-
-# ── The FULL corrected section 6→7 splice ──────────────────────────────────────
-# We want the final file to read:
-#   [alpha_kin lines]
-#   [alpha_t extraction]      ← moved up
-#   [compliance steer block]  ← uses alpha_t
-#   kappa_ss_f = 0.0
-#   [transient derivative calls]
-
-OLD_SPLICE = COMPLIANCE_BLOCK + "\n\n" + OLD_SECTION_7
-
-NEW_SPLICE = \
-"""        # 7. Transient Slip state extraction
-        # Moved ABOVE compliance steer so alpha_t_* are defined before use.
-        alpha_t_fl, kappa_t_fl, alpha_t_fr, kappa_t_fr = x[38], x[39], x[40], x[41]
-        alpha_t_rl, kappa_t_rl, alpha_t_rr, kappa_t_rr = x[42], x[43], x[44], x[45]
-
-        # ── Compliance Steer (§2.6) ──────────────────────────────────────────────
-        # Uses alpha_t from the state vector (previous timestep) to avoid
-        # circular dependency. Ky is load-dependent via MF6.2 PKY coefficients.
-        C_cs_f = jnp.deg2rad(self.vp.get('compliance_steer_f', -0.15)) / 1000.0  # rad/N
-        C_cs_r = jnp.deg2rad(self.vp.get('compliance_steer_r', -0.10)) / 1000.0
-
-        _Fz0_tc = self.tire.coeffs.get('FNOMIN', 1000.0)
-        _PKY1   = self.tire.coeffs.get('PKY1',  15.324)
-        _PKY2   = self.tire.coeffs.get('PKY2',   1.715)
-        _PKY4   = self.tire.coeffs.get('PKY4',   2.0  )
-
-        def _Ky(Fz_c):
-            return _PKY1 * _Fz0_tc * jnp.sin(
-                _PKY4 * jnp.arctan(Fz_c / jnp.maximum(_PKY2 * _Fz0_tc, 1e-6))
-            )
-
-        Fy_prev_fl = _Ky(Fz_fl) * alpha_t_fl
-        Fy_prev_fr = _Ky(Fz_fr) * alpha_t_fr
-        Fy_prev_rl = _Ky(Fz_rl) * alpha_t_rl
-        Fy_prev_rr = _Ky(Fz_rr) * alpha_t_rr
-
-        alpha_ss_fl = jnp.clip(alpha_kin_fl + C_cs_f * Fy_prev_fl, -1.5, 1.5)
-        alpha_ss_fr = jnp.clip(alpha_kin_fr + C_cs_f * Fy_prev_fr, -1.5, 1.5)
-        alpha_ss_rl = jnp.clip(alpha_kin_rl + C_cs_r * Fy_prev_rl, -1.5, 1.5)
-        alpha_ss_rr = jnp.clip(alpha_kin_rr + C_cs_r * Fy_prev_rr, -1.5, 1.5)
-        kappa_ss_f = 0.0"""
-
-
-def patch(path):
-    with open(path, 'r') as f:
-        src = f.read()
-
-    if OLD_SPLICE not in src:
-        print("ERROR: expected splice block not found.")
-        print("Check that vehicle_dynamics.py has the compliance fix from the previous step.")
-        print("The pattern must be the compliance block immediately followed by section 7.")
-        return False
-
-    patched = src.replace(OLD_SPLICE, NEW_SPLICE, 1)
-
-    with open(path, 'w') as f:
-        f.write(patched)
-
-    print(f"[OK] Ordering bug fixed in {path}")
-    print("     alpha_t extraction now precedes compliance steer block.")
-    return True
-
-
-if __name__ == '__main__':
-    if len(sys.argv) < 2:
-        print("Usage: python fix_ordering_bug.py models/vehicle_dynamics.py")
-        sys.exit(0)
-    ok = patch(sys.argv[1])
-    sys.exit(0 if ok else 1)
+# ───────────────────────────────────────────────────────────────────────────────
+# CHANGE 2 — In NeuralEnergyLandscape.__call__ (or wherever H_net is applied)
+# ───────────────────────────────────────────────────────────────────────────────
+# Find the line that adds H_residual to the Hamiltonian.  It will look like one
+# of these patterns:
+#
+#   Pattern A (in __call__):
+#       return T_prior + V_structural + H_residual
+#
+#   Pattern B (in _compute_derivatives, inlined):
+#       H_total = h_net.apply(self.h_params, q, p, setup)
+#       ... uses H_total directly ...
+#
+# Replace the H_residual term with H_residual * self.h_scale:
+#
+#   Pattern A fix:
+#       H_residual_physical = H_residual * self.h_scale
+#       return T_prior + V_structural + H_residual_physical
+#
+#   Pattern B fix:
+#       H_total = h_net.apply(self.h_params, q, p, setup) * self.h_scale
+#
+# If NeuralEnergyLandscape is a standalone Flax module (not a method of
+# DifferentiableMultiBodyVehicle), pass h_scale as a constructor argument
+# or multiply at the call site:
+#
+#   h_out = self.h_net.apply(self.h_params, q, p, setup) * self.h_scale
+#
+# ───────────────────────────────────────────────────────────────────────────────
+# VERIFICATION
+# ───────────────────────────────────────────────────────────────────────────────
+# After applying both changes, re-run sanity_checks.py.
+# Test 2 should print something like:
+#   > Speed changed: 10.000 m/s -> 9.998 m/s   (deceleration — energy is passive)
+# instead of the current:
+#   > Speed changed: 10.000 m/s -> 10.002 m/s  (injection — passivity not applied)
+#
+# If you still see injection after the fix, confirm h_net_scale.txt exists in
+# the models/ directory and contains "103.31" (approximately).
