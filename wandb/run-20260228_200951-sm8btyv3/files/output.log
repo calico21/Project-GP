@@ -1,0 +1,41 @@
+
+============================================================
+PHASE 4: DYNAMIC AI SETUP DISCOVERY (MORL-SB-TRPO)
+============================================================
+[VehicleDynamics] H_net scale loaded: 103.31 J
+[Physics Engine] Loaded pre-trained H_net weights.
+[Physics Engine] Loaded pre-trained R_net weights.
+
+[MORL-SB-TRPO] Initialising Pareto Policy Ensemble…
+[SB-TRPO] Compiling 46-DOF physics gradients via XLA…
+   [DIAG] Soft grip: 1.5289 G | Hard grip: 1.4838 G
+[SB-TRPO] Testing gradient flow through objective…
+   Grip gradient norm : 0.533184
+   [OK] Gradient flow confirmed — TRPO is active.
+   [DIAG] Entropy bonus: coeff=0.0050 | At log_std=-1.0: Σ contribution = -0.0400 G-equiv per member
+   [DIAG] At log_std=-3.0 (collapsed): -0.1200 G-equiv — resists collapse.
+   [DIAG] KL: per-step≈0.000739, 10-step lag≈0.007389 (threshold=0.0005)
+   [OK] Trust region activates after 10-iter burn-in.
+   [Fix H] Chebyshev omegas: 8/20 members in high-grip region [0.7, 1.0] (vs 6 with linear spacing).
+   [Fix B] Stability_Overshoot cap: 5.0 — artefact setups (k_f at boundary) will be filtered from archive.
+   [Fix G] Population restart: every 200 iters, bottom 5 members reinitialised to random logit-space.
+[SB-TRPO] Running feasibility pre-check…
+   [SB-TRPO] i=   0 | Safe: 13/20 | Valid: 9/20 | Grip: 1.5112 G | Stab: -0.3666 | HV: 1.595736 | KL: 0.000000 | log_std: -0.998 [+5 artefacts filtered] [burn-in]
+   [SB-TRPO] i=  20 | Safe: 15/20 | Valid: 11/20 | Grip: 1.5477 G | Stab: -0.3461 | HV: 1.753813 | KL: 0.002728 | log_std: -1.000 [+6 artefacts filtered] [TR active] [10-step lag]
+   [SB-TRPO] i=  40 | Safe: 15/20 | Valid: 11/20 | Grip: 1.5645 G | Stab: -0.3351 | HV: 1.756351 | KL: 0.001989 | log_std: -0.997 [+6 artefacts filtered] [TR active] [10-step lag]
+   [SB-TRPO] i=  60 | Safe: 13/20 | Valid: 8/20 | Grip: 1.5414 G | Stab: -0.3632 | HV: 1.766288 | KL: 0.002463 | log_std: -0.996 [+6 artefacts filtered] [TR active] [10-step lag]
+   [SB-TRPO] i=  80 | Safe: 13/20 | Valid: 9/20 | Grip: 1.5756 G | Stab: -0.3669 | HV: 1.772611 | KL: 0.002298 | log_std: -0.997 [+4 artefacts filtered] [TR active] [10-step lag]
+   [SB-TRPO] i= 100 | Safe: 14/20 | Valid: 10/20 | Grip: 1.5269 G | Stab: -0.4283 | HV: 1.773622 | KL: 0.002353 | log_std: -0.996 [+6 artefacts filtered] [TR active] [10-step lag]
+   [SB-TRPO] i= 120 | Safe: 13/20 | Valid: 9/20 | Grip: 1.5195 G | Stab: -0.3883 | HV: 1.773622 | KL: 0.003026 | log_std: -0.993 [+6 artefacts filtered] [TR active] [10-step lag]
+   [SB-TRPO] i= 140 | Safe: 13/20 | Valid: 9/20 | Grip: 1.5513 G | Stab: -0.3441 | HV: 1.776182 | KL: 0.003466 | log_std: -0.995 [+6 artefacts filtered] [TR active] [10-step lag]
+   [SB-TRPO] i= 160 | Safe: 11/20 | Valid: 7/20 | Grip: 1.4791 G | Stab: -0.3504 | HV: 1.784253 | KL: 0.003012 | log_std: -0.995 [+6 artefacts filtered] [TR active] [10-step lag]
+   [SB-TRPO] i= 180 | Safe: 13/20 | Valid: 9/20 | Grip: 1.5004 G | Stab: -0.3761 | HV: 1.784253 | KL: 0.003969 | log_std: -0.994 [+6 artefacts filtered] [TR active] [10-step lag]
+   [FIX G] i=200: restarted bottom 5 members (grips: [np.float32(1.3428693), np.float32(1.3980942), np.float32(1.4055815), np.float32(1.4253734), np.float32(1.438202)])
+   [SB-TRPO] i= 200 | Safe: 8/20 | Valid: 5/20 | Grip: 1.5280 G | Stab: -0.3798 | HV: 1.784587 | KL: 20.384916 | log_std: -0.994 [+5 artefacts filtered] [TR active] [10-step lag]
+   [SB-TRPO] i= 220 | Safe: 10/20 | Valid: 7/20 | Grip: 1.5227 G | Stab: -0.4029 | HV: 1.785374 | KL: 0.005796 | log_std: -0.994 [+5 artefacts filtered] [TR active] [10-step lag]
+   [SB-TRPO] i= 240 | Safe: 9/20 | Valid: 6/20 | Grip: 1.5435 G | Stab: -0.3512 | HV: 1.786278 | KL: 0.006045 | log_std: -0.994 [+6 artefacts filtered] [TR active] [10-step lag]
+   [SB-TRPO] i= 260 | Safe: 9/20 | Valid: 6/20 | Grip: 1.4925 G | Stab: -0.4034 | HV: 1.789176 | KL: 0.006855 | log_std: -0.993 [+4 artefacts filtered] [TR active] [10-step lag]
+   [SB-TRPO] i= 280 | Safe: 10/20 | Valid: 7/20 | Grip: 1.5016 G | Stab: -0.3926 | HV: 1.789178 | KL: 0.006895 | log_std: -0.993 [+3 artefacts filtered] [TR active] [10-step lag]
+   [SB-TRPO] i= 300 | Safe: 11/20 | Valid: 8/20 | Grip: 1.5301 G | Stab: -0.3710 | HV: 1.789546 | KL: 0.006692 | log_std: -0.993 [+4 artefacts filtered] [TR active] [10-step lag]
+   [SB-TRPO] i= 320 | Safe: 10/20 | Valid: 6/20 | Grip: 1.5052 G | Stab: -0.3877 | HV: 1.789546 | KL: 0.006830 | log_std: -0.994 [+7 artefacts filtered] [TR active] [10-step lag]
+   [SB-TRPO] i= 340 | Safe: 8/20 | Valid: 4/20 | Grip: 1.4992 G | Stab: -0.3758 | HV: 1.799654 | KL: 0.006639 | log_std: -0.994 [+5 artefacts filtered] [TR active] [10-step lag]

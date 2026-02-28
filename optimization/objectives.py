@@ -48,7 +48,7 @@ import jax.numpy as jnp
 #   Impact: max grip rises from 1.40 G → ~1.80–2.00 G, consistent with
 #   the physical expectation for a 230 kg car with Cl=3.0 aero package.
 #
-# ── ay_sweep extended from [0.8, 2.0] G to [0.5, 2.5] G, 300→400 points ─────
+# ── ay_sweep extended from [0.8, 2.0] G to [0.5, 2.5] G, 300→1000 points ─────
 #   With PDY1=1.92, optimal setups approach ~1.90–2.00 G.  The previous
 #   ceiling of 2.0 G left < 0.05 G of headroom, meaning the log-sum-exp
 #   smooth maximum was being evaluated in a region where all sweep points
@@ -56,7 +56,7 @@ import jax.numpy as jnp
 #   the gradient signal.  Extending to 2.5 G adds clean headroom.
 #   Lower bound 0.5 G (from 0.8 G) prevents the sigmoid ramp-in from
 #   biasing the smooth maximum at low ay values.
-#   400 points: step size 0.005 G (identical to before).
+#   1000 points: step size 0.005 G (identical to before).
 #
 # ── _LSE_BETA raised from 10 → 20 ─────────────────────────────────────────────
 #   The log-sum-exp smooth maximum overestimates the true maximum by
@@ -135,7 +135,7 @@ def compute_skidpad_objective(simulate_step_fn, params, x_init, dt=0.005, T_max=
     # PDY1 = 1.92 is the peak lateral friction coefficient for a 10-inch
     # Hoosier LCO-H2O / R25B in nominal Formula SAE race conditions.
     # PDY2 = -0.25 degrades mu at higher vertical loads (load sensitivity).
-    # Fz0 = 1000 N is the reference load at which PDY1 is defined.
+    # Fz0 = 1000N is the reference load at which PDY1 is defined.
     PDY1 = 1.92
     PDY2 = -0.25
     Fz0  = 1000.0
@@ -160,11 +160,11 @@ def compute_skidpad_objective(simulate_step_fn, params, x_init, dt=0.005, T_max=
     Fz_f_static  += Fz_aero * aero_split_f
     Fz_r_static  += Fz_aero * aero_split_r
 
-    # ── ay_sweep extended to [0.5, 2.5] G, 400 points ───────────────────────
+    # ── ay_sweep extended to [0.5, 2.5] G, 1000 points ───────────────────────
     # Previous: linspace(0.8, 2.0, 300) — ceiling too close to expected peak.
     # With PDY1=1.92, optimal setups reach ~1.90–2.00 G.
-    # 400 points × (2.5-0.5)/400 = 0.005 G/step (identical resolution).
-    ay_sweep = jnp.linspace(0.5, 2.5, 400)
+    # 1000 points × (2.5-0.5)/1000 = 0.005 G/step (identical resolution).
+    ay_sweep = jnp.linspace(0.5, 2.5, 1000)
 
     def compute_balance_at_ay(ay_g):
         ay = ay_g * g

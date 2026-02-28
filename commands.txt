@@ -4,9 +4,8 @@ git reset --soft HEAD~1
 git rm --cached data/logs/20250816_185811.asc
 echo "data/logs/*.asc" >> .gitignore
 git add .
-git commit -m ""
+git commit -m "VERSION 1.0"
 git push
-
 
 
 
@@ -19,7 +18,6 @@ export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:~/acados/lib
 
 
 python sanity_checks.py
-
 
 python main.py --mode setup
 

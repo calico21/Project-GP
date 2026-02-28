@@ -359,6 +359,8 @@ REFRESH_INTERVAL_SECONDS = 5
 class Dashboard:
     def __init__(self):
         self.base_dir   = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        # Define both files so we can layer them
+        self.hist_file  = os.path.join(self.base_dir, 'morl_full_history.csv')
         self.opt_file   = os.path.join(self.base_dir, 'morl_pareto_front.csv')
         self.ghost_file = os.path.join(self.base_dir, 'stochastic_ghost_car.csv')
         self.coach_file = os.path.join(self.base_dir, 'ac_mpc_coaching_report.csv')
@@ -423,104 +425,126 @@ class Dashboard:
     def render_setup_optimizer(self):
         st.title("Setup Optimization (MORL-SB-TRPO)")
 
-        if not os.path.exists(self.opt_file):
-            st.error(
-                f"Results file not found: `{self.opt_file}`\n\n"
-                "Run:  `python main.py --mode setup`"
-            )
+        if not os.path.exists(self.hist_file) or not os.path.exists(self.opt_file):
+            st.error("Results files not found. Run: `python main.py --mode setup`")
             return
 
         try:
-            df = pd.read_csv(self.opt_file)
-            df.columns = df.columns.str.strip()
+            df_hist = pd.read_csv(self.hist_file)
+            df_front = pd.read_csv(self.opt_file)
+            df_hist.columns = df_hist.columns.str.strip()
+            df_front.columns = df_front.columns.str.strip()
         except Exception as e:
             st.error(f"Error reading CSV: {e}")
             return
 
-        if 'Lat_G_Score' in df.columns:
-            x_col     = 'Max Lat G'
-            y_col     = 'Stability Overshoot'
-            color_col = 'k_f'
-            df[x_col] = df['Lat_G_Score']
-            df[y_col] = df['Stability_Overshoot']
+        # ── Safely detect column names for HISTORICAL data ──
+        if 'Lat_G_Score' in df_hist.columns:
+            hist_x_col = 'Lat_G_Score'
+        elif 'grip' in df_hist.columns:
+            hist_x_col = 'grip'
         else:
-            x_col     = df.columns[0]
-            y_col     = df.columns[1]
-            color_col = df.columns[2]
+            hist_x_col = df_hist.columns[0]
+
+        if 'Stability_Overshoot' in df_hist.columns:
+            hist_y_col = 'Stability_Overshoot'
+        elif 'stab' in df_hist.columns:
+            hist_y_col = 'stab'
+        else:
+            hist_y_col = df_hist.columns[1]
+
+        # ── Safely detect column names for PARETO FRONT data ──
+        if 'Lat_G_Score' in df_front.columns:
+            front_x_col = 'Lat_G_Score'
+        elif 'grip' in df_front.columns:
+            front_x_col = 'grip'
+        else:
+            front_x_col = df_front.columns[0]
+
+        if 'Stability_Overshoot' in df_front.columns:
+            front_y_col = 'Stability_Overshoot'
+        elif 'stab' in df_front.columns:
+            front_y_col = 'stab'
+        else:
+            front_y_col = df_front.columns[1]
 
         # ── Pareto chart ──────────────────────────────────────────────────
-        self._section("SB-TRPO Pareto Front Evolution")
+        self._section("SB-TRPO Search Space & Pareto Frontier")
         c1, c2 = st.columns([3, 1])
 
         with c1:
-            # FIX Bug 38: use real Generation column exported by evolutionary.py.
-            # Only fall back to synthetic chunking if the column is absent.
-            if 'Generation' not in df.columns:
-                st.warning(
-                    "Generation column not found in CSV. "
-                    "Update evolutionary.py and re-run `--mode setup` to enable "
-                    "the animated Pareto front."
-                )
-                fig = px.scatter(
-                    df, x=x_col, y=y_col, color=color_col,
-                    hover_data=df.columns,
-                    color_continuous_scale=[
-                        [0.0, "#00E676"], [0.5, "#00C0F2"], [1.0, "#FF4B4B"],
-                    ],
-                )
-            else:
-                fig = px.scatter(
-                    df, x=x_col, y=y_col, color=color_col,
-                    animation_frame="Generation",
-                    animation_group=df.index,
-                    hover_data=df.columns,
-                    color_continuous_scale=[
-                        [0.0, "#00E676"], [0.5, "#00C0F2"], [1.0, "#FF4B4B"],
-                    ],
-                    range_x=[df[x_col].min() * 0.95, df[x_col].max() * 1.05],
-                    range_y=[df[y_col].min() * 1.05, df[y_col].max() * 0.95],
-                )
-                if fig.layout.updatemenus:
-                    fig.layout.updatemenus[0].buttons[0].args[1]["frame"]["duration"]      = 800
-                    fig.layout.updatemenus[0].buttons[0].args[1]["transition"]["duration"] = 400
+            fig = go.Figure()
 
-            fig.update_traces(
-                marker=dict(size=12, line=dict(width=1.0, color='rgba(255,255,255,0.8)'))
-            )
-            fig.update_coloraxes(colorbar=dict(
-                thickness=10, tickfont=TICK_FONT,
-                title=dict(text="Front Spring (N/m)",
-                           font=dict(family="Courier New, monospace", size=12)),
+            # LAYER 1: The Massive Historical Search Cloud 
+            # FIX: Increased opacity to 0.8 so the points are much brighter!
+            fig.add_trace(go.Scatter(
+                x=df_hist[hist_x_col], y=df_hist[hist_y_col],
+                mode='markers',
+                marker=dict(
+                    size=6, opacity=0.8,
+                    color=df_hist['Generation'] if 'Generation' in df_hist.columns else None, 
+                    colorscale="Plasma",
+                    showscale=True,
+                    colorbar=dict(
+                        title="Generation", thickness=10, 
+                        tickfont=TICK_FONT, outlinewidth=0
+                    )
+                ),
+                name='Search History',
+                showlegend=False,
+                hoverinfo='skip'  # Skip hover on the thousands of background dots
             ))
+
+            # LAYER 2: The Optimal Pareto Front (Bright, Connected Edge)
+            df_front_sorted = df_front.sort_values(by=front_x_col, ascending=True)
+            
+            fig.add_trace(go.Scatter(
+                x=df_front_sorted[front_x_col], y=df_front_sorted[front_y_col],
+                mode='lines+markers',
+                line=dict(color='#00E676', width=3),  # Bright Green Line (Thicker)
+                marker=dict(size=10, color='#00E676', line=dict(width=1, color='white')),
+                name='Pareto Front',
+                hovertemplate=(
+                    "<b>Grip:</b> %{x:.3f} G<br>"
+                    "<b>Stability:</b> %{y:.2f}<br>"
+                    "<extra></extra>"
+                )
+            ))
+
             layout = base_layout(height=520)
-            layout['xaxis']['title'] = dict(text=x_col,  font=LABEL_FONT)
-            layout['yaxis']['title'] = dict(text=y_col,  font=LABEL_FONT)
+            layout['xaxis']['title'] = dict(text="Max Lat G", font=LABEL_FONT)
+            layout['yaxis']['title'] = dict(text="Stability Overshoot", font=LABEL_FONT)
+            layout['legend'] = dict(x=0.02, y=0.98, bgcolor="rgba(0,0,0,0.5)")
             fig.update_layout(**layout)
-            # FIX Bug 34: use_container_width=True (was invalid width='stretch')
-            st.plotly_chart(fig, use_container_width=True)
+            
+            # Fixed Streamlit warning
+            try:
+                st.plotly_chart(fig, width='stretch')
+            except:
+                st.plotly_chart(fig, use_container_width=True)
 
         with c2:
             self._section("Best Grip Config")
-            best = df.sort_values(by=x_col, ascending=False).iloc[0]
-            st.metric("Peak Grip",   f"{best[x_col]:.3f} G")
-            st.metric("Instability", f"{best[y_col]:.2f} (rad/s)")
-            st.markdown('<div class="channel-label">Spring Rates</div>',
-                        unsafe_allow_html=True)
+            best = df_front.sort_values(by=front_x_col, ascending=False).iloc[0]
+            st.metric("Peak Grip",   f"{best[front_x_col]:.3f} G")
+            st.metric("Instability", f"{best[front_y_col]:.2f} (rad/s)")
+            st.markdown('<div class="channel-label">Spring Rates</div>', unsafe_allow_html=True)
             st.code(f"FRONT  {best.get('k_f', 0) / 1000:.1f} kN/m\n"
                     f"REAR   {best.get('k_r', 0) / 1000:.1f} kN/m")
-            st.markdown('<div class="channel-label">Dampers</div>',
-                        unsafe_allow_html=True)
+            st.markdown('<div class="channel-label">Dampers</div>', unsafe_allow_html=True)
             st.code(f"FRONT  {best.get('c_f', 0) / 1000:.1f} Ns/mm\n"
                     f"REAR   {best.get('c_r', 0) / 1000:.1f} Ns/mm")
 
         # ── Parallel coordinates ──────────────────────────────────────────
-        self._section("Trade-off Analysis")
+        self._section("Pareto Trade-off Analysis")
+        # FIX: Swapped df_front for df_hist so it renders ALL lines from history!
         eng_cols = [c for c in
-                    ['k_f', 'k_r', 'arb_f', 'arb_r', 'c_f', 'c_r', x_col, y_col]
-                    if c in df.columns]
+                    ['k_f', 'k_r', 'arb_f', 'arb_r', 'c_f', 'c_r', hist_x_col, hist_y_col]
+                    if c in df_hist.columns]
+                    
         if len(eng_cols) > 2:
             fig2 = px.parallel_coordinates(
-                df.head(50), color=x_col,
+                df_hist, color=hist_x_col,
                 dimensions=eng_cols,
                 color_continuous_scale=[
                     [0.0, "#00E676"], [0.5, "#00C0F2"], [1.0, "#FF4B4B"],
@@ -529,8 +553,12 @@ class Dashboard:
             layout2 = base_layout(height=380)
             layout2['margin'] = dict(l=60, r=20, t=40, b=20)
             fig2.update_layout(**layout2)
-            # FIX Bug 34
-            st.plotly_chart(fig2, use_container_width=True)
+            
+            # Fixed Streamlit warning
+            try:
+                st.plotly_chart(fig2, width='stretch')
+            except:
+                st.plotly_chart(fig2, use_container_width=True)
 
     # ─────────────────────────────────────────────────────────────────────────
     # DRIVER COACHING

@@ -231,7 +231,7 @@ def main():
     # FIX Bug 31: horizon exposed as CLI argument instead of being hardcoded
     parser.add_argument('--horizon',   type=int, default=128,
                         help="Wavelet horizon (must be power of 2)")
-    parser.add_argument('--iterations', type=int, default=400,
+    parser.add_argument('--iterations', type=int, default=1000,
                         help="MORL-SB-TRPO iteration count")
     args = parser.parse_args()
 
