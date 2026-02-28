@@ -1,0 +1,58 @@
+
+============================================================
+PHASE 4: DYNAMIC AI SETUP DISCOVERY (MORL-SB-TRPO)
+============================================================
+[VehicleDynamics] H_net scale loaded: 103.31 J
+[Physics Engine] Loaded pre-trained H_net weights.
+[Physics Engine] Loaded pre-trained R_net weights.
+
+[MORL-SB-TRPO] Initialising Pareto Policy Ensemble…
+[SB-TRPO] Compiling 46-DOF physics gradients via XLA…
+   [DIAG] Soft grip: 1.4830 G | Hard grip: 1.4379 G
+[SB-TRPO] Testing gradient flow through objective…
+   Grip gradient norm : 0.533184
+   [OK] Gradient flow confirmed — TRPO is active.
+   [DIAG] Entropy bonus: coeff=0.0050 | At log_std=-1.0: Σ contribution = -0.0400 G-equiv per member
+   [DIAG] At log_std=-3.0 (collapsed): -0.1200 G-equiv — resists collapse.
+   [DIAG] KL: per-step≈0.000739, 10-step lag≈0.007389 (threshold=0.0005)
+   [OK] Trust region activates after 10-iter burn-in.
+[SB-TRPO] Running feasibility pre-check…
+   [SB-TRPO] i=   0 | Safe: 13/20 | Valid: 13/20 | Grip: 1.4700 G | Stab: -0.3666 | HV: 1.520782 | KL: 0.000000 | log_std: -0.998 [burn-in]
+   [SB-TRPO] i=  20 | Safe: 15/20 | Valid: 15/20 | Grip: 1.5018 G | Stab: -0.3461 | HV: 1.676926 | KL: 0.002460 | log_std: -1.000 [TR active] [10-step lag]
+   [SB-TRPO] i=  40 | Safe: 15/20 | Valid: 15/20 | Grip: 1.5187 G | Stab: -0.3351 | HV: 1.679466 | KL: 0.002172 | log_std: -0.997 [TR active] [10-step lag]
+   [SB-TRPO] i=  60 | Safe: 13/20 | Valid: 13/20 | Grip: 1.4955 G | Stab: -0.3632 | HV: 1.689342 | KL: 0.002433 | log_std: -0.997 [TR active] [10-step lag]
+   [SB-TRPO] i=  80 | Safe: 13/20 | Valid: 13/20 | Grip: 1.5298 G | Stab: -0.3669 | HV: 1.695359 | KL: 0.002369 | log_std: -0.997 [TR active] [10-step lag]
+   [SB-TRPO] i= 100 | Safe: 14/20 | Valid: 14/20 | Grip: 1.4912 G | Stab: -0.4283 | HV: 1.696349 | KL: 0.002347 | log_std: -0.996 [TR active] [10-step lag]
+   [SB-TRPO] i= 120 | Safe: 13/20 | Valid: 13/20 | Grip: 1.4737 G | Stab: -0.3883 | HV: 1.696349 | KL: 0.002992 | log_std: -0.994 [TR active] [10-step lag]
+   [SB-TRPO] i= 140 | Safe: 13/20 | Valid: 13/20 | Grip: 1.5055 G | Stab: -0.3441 | HV: 1.698821 | KL: 0.003519 | log_std: -0.995 [TR active] [10-step lag]
+   [SB-TRPO] i= 160 | Safe: 11/20 | Valid: 11/20 | Grip: 1.4728 G | Stab: -0.3504 | HV: 1.699209 | KL: 0.002944 | log_std: -0.996 [TR active] [10-step lag]
+   [SB-TRPO] i= 180 | Safe: 13/20 | Valid: 13/20 | Grip: 1.4889 G | Stab: -0.3761 | HV: 1.701351 | KL: 0.003997 | log_std: -0.994 [TR active] [10-step lag]
+   [SB-TRPO] i= 200 | Safe: 11/20 | Valid: 11/20 | Grip: 1.4276 G | Stab: -0.3798 | HV: 1.702852 | KL: 0.003553 | log_std: -0.994 [TR active] [10-step lag]
+   [SB-TRPO] i= 220 | Safe: 13/20 | Valid: 13/20 | Grip: 1.4853 G | Stab: -0.4029 | HV: 1.703640 | KL: 0.003988 | log_std: -0.995 [TR active] [10-step lag]
+   [SB-TRPO] i= 240 | Safe: 11/20 | Valid: 11/20 | Grip: 1.4784 G | Stab: -0.3512 | HV: 1.705634 | KL: 0.004270 | log_std: -0.994 [TR active] [10-step lag]
+   [SB-TRPO] i= 260 | Safe: 12/20 | Valid: 12/20 | Grip: 1.4416 G | Stab: -0.4033 | HV: 1.712665 | KL: 0.004673 | log_std: -0.994 [TR active] [10-step lag]
+   [SB-TRPO] i= 280 | Safe: 12/20 | Valid: 12/20 | Grip: 1.4557 G | Stab: -0.3926 | HV: 1.712823 | KL: 0.004506 | log_std: -0.994 [TR active] [10-step lag]
+   [SB-TRPO] i= 300 | Safe: 13/20 | Valid: 13/20 | Grip: 1.4541 G | Stab: -0.3710 | HV: 1.713190 | KL: 0.004513 | log_std: -0.995 [TR active] [10-step lag]
+   [SB-TRPO] i= 320 | Safe: 12/20 | Valid: 12/20 | Grip: 1.4878 G | Stab: -0.3877 | HV: 1.713190 | KL: 0.004977 | log_std: -0.994 [TR active] [10-step lag]
+   [SB-TRPO] i= 340 | Safe: 11/20 | Valid: 11/20 | Grip: 1.4579 G | Stab: -0.3758 | HV: 1.722802 | KL: 0.004894 | log_std: -0.995 [TR active] [10-step lag]
+   [SB-TRPO] i= 360 | Safe: 12/20 | Valid: 12/20 | Grip: 1.4777 G | Stab: -0.3561 | HV: 1.722802 | KL: 0.005280 | log_std: -0.995 [TR active] [10-step lag]
+   [SB-TRPO] i= 380 | Safe: 11/20 | Valid: 11/20 | Grip: 1.4675 G | Stab: -0.3855 | HV: 1.722844 | KL: 0.005396 | log_std: -0.994 [TR active] [10-step lag]
+
+[MORL-SB-TRPO] Pareto front discovery complete:
+         k_f          k_r      arb_f       arb_r         c_f         c_r     h_cg  brake_bias_f  Lat_G_Score  Stability_Overshoot  Generation
+30866.019531 31873.076172 943.257507  442.426697 1834.232910 3367.617676 0.275344      0.646110     1.530976             1.508780          46
+31061.226562 31696.726562 945.440308  441.337402 1825.734375 3353.515137 0.275442      0.646260     1.529781             2.038360          80
+31217.925781 31570.097656 947.714966  438.821075 1823.550049 3359.734375 0.275516      0.645402     1.523357             2.075792         105
+30899.281250 31843.318359 945.718262  440.959015 1826.276855 3365.314697 0.275451      0.646083     1.519920             2.400196          52
+33837.796875 32259.044922 802.607666  796.849304 2967.572510 2972.388428 0.290190      0.570000     1.513732             2.501873          68
+31040.521484 31711.582031 947.915710  439.167297 1827.257812 3368.973877 0.275527      0.645567     1.511842             2.956096          72
+30764.041016 31970.537109 943.027832  442.692749 1831.246216 3370.387939 0.275342      0.646265     1.508313             3.130115          33
+30031.503906 40875.406250 418.679443 1641.857056 4602.356934 4429.090332 0.293938      0.635043     1.505222             8.568733         330
+22775.652344 28201.136719 303.991089 1834.203735 5291.260742 4269.190430 0.277706      0.726566     1.503121             9.380424         369
+22582.523438 28053.431641 303.956909 1834.191895 5307.877441 4309.591309 0.277640      0.726512     1.501212            14.259626         257
+22341.931641 27763.371094 303.957977 1834.322510 5332.823242 4378.304688 0.277719      0.726608     1.497156            14.681315          40
+22560.328125 28033.845703 302.604797 1834.996216 5310.289062 4309.157715 0.277606      0.726596     1.483498            14.989463         254
+22430.230469 27851.482422 304.052979 1834.261108 5326.611328 4353.462891 0.277701      0.726593     1.479234            15.675817         117
+22444.232422 27825.794922 302.119904 1835.413086 5324.698242 4358.790039 0.277871      0.726764     1.461063            16.382982          95
+
+[Success] Pareto array saved to /home/alexr/FS_Driver_Setup_Optimizer/morl_pareto_front.csv

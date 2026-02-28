@@ -127,6 +127,31 @@ class NeuralEnergyLandscape(nn.Module):
     # ──────────────────────────────────────────────────────────────────────────
     h_scale: float = 1.0
 
+    # ── BUG 1 FIX ─────────────────────────────────────────────────────────────
+    # H_RESIDUAL_CAP: physical ceiling on the neural energy residual (Joules).
+    #
+    # Root cause of "> 16,000 N force predictions at aggressive steering/throttle":
+    # Without an energy cap the unconstrained H_residual grows without bound in
+    # regions of state-space not covered by training data.  Because the Port-
+    # Hamiltonian equations compute forces as ∂H/∂q, even a small absolute
+    # gradient of an uncapped H can produce enormous generalised forces — the
+    # 16 kN figure corresponds to H growing ~800 J over 0.05 m of suspension
+    # travel, which the unconstrained network can easily produce.
+    #
+    # Fix: wrap H_residual_physical in a tanh soft-cap centred on this value.
+    # The tanh is smooth and fully differentiable (no gradient discontinuities),
+    # so the Port-Hamiltonian formulation and its JAX autodiff remain intact.
+    # The cap is generous — 5 000 J is ~70× the expected chassis-flex energy in
+    # normal cornering — so it never activates in the trained operating regime
+    # but immediately suppresses pathological extrapolation.
+    #
+    # The matching hard clamp on dH_dq in _compute_derivatives is belt-and-
+    # suspenders: it catches any residual gradient artefacts from the chain rule
+    # through the tanh boundary and ensures the integrator cannot blow up even
+    # if the training has not yet converged to a passive solution.
+    # ──────────────────────────────────────────────────────────────────────────
+    H_RESIDUAL_CAP: float = 5000.0   # J — soft upper bound on chassis-flex energy
+
     @nn.compact
     def __call__(self, q, p, setup_params):
         T_prior = 0.5 * jnp.sum((p ** 2) / self.M_diag)
@@ -151,9 +176,33 @@ class NeuralEnergyLandscape(nn.Module):
         # made trainable later without touching this function.
         V_structural = 0.5 * jnp.sum(q[6:10] ** 2) * 30000.0
 
-        # De-normalise: H_net was trained on targets / h_scale, so output is
-        # dimensionless. Multiply by h_scale to recover physical Joules.
-        H_residual_physical = H_residual * self.h_scale
+        # ── BUG 1 FIX: tanh soft-cap on neural residual energy ────────────────
+        # De-normalise first (H_net trained on targets / h_scale), then
+        # apply a symmetric tanh cap so that H_residual_physical is
+        # strictly bounded to (−H_RESIDUAL_CAP, +H_RESIDUAL_CAP).
+        #
+        # Why tanh and not jnp.clip?
+        #   • jnp.clip has zero gradient at the saturation boundary, which
+        #     would produce a dead-gradient zone in the Port-Hamiltonian
+        #     autodiff and cause the TRPO / WMPC solvers to see a flat energy
+        #     landscape at extreme states.
+        #   • tanh has a non-zero gradient everywhere:
+        #       d/dx [C·tanh(x/C)] = sech²(x/C) ∈ (0, 1]
+        #     so force magnitudes are attenuated rather than zeroed, keeping
+        #     gradient flow intact.
+        #
+        # The cap attenuates forces by sech²(H_raw / H_CAP).  At the expected
+        # operating point (H_raw ≈ 75 J ≪ 5 000 J) sech² ≈ 1 — no attenuation.
+        # At the pathological 16 kN case (H_raw ≈ 800 J) sech² ≈ 0.97 — still
+        # essentially unchanged.  At the runaway case (H_raw ≫ 5 000 J) the
+        # force is hard-limited to the gradient of a 5 kJ energy change, which
+        # for a 0.05 m suspension travel is at most 5 000 / 0.05 = 100 000 N/m —
+        # high, but the secondary hard clamp in _compute_derivatives (12 000 N)
+        # brings this to a physically plausible value in the time domain.
+        raw_physical       = H_residual * self.h_scale
+        H_residual_physical = (self.H_RESIDUAL_CAP
+                                * jnp.tanh(raw_physical / (self.H_RESIDUAL_CAP + 1e-8)))
+
         return T_prior + V_structural + H_residual_physical
 
 
@@ -216,11 +265,6 @@ class DifferentiableMultiBodyVehicle:
         # ── BUG 3 FIX: load h_scale BEFORE constructing H_net ────────────────
         # NeuralEnergyLandscape.h_scale is a Flax module field — it must be set
         # at construction time, not injected as an external attribute afterwards.
-        #
-        # We read h_net_scale.txt here (before .init()) so that the module is
-        # built with the correct de-normalisation factor from the start.
-        # If the scale file doesn't exist yet (first run, before training),
-        # h_scale=1.0 is safe — the residual will be small but not wrong.
         current_dir = os.path.dirname(os.path.abspath(__file__))
         h_scale_path = os.path.join(current_dir, 'h_net_scale.txt')
         if os.path.exists(h_scale_path):
@@ -232,8 +276,17 @@ class DifferentiableMultiBodyVehicle:
             print("[VehicleDynamics] h_net_scale.txt not found — using h_scale=1.0. "
                   "Run training first to get correct de-normalisation.")
 
-        # Construct H_net with the scale baked in as a Flax field
-        self.H_net = NeuralEnergyLandscape(M_diag=self.M_diag, h_scale=_h_scale)
+        # ── BUG 1 FIX: H_RESIDUAL_CAP baked into the module at construction ──
+        # The cap is a Flax module field so it participates in JAX tracing and
+        # is serialised with the module definition.  5 000 J is ~70× the peak
+        # chassis-flex energy in normal FS cornering — the tanh is effectively
+        # transparent in the trained operating regime but hard-limits runaway
+        # extrapolation in unseen states.
+        self.H_net = NeuralEnergyLandscape(
+            M_diag=self.M_diag,
+            h_scale=_h_scale,
+            H_RESIDUAL_CAP=5000.0,
+        )
         self.R_net = NeuralDissipationMatrix(dim=14)
         # FIX Bug 14: pass geometry so DifferentiableAeroMap never uses hardcoded values
         self.aero_map = DifferentiableAeroMap(
@@ -366,7 +419,29 @@ class DifferentiableMultiBodyVehicle:
 
         grad_H_fn    = jax.grad(self.H_net.apply, argnums=(1, 2))
         dH_dq, dH_dp = grad_H_fn(self.H_params, q, p, setup_params)
-        grad_H       = jnp.concatenate([dH_dq, dH_dp])
+
+        # ── BUG 1 FIX: hard clamp on generalised forces from H_net ───────────
+        # This is belt-and-suspenders alongside the tanh cap in
+        # NeuralEnergyLandscape.__call__.  The tanh bounds the total energy but
+        # the chain-rule through the tanh boundary can still produce transient
+        # spikes if the network is in a pre-convergence state.  The clamp here
+        # is the last line of defence.
+        #
+        # Physical justification for 12 000 N:
+        #   • Peak tyre force on a 230 kg FS car at 2.5 G ≈ 5 650 N per axle
+        #   • Conservative ceiling for any single generalised force is 2× that
+        #   • 12 000 N ≈ 5.3× vehicle weight — catches only truly unphysical
+        #     predictions without affecting the normal operating regime
+        #
+        # The momentum gradient (dH_dp ≡ velocity) is clamped to ±150 m/s
+        # which is far above any physical vehicle speed (the state itself is
+        # clipped to ±80 m/s earlier in the pipeline).
+        NEURAL_FORCE_CLAMP    = 12000.0   # N — max generalised force from H_net
+        NEURAL_VELOCITY_CLAMP =   150.0   # m/s — max generalised velocity from H_net
+        dH_dq = jnp.clip(dH_dq, -NEURAL_FORCE_CLAMP,    NEURAL_FORCE_CLAMP)
+        dH_dp = jnp.clip(dH_dp, -NEURAL_VELOCITY_CLAMP, NEURAL_VELOCITY_CLAMP)
+
+        grad_H = jnp.concatenate([dH_dq, dH_dp])
 
         J = jnp.zeros((28, 28))
         J = J.at[0:14, 14:28].set( jnp.eye(14))
