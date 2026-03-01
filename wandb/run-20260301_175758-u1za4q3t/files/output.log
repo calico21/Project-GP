@@ -1,0 +1,147 @@
+
+============================================================
+PHASE 4: DYNAMIC AI SETUP DISCOVERY (MORL-SB-TRPO)
+============================================================
+[VehicleDynamics] H_net scale loaded: 103.31 J
+
+[MORL-SB-TRPO] Initialising Pareto Policy Ensemble…
+[SB-TRPO] Compiling 46-DOF physics gradients via XLA…
+   [DIAG] Soft grip: 1.5290 G | Hard grip: 1.4838 G
+[SB-TRPO] Testing gradient flow through objective…
+   Grip gradient norm : 0.531407
+   [OK] Gradient flow confirmed — TRPO is active.
+   [DIAG] Entropy bonus: coeff=0.0050 | At log_std=-1.0: Σ contribution = -0.0400 G-equiv per member
+   [DIAG] At log_std=-3.0 (collapsed): -0.1200 G-equiv — resists collapse.
+   [DIAG] KL: per-step≈0.000739, 10-step lag≈0.007389 (threshold=0.0005)
+   [OK] Trust region activates after 10-iter burn-in.
+   [Fix H] Chebyshev omegas: 8/20 members in high-grip region [0.7, 1.0] (vs 6 with linear spacing).
+   [Fix B] Stability_Overshoot cap: 5.0 — artefact setups (k_f at boundary) will be filtered from archive.
+   [Fix G] Population restart: every 200 iters, bottom 5 members reinitialised to random logit-space.
+[SB-TRPO] Running feasibility pre-check…
+   [SB-TRPO] i=   0 | Safe: 13/20 | Valid: 9/20 | Grip: 1.5113 G | Stab: -0.5036 | HV: 1.445910 | KL: 0.000000 | log_std: -0.998 [+6 artefacts filtered] [burn-in]
+   [SB-TRPO] i=  20 | Safe: 15/20 | Valid: 11/20 | Grip: 1.5471 G | Stab: -0.5601 | HV: 1.658359 | KL: 0.023516 | log_std: -0.996 [+6 artefacts filtered] [TR active] [10-step lag]
+   [SB-TRPO] i=  40 | Safe: 15/20 | Valid: 12/20 | Grip: 1.5632 G | Stab: -0.4081 | HV: 1.663731 | KL: 0.019335 | log_std: -1.000 [+5 artefacts filtered] [TR active] [10-step lag]
+   [SB-TRPO] i=  60 | Safe: 14/20 | Valid: 9/20 | Grip: 1.5414 G | Stab: -0.4500 | HV: 1.670978 | KL: 0.018189 | log_std: -1.002 [+6 artefacts filtered] [TR active] [10-step lag]
+   [SB-TRPO] i=  80 | Safe: 12/20 | Valid: 8/20 | Grip: 1.5059 G | Stab: -0.4450 | HV: 1.678344 | KL: 0.015606 | log_std: -1.005 [+4 artefacts filtered] [TR active] [10-step lag]
+   [SB-TRPO] i= 100 | Safe: 13/20 | Valid: 11/20 | Grip: 1.5164 G | Stab: -0.3738 | HV: 1.694677 | KL: 0.016113 | log_std: -1.007 [+3 artefacts filtered] [TR active] [10-step lag]
+   [SB-TRPO] i= 120 | Safe: 13/20 | Valid: 9/20 | Grip: 1.5215 G | Stab: -0.4459 | HV: 1.695151 | KL: 0.015228 | log_std: -1.009 [+4 artefacts filtered] [TR active] [10-step lag]
+   [SB-TRPO] i= 140 | Safe: 11/20 | Valid: 10/20 | Grip: 1.4947 G | Stab: -0.4663 | HV: 1.695186 | KL: 0.015481 | log_std: -1.011 [+1 artefacts filtered] [TR active] [10-step lag]
+   [SB-TRPO] i= 160 | Safe: 12/20 | Valid: 11/20 | Grip: 1.5058 G | Stab: -0.4762 | HV: 1.696911 | KL: 0.013813 | log_std: -1.014 [+1 artefacts filtered] [TR active] [10-step lag]
+   [SB-TRPO] i= 180 | Safe: 14/20 | Valid: 13/20 | Grip: 1.4963 G | Stab: -0.4607 | HV: 1.697607 | KL: 0.013671 | log_std: -1.016 [+1 artefacts filtered] [TR active] [10-step lag]
+   [FIX G] i=200: restarted bottom 5 members (grips: [np.float32(1.3482463), np.float32(1.399242), np.float32(1.4028367), np.float32(1.4427967), np.float32(1.4442211)])
+   [SB-TRPO] i= 200 | Safe: 9/20 | Valid: 8/20 | Grip: 1.5217 G | Stab: -0.4069 | HV: 1.697829 | KL: 22.856611 | log_std: -1.010 [+2 artefacts filtered] [TR active] [10-step lag]
+   [SB-TRPO] i= 220 | Safe: 11/20 | Valid: 11/20 | Grip: 1.5304 G | Stab: -0.5438 | HV: 1.705671 | KL: 0.020160 | log_std: -1.012 [+1 artefacts filtered] [TR active] [10-step lag]
+   [SB-TRPO] i= 240 | Safe: 10/20 | Valid: 10/20 | Grip: 1.5416 G | Stab: -0.4224 | HV: 1.705715 | KL: 0.019591 | log_std: -1.012 [TR active] [10-step lag]
+   [SB-TRPO] i= 260 | Safe: 8/20 | Valid: 8/20 | Grip: 1.5216 G | Stab: -0.5101 | HV: 1.705768 | KL: 0.017085 | log_std: -1.014 [TR active] [10-step lag]
+   [SB-TRPO] i= 280 | Safe: 7/20 | Valid: 7/20 | Grip: 1.4911 G | Stab: -0.5293 | HV: 1.707077 | KL: 0.015992 | log_std: -1.016 [TR active] [10-step lag]
+   [SB-TRPO] i= 300 | Safe: 8/20 | Valid: 8/20 | Grip: 1.5128 G | Stab: -0.3756 | HV: 1.707081 | KL: 0.014694 | log_std: -1.019 [TR active] [10-step lag]
+   [SB-TRPO] i= 320 | Safe: 6/20 | Valid: 6/20 | Grip: 1.5359 G | Stab: -0.4882 | HV: 1.707081 | KL: 0.014888 | log_std: -1.021 [TR active] [10-step lag]
+   [SB-TRPO] i= 340 | Safe: 8/20 | Valid: 8/20 | Grip: 1.5240 G | Stab: -0.4272 | HV: 1.707498 | KL: 0.014779 | log_std: -1.025 [TR active] [10-step lag]
+   [SB-TRPO] i= 360 | Safe: 7/20 | Valid: 7/20 | Grip: 1.5147 G | Stab: -0.4801 | HV: 1.707498 | KL: 0.016663 | log_std: -1.028 [TR active] [10-step lag]
+   [SB-TRPO] i= 380 | Safe: 5/20 | Valid: 5/20 | Grip: 1.5108 G | Stab: -0.4924 | HV: 1.707904 | KL: 0.016412 | log_std: -1.030 [TR active] [10-step lag]
+   [FIX G] i=400: restarted bottom 5 members (grips: [np.float32(1.427161), np.float32(1.430218), np.float32(1.4392813), np.float32(1.4408016), np.float32(1.447893)])
+   [SB-TRPO] i= 400 | Safe: 6/20 | Valid: 6/20 | Grip: 1.5098 G | Stab: -0.4713 | HV: 1.707904 | KL: 32.050220 | log_std: -1.012 [+1 artefacts filtered] [TR active] [10-step lag]
+   [SB-TRPO] i= 420 | Safe: 8/20 | Valid: 8/20 | Grip: 1.5209 G | Stab: -0.4195 | HV: 1.707904 | KL: 0.030165 | log_std: -1.013 [+1 artefacts filtered] [TR active] [10-step lag]
+   [SB-TRPO] i= 440 | Safe: 9/20 | Valid: 9/20 | Grip: 1.5249 G | Stab: -0.4442 | HV: 1.708487 | KL: 0.024243 | log_std: -1.016 [+1 artefacts filtered] [TR active] [10-step lag]
+   [SB-TRPO] i= 460 | Safe: 6/20 | Valid: 6/20 | Grip: 1.5054 G | Stab: -0.4006 | HV: 1.708487 | KL: 0.021566 | log_std: -1.019 [+1 artefacts filtered] [TR active] [10-step lag]
+   [SB-TRPO] i= 480 | Safe: 6/20 | Valid: 5/20 | Grip: 1.5529 G | Stab: -0.5519 | HV: 1.710135 | KL: 0.019649 | log_std: -1.023 [+1 artefacts filtered] [TR active] [10-step lag]
+   [SB-TRPO] i= 500 | Safe: 4/20 | Valid: 4/20 | Grip: 1.5654 G | Stab: -0.5579 | HV: 1.710135 | KL: 0.017780 | log_std: -1.027 [TR active] [10-step lag]
+   [SB-TRPO] i= 520 | Safe: 5/20 | Valid: 5/20 | Grip: 1.5290 G | Stab: -0.4295 | HV: 1.712220 | KL: 0.018900 | log_std: -1.030 [TR active] [10-step lag]
+   [SB-TRPO] i= 540 | Safe: 6/20 | Valid: 6/20 | Grip: 1.5536 G | Stab: -0.5391 | HV: 1.712220 | KL: 0.018327 | log_std: -1.033 [TR active] [10-step lag]
+   [SB-TRPO] i= 560 | Safe: 4/20 | Valid: 4/20 | Grip: 1.5143 G | Stab: -0.4221 | HV: 1.712220 | KL: 0.019015 | log_std: -1.035 [TR active] [10-step lag]
+   [SB-TRPO] i= 580 | Safe: 4/20 | Valid: 4/20 | Grip: 1.4972 G | Stab: -0.5521 | HV: 1.713953 | KL: 0.018672 | log_std: -1.038 [TR active] [10-step lag]
+   [FIX G] i=600: restarted bottom 5 members (grips: [np.float32(1.4258702), np.float32(1.4322988), np.float32(1.4328078), np.float32(1.4418081), np.float32(1.4421867)])
+   [SB-TRPO] i= 600 | Safe: 4/20 | Valid: 3/20 | Grip: 1.5358 G | Stab: -0.4954 | HV: 1.715295 | KL: 51.669857 | log_std: -1.021 [+1 artefacts filtered] [TR active] [10-step lag]
+   [SB-TRPO] i= 620 | Safe: 5/20 | Valid: 4/20 | Grip: 1.5193 G | Stab: -0.4115 | HV: 1.715295 | KL: 0.029017 | log_std: -1.025 [+1 artefacts filtered] [TR active] [10-step lag]
+   [SB-TRPO] i= 640 | Safe: 7/20 | Valid: 6/20 | Grip: 1.5202 G | Stab: -0.4242 | HV: 1.715295 | KL: 0.019487 | log_std: -1.027 [+1 artefacts filtered] [TR active] [10-step lag]
+   [SB-TRPO] i= 660 | Safe: 7/20 | Valid: 7/20 | Grip: 1.5588 G | Stab: -0.4183 | HV: 1.716400 | KL: 0.019795 | log_std: -1.028 [TR active] [10-step lag]
+   [SB-TRPO] i= 680 | Safe: 7/20 | Valid: 6/20 | Grip: 1.5409 G | Stab: -0.4194 | HV: 1.716400 | KL: 0.018310 | log_std: -1.031 [+1 artefacts filtered] [TR active] [10-step lag]
+   [SB-TRPO] i= 700 | Safe: 5/20 | Valid: 5/20 | Grip: 1.5495 G | Stab: -0.3897 | HV: 1.716400 | KL: 0.018517 | log_std: -1.035 [TR active] [10-step lag]
+   [SB-TRPO] i= 720 | Safe: 6/20 | Valid: 6/20 | Grip: 1.5376 G | Stab: -0.4942 | HV: 1.719357 | KL: 0.018219 | log_std: -1.038 [TR active] [10-step lag]
+   [SB-TRPO] i= 740 | Safe: 5/20 | Valid: 5/20 | Grip: 1.5357 G | Stab: -0.4114 | HV: 1.721846 | KL: 0.019917 | log_std: -1.041 [TR active] [10-step lag]
+   [SB-TRPO] i= 760 | Safe: 3/20 | Valid: 3/20 | Grip: 1.5143 G | Stab: -0.5568 | HV: 1.725059 | KL: 0.021195 | log_std: -1.043 [TR active] [10-step lag]
+   [SB-TRPO] i= 780 | Safe: 5/20 | Valid: 5/20 | Grip: 1.5379 G | Stab: -0.5086 | HV: 1.725059 | KL: 0.021179 | log_std: -1.045 [TR active] [10-step lag]
+   [FIX G] i=800: restarted bottom 5 members (grips: [np.float32(1.385382), np.float32(1.4004749), np.float32(1.4069307), np.float32(1.4107454), np.float32(1.4238312)])
+   [SB-TRPO] i= 800 | Safe: 5/20 | Valid: 5/20 | Grip: 1.5016 G | Stab: -0.7230 | HV: 1.725059 | KL: 36.532837 | log_std: -1.039 [+3 artefacts filtered] [TR active] [10-step lag]
+   [SB-TRPO] i= 820 | Safe: 4/20 | Valid: 4/20 | Grip: 1.5544 G | Stab: -0.5596 | HV: 1.725140 | KL: 0.031138 | log_std: -1.039 [+1 artefacts filtered] [TR active] [10-step lag]
+   [SB-TRPO] i= 840 | Safe: 3/20 | Valid: 3/20 | Grip: 1.5430 G | Stab: -0.7859 | HV: 1.725140 | KL: 0.022883 | log_std: -1.042 [+2 artefacts filtered] [TR active] [10-step lag]
+   [SB-TRPO] i= 860 | Safe: 3/20 | Valid: 3/20 | Grip: 1.5160 G | Stab: -0.8579 | HV: 1.725140 | KL: 0.021622 | log_std: -1.048 [+2 artefacts filtered] [TR active] [10-step lag]
+   [SB-TRPO] i= 880 | Safe: 4/20 | Valid: 4/20 | Grip: 1.5191 G | Stab: -0.7881 | HV: 1.725596 | KL: 0.021349 | log_std: -1.049 [+1 artefacts filtered] [TR active] [10-step lag]
+   [SB-TRPO] i= 900 | Safe: 3/20 | Valid: 3/20 | Grip: 1.4982 G | Stab: -0.6688 | HV: 1.725596 | KL: 0.020996 | log_std: -1.051 [TR active] [10-step lag]
+   [SB-TRPO] i= 920 | Safe: 4/20 | Valid: 4/20 | Grip: 1.5698 G | Stab: -0.6951 | HV: 1.733789 | KL: 0.019469 | log_std: -1.055 [TR active] [10-step lag]
+   [SB-TRPO] i= 940 | Safe: 4/20 | Valid: 4/20 | Grip: 1.5071 G | Stab: -0.5859 | HV: 1.733789 | KL: 0.020271 | log_std: -1.057 [TR active] [10-step lag]
+   [SB-TRPO] i= 960 | Safe: 3/20 | Valid: 3/20 | Grip: 1.5324 G | Stab: -0.6648 | HV: 1.733789 | KL: 0.020400 | log_std: -1.060 [TR active] [10-step lag]
+   [SB-TRPO] i= 980 | Safe: 1/20 | Valid: 1/20 | Grip: 1.4721 G | Stab: -0.7679 | HV: 1.733789 | KL: 0.020505 | log_std: -1.063 [TR active] [10-step lag]
+
+[MORL] Setup sensitivity analysis (dGrip/d(param) at each Pareto point):
+  Setup    Grip   Stab      k_f      k_r    arb_f    arb_r      c_f      c_r     h_cg  brake_b
+  ──────────────────────────────────────────────────────────────────────────────────────────────
+  1       1.576   2.00  +833.0480  -1108.7590  +1.7538  -1.7029  +0.0000  +0.0000  -0.0007  -0.0010
+  2       1.571   2.05  +790.5809  -1101.9618  +1.6874  -1.6937  +0.0000  +0.0000  -0.0006  -0.0010
+  3       1.566   2.57  +855.0253  -1114.7880  +1.7876  -1.7149  +0.0000  +0.0000  -0.0007  -0.0010
+  4       1.565   2.72  +824.7397  -1107.8350  +1.7407  -1.7021  +0.0000  +0.0000  -0.0007  -0.0010
+  5       1.565   3.13  +1279.3719  -1037.2732  +2.4636  -1.5126  +0.0000  +0.0000  -0.0012  -0.0002
+  6       1.556   4.34  +476.7784  -868.6425  +1.2307  -1.1187  +0.0000  +0.0000  -0.0009  +0.0014
+  7       1.553   4.39  +490.1905  -866.7138  +1.2477  -1.1119  +0.0000  +0.0000  -0.0009  +0.0011
+  8       1.548   4.96  +562.3727  -966.7877  +1.3883  -1.3249  +0.0000  +0.0000  -0.0009  +0.0012
+  9       1.542   4.96  -815.5662  +683.6688  -1.1280  +1.4492  +0.0000  +0.0000  -0.0009  -0.0037
+  10      1.498   4.97  +900.4956  -1028.7694  +1.8769  -1.4907  +0.0000  +0.0000  -0.0006  -0.0053
+  11      1.416   4.99  +1005.5978  -1034.9934  +2.0819  -1.3370  +0.0000  +0.0000  -0.0011  -0.0002
+  12      1.407   5.00  +962.1384  -1035.8630  +2.0195  -1.3309  +0.0000  +0.0000  -0.0011  -0.0003
+
+[MORL] Top-3 Setup Cards:
+
+  ┌─ Setup 1  [Grip: 1.576 G | Stability_Overshoot: 2.00 | Gen: 46.0]
+  │  Most sensitive parameter: k_r
+  │  k_f            =    31429.0  N/m
+  │  k_r            =    32437.6  N/m
+  │  arb_f          =      998.2  N·m/rad
+  │  arb_r          =      518.9  N·m/rad
+  │  c_f            =     2190.6  N·s/m
+  │  c_r            =     3489.2  N·s/m
+  │  h_cg           =        0.3  m
+  │  brake_bias_f   =       64.6  %
+  └────────────────────────────────────────────────────
+
+  ┌─ Setup 2  [Grip: 1.571 G | Stability_Overshoot: 2.05 | Gen: 78.0]
+  │  Most sensitive parameter: k_r
+  │  k_f            =    32238.5  N/m
+  │  k_r            =    32181.8  N/m
+  │  arb_f          =      999.8  N·m/rad
+  │  arb_r          =      518.3  N·m/rad
+  │  c_f            =     2163.9  N·s/m
+  │  c_r            =     3399.9  N·s/m
+  │  h_cg           =        0.3  m
+  │  brake_bias_f   =       64.6  %
+  └────────────────────────────────────────────────────
+
+  ┌─ Setup 3  [Grip: 1.566 G | Stability_Overshoot: 2.57 | Gen: 24.0]
+  │  Most sensitive parameter: k_r
+  │  k_f            =    30965.4  N/m
+  │  k_r            =    32328.1  N/m
+  │  arb_f          =      997.7  N·m/rad
+  │  arb_r          =      519.2  N·m/rad
+  │  c_f            =     2219.3  N·s/m
+  │  c_r            =     3566.9  N·s/m
+  │  h_cg           =        0.3  m
+  │  brake_bias_f   =       64.6  %
+  └────────────────────────────────────────────────────
+
+[MORL] Sensitivity report saved to /home/alexr/FS_Driver_Setup_Optimizer/morl_sensitivity.csv
+
+[MORL-SB-TRPO] Pareto front discovery complete:
+         k_f          k_r       arb_f       arb_r         c_f         c_r     h_cg  brake_bias_f  Lat_G_Score  Stability_Overshoot  Generation
+31429.013672 32437.593750  998.249634  518.902710 2190.557129 3489.181885 0.275586      0.646380     1.575604             1.996034          46
+32238.496094 32181.849609  999.849670  518.292358 2163.895020 3399.899902 0.275726      0.646474     1.570897             2.050812          78
+30965.414062 32328.107422  997.700195  519.199280 2219.298584 3566.937988 0.275552      0.646130     1.565777             2.571765          24
+31579.636719 32360.599609  998.398315  518.941406 2187.206055 3474.613525 0.275604      0.646448     1.565406             2.722221          52
+23993.707031 37880.078125  456.443146 1384.312256 3498.644531 3236.155273 0.282053      0.635048     1.565151             3.132629           5
+41128.152344 45953.781250 1303.002686 1484.707031 4508.074219 3246.082520 0.259081      0.591700     1.556289             4.340642         418
+40531.070312 46239.960938 1343.504883 1509.318604 4760.921875 3382.808594 0.258477      0.595785     1.553457             4.386919         401
+41558.941406 43252.511719 1055.850830 1857.635864 3919.240723 3624.718262 0.281550      0.610296     1.548424             4.958788         262
+36378.250000 28689.535156 1376.682007 1146.948853 3657.442383 3017.957520 0.281697      0.700320     1.541754             4.963692         550
+31678.037109 38464.074219  388.871124 1840.737427 4389.048828 3298.874268 0.277723      0.726736     1.498458             4.974282         236
+33207.128906 52730.871094 1408.623413 1445.662476 4607.069336 4607.277344 0.319227      0.659993     1.416013             4.988428           8
+34511.093750 53393.464844 1414.010620 1445.989502 4490.509766 4488.357422 0.319039      0.660491     1.406638             4.995257          32
+
+[Success] Pareto array saved to /home/alexr/FS_Driver_Setup_Optimizer/morl_pareto_front.csv

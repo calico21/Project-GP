@@ -18,15 +18,82 @@ TRAINED_R_SCALE: float = 1.0
 def generate_synthetic_flex_data(num_samples=2000, key_seed=42):
     """
     Generates synthetic training data for chassis torsional flex.
-    Torsional stiffness is at 15 000 Nm/rad (synthetic approximation).
-    Until 4-post rig data is available this is the primary training source.
+    Torsional stiffness at 15 000 Nm/rad (synthetic approximation).
+
+    FIX (v6) — physical momenta and setup parameters.
+    ─────────────────────────────────────────────────
+    Previous: p ~ N(0, 0.1), setup_params ~ N(0, 1).
+
+    At p ~ N(0, 0.1) with M_diag[0] = 188 kg:
+        v[0] = p[0] / 188 = 0.0005 m/s  (operating speed: 15 m/s)
+
+    The bilateral passivity penalty at this training velocity:
+        phantom rate = dH/dq[0] × 0.0005 = −0.85 J/s
+        penalty      = 0.1 × relu(0.85 − 100) = 0.000   ← ZERO gradient
+
+    The network learns arbitrary phantom forces because the threshold
+    of 100 J/s is never crossed at training time.  At the actual test
+    point (vx=10 m/s), the same forces give −169,656 mJ.
+
+    Fix: sample p from physical momenta p = M × v where v covers the
+    operating envelope.  At v[0] ~ N(15, 5) m/s:
+        phantom rate = −1696 × 15 = −25,440 J/s
+        penalty      = 0.1 × (25,440 − 100) = 2,534 J/s  ← strong gradient
+
+    Fix also: setup_params must be in raw physical units because
+    NeuralEnergyLandscape.__call__ passes them through
+    PhysicsNormalizer.normalize_setup() internally.  N(0,1) was sampling
+    k_f ≈ 0 N/m instead of 40,000 N/m, causing H_net to learn the wrong
+    coupling between spring stiffness and torsional energy.
     """
+    # Physical mass/inertia matching DifferentiableMultiBodyVehicle defaults
+    _m_s   = VP_DICT.get('total_mass', 230.0) - (
+                2 * VP_DICT.get('unsprung_mass_f', 10.0) +
+                2 * VP_DICT.get('unsprung_mass_r', 11.0))
+    _Ix    = VP_DICT.get('Ix', 45.0)
+    _Iy    = VP_DICT.get('Iy', 85.0)
+    _Iz    = VP_DICT.get('Iz', 125.0)
+    _m_usf = VP_DICT.get('unsprung_mass_f', 10.0)
+    _m_usr = VP_DICT.get('unsprung_mass_r', 11.0)
+    _Iw    = VP_DICT.get('Iw', 1.2)
+
+    M_diag_train = jnp.array([_m_s, _m_s, _m_s, _Ix, _Iy, _Iz,
+                                _m_usf, _m_usf, _m_usr, _m_usr,
+                                _Iw, _Iw, _Iw, _Iw])
+
+    # Physical velocity standard deviations (1σ ≈ operating range / 2)
+    v_std = jnp.array([
+        15.0,   # vx  longitudinal (5–25 m/s operating range)
+         2.0,   # vy  lateral
+         0.3,   # vz  heave
+         0.4,   # wx  roll rate
+         0.3,   # wy  pitch rate
+         1.5,   # wz  yaw rate (0.5G at 15 m/s → 0.98 rad/s)
+         0.4,   # unsprung vz FL
+         0.4,   # unsprung vz FR
+         0.4,   # unsprung vz RL
+         0.4,   # unsprung vz RR
+        75.0,   # wheel omega FL  (15 m/s / 0.2032 m ≈ 73.8 rad/s)
+        75.0,   # wheel omega FR
+        75.0,   # wheel omega RL
+        75.0,   # wheel omega RR
+    ])
+
     key = jax.random.PRNGKey(key_seed)
     k1, k2, k3 = jax.random.split(key, 3)
 
-    q            = jax.random.normal(k1, (num_samples, 14)) * 0.05
-    p            = jax.random.normal(k2, (num_samples, 14)) * 0.1
-    setup_params = jax.random.normal(k3, (num_samples, 8))
+    q = jax.random.normal(k1, (num_samples, 14)) * 0.05   # position (m)
+
+    # Physical momenta: p = M × v
+    v_samples = jax.random.normal(k2, (num_samples, 14)) * v_std
+    p         = v_samples * M_diag_train
+
+    # Physical setup parameters in raw units (PhysicsNormalizer handles scaling)
+    # [k_f, k_r, arb_f, arb_r, c_f, c_r, h_cg, brake_bias_f]
+    setup_mean_train  = jnp.array([40000., 40000.,  500.,  500., 3000., 3000., 0.30, 0.60])
+    setup_scale_train = jnp.array([15000., 15000.,  300.,  300., 1500., 1500., 0.03, 0.08])
+    setup_params = (setup_mean_train
+                    + jax.random.normal(k3, (num_samples, 8)) * setup_scale_train)
 
     torsion      = (q[:, 6] - q[:, 7]) - (q[:, 8] - q[:, 9])
     k_torsion    = 15000.0
@@ -149,7 +216,13 @@ def train_neural_residuals():
     NUM_EPOCHS            = 2000
     PHASE_1_END           = 1500   # pure MSE phase (unchanged — works correctly)
     PHASE_2_EPOCHS        = NUM_EPOCHS - PHASE_1_END   # = 500
-    PASSIVITY_ALPHA       = 1.0    # passivity ‖grad‖ = PASSIVITY_ALPHA × MSE ‖grad‖
+    PASSIVITY_ALPHA       = 20.0   # passivity ‖grad‖ = PASSIVITY_ALPHA × MSE ‖grad‖
+    # WHY 20.0:
+    # At v[0]~N(15,5) m/s, phantom rate ≈ -476 J/s → ‖∇_pass‖ >> ‖∇_MSE‖.
+    # PASSIVITY_ALPHA=1.0 gave PassScale=0.002, meaning passivity got 1/500th
+    # of intended weight. 20.0 brings PassScale to ~0.3-0.6 (measured from
+    # gradient ratio at operating speed) — strong enough to pull the network
+    # out of the phantom-braking basin within Phase 2.
     DISSIPATION_THRESHOLD = 100.0  # J/s — phantom-braking softness boundary
 
     # Phase 1 optimizer — unchanged from v4, confirmed working
@@ -287,11 +360,35 @@ def train_neural_residuals():
     r_tx = optax.adamw(learning_rate=r_schedule, weight_decay=1e-4)
     r_opt_state = r_tx.init(r_params)
 
+    # DOF-specific dissipation weights.
+    # WHY THIS MATTERS:
+    # Previous target was jnp.eye(14)*scalar — the same magnitude for all 14
+    # DOFs. R_net's L@L.T structure means off-diagonal terms trend toward 0
+    # automatically. But with a uniform diagonal target, all 196 MSE terms
+    # compete equally and 92.9% of the gradient comes from near-zero
+    # off-diagonals being held near zero — the 14 physically meaningful
+    # diagonal DOFs get only 7.1% of gradient signal.
+    #
+    # Fix 1: compute loss on DIAGONAL elements only (14 terms, not 196).
+    #        Gives 14× more gradient signal per diagonal DOF.
+    # Fix 2: weight diagonal by physical role:
+    #   - Unsprung heave [6-9]: primary damper DOFs, highest dissipation
+    #   - Sprung heave [2]: body vertical motion, secondary
+    #   - Roll/pitch [3,4]: ARB + spring coupling
+    #   - Wheel spin [10-13]: rolling resistance only, tiny
+    #   - Sprung x/y [0,1]: constrained by tire — minimal damping
+    R_DOF_WEIGHTS = jnp.array([
+        0.08, 0.08, 0.80, 0.40, 0.40, 0.15,   # sprung: x,y,z,roll,pitch,yaw
+        1.00, 1.00, 1.00, 1.00,                # unsprung heave FL/FR/RL/RR
+        0.02, 0.02, 0.02, 0.02,                # wheel spin (rolling resistance)
+    ])
+
     @jax.jit
     def r_loss_fn(params, q, p, target_mag_norm):
-        preds   = jax.vmap(r_net.apply, in_axes=(None, 0, 0))(params, q, p)
-        targets = jax.vmap(lambda mag: jnp.eye(14) * mag)(target_mag_norm)
-        return jnp.mean((preds - targets) ** 2)
+        preds     = jax.vmap(r_net.apply, in_axes=(None, 0, 0))(params, q, p)
+        pred_diag = jax.vmap(jnp.diag)(preds)                        # (N, 14)
+        tgt_diag  = target_mag_norm[:, None] * R_DOF_WEIGHTS[None,:] # (N, 14)
+        return jnp.mean((pred_diag - tgt_diag) ** 2)
 
     @jax.jit
     def r_update(params, opt_state, q, p, target_mag_norm):
@@ -304,13 +401,14 @@ def train_neural_residuals():
     # ─────────────────────────────────────────────────────────────────────────
     print("\n[Neural Physics] Training H_net (Energy Landscape Residual)...")
     print(f"  [Config] Epochs: {NUM_EPOCHS} | AdamW | weight_decay: 1e-4")
-    print(f"  [Two-Phase Design — v5 gradient normalisation]")
+    print(f"  [Two-Phase Design — v6: gradient normalisation + physical momenta]")
     print(f"  Phase 1 (ep 1→{PHASE_1_END}): λ=0.0 — PURE MSE.")
     print(f"    Network learns torsional energy landscape with zero constraint interference.")
     print(f"  Phase 2 (ep {PHASE_1_END+1}→{NUM_EPOCHS}): gradient-normalised MSE + bilateral passivity.")
     print(f"    Fresh Adam state at phase transition (eliminates stale second-moment problem).")
     print(f"    Passivity gradient scaled to {PASSIVITY_ALPHA}× MSE gradient norm every step.")
     print(f"    Bilateral: penalises injection (full) AND phantom braking >100 J/s (10% weight).")
+    print(f"    Training momenta: physical (v[0]~N(15,5) m/s) — passivity penalty fires at operating speed.")
     print(f"    LR: cosine 5e-4→5e-5 (Phase 2 restarts higher than Phase 1 end LR of ~1e-5).")
 
     h_opt_state_p1 = h_tx_p1.init(h_params)
@@ -356,18 +454,52 @@ def train_neural_residuals():
                       f"lr: {lr_now:.2e} | "
                       f"Phase 2 ({p2_pct:.0f}%)")
 
+    # REPLACE WITH:
     # ─────────────────────────────────────────────────────────────────────────
-    # R_net training loop
+    # R_net training loop — two-phase with LR restart at midpoint
+    # WHY: Single cosine decay from 1e-3→1e-5 over 2000 epochs caused
+    # plateau at loss=0.101 from epoch 200. LR was ~3.5e-4 at epoch 200
+    # but gradient signal was too weak (old diagonal-all target + 196-element
+    # loss dilution). With new diagonal-only target, gradients are 14× larger.
+    # Add a midpoint LR restart (cosine 5e-4→5e-5 over second 1000 epochs)
+    # to let the network recover from its early plateau.
     # ─────────────────────────────────────────────────────────────────────────
+    R_PHASE_1_END = 1000
+    r_schedule_p2 = optax.cosine_decay_schedule(init_value=5e-4,
+                                                  decay_steps=NUM_EPOCHS - R_PHASE_1_END,
+                                                  alpha=0.1)
+    r_tx_p2       = optax.adamw(learning_rate=r_schedule_p2, weight_decay=1e-4)
+    r_opt_state_p2 = None
+
     print("\n[Neural Physics] Training R_net (Dissipation Matrix Residual)...")
     for epoch in range(1, NUM_EPOCHS + 1):
-        r_params, r_opt_state, r_loss = r_update(
-            r_params, r_opt_state,
-            q_data, p_data, target_R_mag_norm,
-        )
-        if epoch % 200 == 0:
-            print(f"  Epoch {epoch:4d} | MSE Loss: {r_loss:.6f} | "
-                  f"lr: {float(r_schedule(epoch)):.2e}")
+        if epoch <= R_PHASE_1_END:
+            r_params, r_opt_state, r_loss = r_update(
+                r_params, r_opt_state,
+                q_data, p_data, target_R_mag_norm,
+            )
+            if epoch % 200 == 0:
+                print(f"  Epoch {epoch:4d} | MSE Loss: {r_loss:.6f} | "
+                      f"lr: {float(r_schedule(epoch)):.2e}")
+        else:
+            if r_opt_state_p2 is None:
+                r_opt_state_p2 = r_tx_p2.init(r_params)
+                print(f"  [R Phase 2] Epoch {epoch}: fresh Adam, LR restart 5e-4.")
+
+            @jax.jit
+            def r_update_p2(params, opt_state, q, p, target_mag_norm):
+                loss, grads = jax.value_and_grad(r_loss_fn)(params, q, p, target_mag_norm)
+                updates, new_state = r_tx_p2.update(grads, opt_state, params)
+                return optax.apply_updates(params, updates), new_state, loss
+
+            r_params, r_opt_state_p2, r_loss = r_update_p2(
+                r_params, r_opt_state_p2,
+                q_data, p_data, target_R_mag_norm,
+            )
+            if epoch % 200 == 0:
+                lr_now = float(r_schedule_p2(epoch - R_PHASE_1_END))
+                print(f"  Epoch {epoch:4d} | MSE Loss: {r_loss:.6f} | "
+                      f"lr: {lr_now:.2e} | R Phase 2")
 
     # ─────────────────────────────────────────────────────────────────────────
     # Post-training passive energy injection diagnostic

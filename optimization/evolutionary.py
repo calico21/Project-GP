@@ -148,8 +148,24 @@ class MORL_SB_TRPO_Optimizer:
         self.var_keys      = ['k_f', 'k_r', 'arb_f', 'arb_r',
                                'c_f', 'c_r', 'h_cg', 'brake_bias_f']
 
+        # ── Search bounds ─────────────────────────────────────────────────────
+        # P3 fix — tighten ARB and damping lower bounds:
+        #
+        # ARB: previous lower bound = 0 N.m/rad.
+        #   At arb=0 the anti-roll stiffness is purely from the springs.
+        #   Under lateral load the resulting roll angle is large enough that
+        #   tire normal loads become degenerate → compute_frequency_response
+        #   returns near-infinite resonance → safety metric fails → Valid drops.
+        #   Physical FSAE ARB minimum: ~100 N.m/rad (essentially disconnected
+        #   but not zero — zero ARB is mechanically unusual and numerically bad).
+        #
+        # Damping: previous lower bound = 1000 N.s/m.
+        #   At 1000 N.s/m the damping ratio ζ ≈ 0.15 for a 15k spring —
+        #   near-underdamped → frequency response peaks sharply → resonance
+        #   metric diverges → setup fails the stability filter.
+        #   Raise to 1500 N.s/m (ζ ≈ 0.22, marginal but physically stable).
         self.raw_bounds = jnp.array([
-            [15000., 15000.,    0.,    0., 1000., 1000., 0.25, 0.45],
+            [15000., 15000.,  100.,  100., 1500., 1500., 0.25, 0.45],
             [60000., 60000., 2000., 2000., 6000., 6000., 0.35, 0.75],
         ])
 
@@ -237,15 +253,59 @@ class MORL_SB_TRPO_Optimizer:
             + (var + (mu - old_mu) ** 2) / (2 * old_var)
             - 0.5
         )
-        kl_penalty = 50.0 * jnp.maximum(0.0, kl - 0.0005)
+        kl_penalty = 10.0 * jnp.maximum(0.0, kl - 0.005)
+        # WHY: old penalty 50×(kl-0.0005) at restart KL=20-32 gave
+        # penalty≈1000 G-equiv >> reward≈1.5 G. Optimizer was frozen
+        # for ~50 iterations after each restart. Gradient was going entirely
+        # into reducing KL rather than improving grip/stability.
+        # New: 10×(kl-0.005). At kl=20 → penalty=200 (still constraining
+        # but not completely dominating). At kl=0.01 → penalty=0.05
+        # (negligible during normal operation). Higher threshold=0.005
+        # shortens the post-restart burn-in from ~50 iters to ~15.
+
+        # ── P4 fix: soft penalty for proximity to stability cap ───────────────
+        #
+        # Problem: 5 of 9 Pareto setups had stability_overshoot = 4.6–5.0,
+        #   all pinned at the hard cap boundary.  The optimizer found the
+        #   constraint edge and exploited it — these are boundary artefacts,
+        #   not genuine stability-optimised configurations.
+        #
+        # Fix: quadratic wall that activates 0.5 rad/s before the cap.
+        #   stab_margin = STABILITY_MAX − stab_overshoot
+        #   cost = 5.0 × relu(0.5 − stab_margin)²
+        #
+        #   At stab_overshoot = 4.0 → margin=1.0 → cost=0     (no effect)
+        #   At stab_overshoot = 4.5 → margin=0.5 → cost=0     (boundary starts)
+        #   At stab_overshoot = 4.8 → margin=0.2 → cost=5×0.09=0.45 G-equiv
+        #   At stab_overshoot = 5.0 → margin=0.0 → cost=5×0.25=1.25 G-equiv
+        #
+        # The penalty is in the same units as the reward (G-equivalent),
+        # so it is directly commensurable with the objective.  Setups that
+        # would have sat at 4.9 are now pushed back toward 3.5–4.2.
+        stab_overshoot    = -stability   # positive value = overshoot magnitude
+        stab_margin       = STABILITY_MAX - stab_overshoot
+        stab_boundary_cost = 5.0 * jax.nn.relu(0.5 - stab_margin) ** 2
+
+        # Hard stability floor — prevents members from going deeply unstable.
+        # WHY: after i=600, Stab drifted -0.4→-1.9 (Stability_Overshoot growing).
+        # High-omega (grip-priority) members had no incentive to stay stable
+        # because stab_boundary_cost only fires near the UPPER cap (5.0).
+        # The lower end was unconstrained: a setup with Stab=-1.9 is valid
+        # (passes -STABILITY_MAX=-5.0 filter) but physically represents a
+        # vehicle with poor transient response.
+        # This floor fires when Stability_Overshoot > 2.0 (stab < -2.0):
+        #   Stab=-1.0 → floor_cost=0     (normal operating range)
+        #   Stab=-2.0 → floor_cost=0     (boundary)
+        #   Stab=-2.5 → floor_cost=100×0.25=25 G-equiv (strong push-back)
+        #   Stab=-3.0 → floor_cost=100×1.0=100 G-equiv (hard wall)
+        stability_floor_cost = 100.0 * jax.nn.relu(-stability - 2.0) ** 2
 
         # Maximum-entropy bonus (retained)
-        # Effect on log_std gradient: constant downward push → prevents collapse.
-        # At log_std=-1.0: 0.005×8×(-1.0)=-0.040 (negligible at initial state)
-        # At log_std=-3.0: 0.005×8×(-3.0)=-0.120 (meaningful anti-collapse force)
         entropy_bonus = self.H_ENTROPY_COEFF * jnp.sum(log_std)
 
-        loss = -reward - entropy_bonus + safety_cost + kl_penalty
+        loss = (-reward - entropy_bonus
+                + safety_cost + kl_penalty
+                + stab_boundary_cost + stability_floor_cost)
         return loss, (grip, stability, safety, kl)
 
     @partial(jax.jit, static_argnums=(0,))
@@ -415,7 +475,7 @@ class MORL_SB_TRPO_Optimizer:
         kl_lagged   = kl_per_step * self.KL_LAG_HORIZON
         print(f"   [DIAG] KL: per-step≈{kl_per_step:.6f}, "
               f"{self.KL_LAG_HORIZON}-step lag≈{kl_lagged:.6f} (threshold=0.0005)")
-        if kl_lagged > 0.0005:
+        if kl_lagged > 0.005:
             print(f"   [OK] Trust region activates after {self.KL_LAG_HORIZON}-iter burn-in.")
 
         # FIX H diagnostic
@@ -589,6 +649,78 @@ class MORL_SB_TRPO_Optimizer:
                 cd   = self.compute_crowding_distance(objs)
                 keep = np.argsort(cd)[::-1][:150]
                 df_pareto = df_pareto.iloc[keep]
+
+            # ── Sensitivity analysis via JAX gradients ────────────────────
+            # dGrip/dParam at each Pareto setup — tells engineers which
+            # parameter matters most for THIS specific setup.
+            # Uses the same physics engine as the optimizer — no extra model.
+            print("\n[MORL] Setup sensitivity analysis (dGrip/d(param) at each Pareto point):")
+            print(f"  {'Setup':<6} {'Grip':>6} {'Stab':>6}  " +
+                  "  ".join(f"{k[:7]:>7}" for k in self.var_keys))
+            print("  " + "─" * (6 + 8 + 8 + 9 * len(self.var_keys)))
+
+            bounds_range = self.raw_bounds[1] - self.raw_bounds[0]
+            sensitivity_rows = []
+            for idx in range(len(df_pareto)):
+                phys_setup = jnp.array(
+                    df_pareto[self.var_keys].values[idx], dtype=jnp.float32)
+                setup_norm = jnp.clip(
+                    (phys_setup - self.raw_bounds[0]) / (bounds_range + 1e-8),
+                    0.02, 0.98)
+                try:
+                    dGrip = jax.grad(
+                        lambda s: self.evaluate_setup_jax(s)[0]
+                    )(setup_norm)
+                    # Scale: G per 10% of parameter range (engineering-relevant unit)
+                    sens = np.array(dGrip) * np.array(bounds_range) * 0.10
+                    sensitivity_rows.append(sens)
+                    grip_val = df_pareto['grip'].values[idx]
+                    stab_val = df_pareto['Stability_Overshoot'].values[idx]
+                    sens_str = "  ".join(f"{s:+7.4f}" for s in sens)
+                    print(f"  {idx+1:<6} {grip_val:>6.3f} {stab_val:>6.2f}  {sens_str}")
+                except Exception:
+                    sensitivity_rows.append(np.zeros(self.dim))
+
+            # ── Human-readable setup cards for top 3 ─────────────────────
+            print("\n[MORL] Top-3 Setup Cards:")
+            unit_map = {
+                'k_f': 'N/m', 'k_r': 'N/m',
+                'arb_f': 'N·m/rad', 'arb_r': 'N·m/rad',
+                'c_f': 'N·s/m', 'c_r': 'N·s/m',
+                'h_cg': 'm', 'brake_bias_f': '%'
+            }
+            scale_map = {'brake_bias_f': 100.0}
+            for idx in range(min(3, len(df_pareto))):
+                row = df_pareto.iloc[idx]
+                grip = row['grip']
+                stab = row['Stability_Overshoot']
+                gen  = row['Generation']
+                print(f"\n  ┌─ Setup {idx+1}  "
+                      f"[Grip: {grip:.3f} G | Stability_Overshoot: {stab:.2f} | Gen: {gen}]")
+                if len(sensitivity_rows) > idx:
+                    top_param = self.var_keys[int(np.argmax(np.abs(sensitivity_rows[idx])))]
+                    print(f"  │  Most sensitive parameter: {top_param}")
+                for k in self.var_keys:
+                    val = row[k] * scale_map.get(k, 1.0)
+                    unit = unit_map.get(k, '')
+                    print(f"  │  {k:<14} = {val:>10.1f}  {unit}")
+                print(f"  └{'─'*52}")
+
+            # Save sensitivity to CSV alongside Pareto front
+            try:
+                sens_df = df_pareto[self.var_keys + ['grip','Stability_Overshoot']].copy()
+                for ki, key in enumerate(self.var_keys):
+                    sens_df[f'd_grip_d_{key}'] = [
+                        (sensitivity_rows[idx][ki] if idx < len(sensitivity_rows) else 0.0)
+                        for idx in range(len(df_pareto))
+                    ]
+                _sens_path = os.path.join(
+                    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                    'morl_sensitivity.csv')
+                sens_df.to_csv(_sens_path, index=False)
+                print(f"\n[MORL] Sensitivity report saved to {_sens_path}")
+            except Exception as e:
+                print(f"[MORL] Sensitivity save failed: {e}")
 
             return (df_pareto[self.var_keys].values,
                     df_pareto['grip'].values,
