@@ -15,7 +15,7 @@ TRAINED_H_SCALE: float = 1.0
 TRAINED_R_SCALE: float = 1.0
 
 
-def generate_synthetic_flex_data(num_samples=2000, key_seed=42):
+def generate_synthetic_flex_data(num_samples=5000, key_seed=42):
     """
     Generates synthetic training data for chassis torsional flex.
     Torsional stiffness at 15 000 Nm/rad (synthetic approximation).
@@ -107,14 +107,22 @@ def train_neural_residuals():
     print("[Neural Physics] Generating Synthetic Chassis Flex Data...")
     q_data, p_data, setup_data, target_H, target_R_mag = generate_synthetic_flex_data()
 
-    m_s  = VP_DICT.get('m_s', VP_DICT['m'] * 0.85)
-    m_us = VP_DICT.get('m_us', VP_DICT['m'] * 0.0375)
-    Ix   = VP_DICT.get('Ix', 200.0)
-    Iy   = VP_DICT.get('Iy', 800.0)
-    Iz   = VP_DICT['Iz']
-    Iw   = VP_DICT.get('Iw', 1.2)
+    # ── B1 FIX: M_diag must match generate_synthetic_flex_data exactly ───────
+    # Previous bug: used VP_DICT.get('m_s', m*0.85)=195.5 kg, Ix=200, Iy=800.
+    # Correct:      total_mass - 4×m_us = 188 kg, Ix=45, Iy=85.
+    # Error at vx=10 m/s: T_prior was +420 J too high → H_residual learned
+    # a phantom −420 J offset to compensate → contributed to phantom braking.
+    m_s   = VP_DICT.get('total_mass', 230.0) - (
+                2 * VP_DICT.get('unsprung_mass_f', 10.0) +
+                2 * VP_DICT.get('unsprung_mass_r', 11.0))
+    m_usf = VP_DICT.get('unsprung_mass_f', 10.0)
+    m_usr = VP_DICT.get('unsprung_mass_r', 11.0)
+    Ix    = VP_DICT.get('Ix', 45.0)
+    Iy    = VP_DICT.get('Iy', 85.0)
+    Iz    = VP_DICT.get('Iz', 125.0)
+    Iw    = VP_DICT.get('Iw', 1.2)
     M_diag = jnp.array([m_s, m_s, m_s, Ix, Iy, Iz,
-                         m_us, m_us, m_us, m_us, Iw, Iw, Iw, Iw])
+                         m_usf, m_usf, m_usr, m_usr, Iw, Iw, Iw, Iw])
 
     h_net = NeuralEnergyLandscape(M_diag=M_diag)
     r_net = NeuralDissipationMatrix(dim=14)
@@ -132,112 +140,76 @@ def train_neural_residuals():
           f"| R target scale: {r_scale:.4f}")
 
     # =========================================================================
-    # TWO-PHASE TRAINING — VERSION 5: GRADIENT NORMALISATION + BILATERAL
-    # PASSIVITY LOSS
+    # THREE-PHASE TRAINING — VERSION 7: GRADUATED PASSIVITY SCHEDULE
     # =========================================================================
     #
-    # FAILURE HISTORY (brief — full record in previous sessions):
+    # FAILURE HISTORY:
     # ─────────────────────────────────────────────────────────────────────────
+    # v1-v4: Fixed/ramped λ — various gradient scale mismatches.
+    # v5:  Gradient normalisation + ALPHA=20 → MSE diverges 0.525→1.648.
+    #      Phase 1 MSE was 0.525 (not converged) so ||∇_pass||/||∇_MSE||≈850.
+    #      ALPHA=20 overpowered MSE by 20×.
+    # v6a: B1 M_diag fix + ALPHA=1.0 → PassScale=0.000. Phase 1 now converges
+    #      to MSE=0.082 (B1 fixed T_prior). But ||∇_pass||/||∇_MSE||≈9000 now
+    #      because MSE baseline is much lower. ALPHA=1/9000 ≈ 0.0001 effective.
+    # v6b: ALPHA=5.0 → PassScale grows to 0.54, violation 758→116 J/s (close!)
+    #      BUT MSE diverges 0.082→6.437 (78×) and NaN rate 0%→67%.
+    #      ||∇_pass||/||∇_MSE||≈9000 means ALPHA=5 ≡ ALPHA=53 in v5.
     #
-    # v1  Fixed λ=1000 → trivial zero collapse (passivity >> MSE).
-    # v2  λ ramp with MSE gate → gate permanently frozen (MSE_norm ≥ 1 by
-    #     construction from normalisation).
-    # v3  λ_max=100 cold switch at epoch 1501 → gradient ratio 594,500:1.
-    # v4  Linear ramp λ → 10 over Phase 2 → loss grows proportional to λ.
-    #
-    # ROOT CAUSE OF v4 FAILURE (diagnosed from run log):
+    # THREE-PHASE SOLUTION:
     # ─────────────────────────────────────────────────────────────────────────
-    # Epoch 1400: MSE = 0.001793, λ = 0.00  ← Phase 1 converged correctly
-    # Epoch 1600: loss = 23.21,    λ = 2.00  ← grows proportionally to λ
-    # Epoch 1800: loss = 61.52,    λ = 6.00  ← violation constant at ~10 J/s
-    # Epoch 2000: loss = 100.14,   λ = 10.00 ← λ ramp achieves nothing
+    # Phase 1 (ep 1→2500):     Pure MSE. Converges to ~0.082.
+    # Phase 2 (ep 2501→3200):  ALPHA=3.0. Burns violation 758→~250 J/s.
+    #                           MSE degrades ~3-5× (→0.25-0.4), not 78×.
+    #                           Fresh Adam restart at Phase 2 start.
+    # Phase 3 (ep 3201→4000):  ALPHA=1.0. MSE recovery + gentle passivity.
+    #                           Fresh Adam restart clears Phase 2 moments.
+    #                           LR=2e-4 (lower than Phase 2's 5e-4).
+    #                           Violation continues to ~150-200 J/s.
+    #                           MSE recovers toward ~0.1-0.3.
     #
-    # Diagnosis:
-    # (a) Gradient scale mismatch: Adam second moment (m̂₂) was calibrated to
-    #     Phase 1 MSE gradients of O(0.002). At epoch 1501 with λ=0.02 and
-    #     violation ≈ 11.89 J/s, passivity gradient ≈ λ × 11.89 = 0.24.
-    #     Even this tiny initial value is 120× larger than m̂₂ expects.
-    #     By λ=2.0 the ratio is ≈ 12,000:1 — Adam step size ≈ 0.
-    #     The optimizer is effectively frozen: violation stays at 11.89.
+    # WHY ALPHA=3.0 FOR PHASE 2:
+    #   ||∇_pass||/||∇_MSE|| ≈ 9000 at Phase 2 start.
+    #   ALPHA=1.0: scale=1/9000 → PassScale≈0.000, no effect.
+    #   ALPHA=5.0: MSE diverges 78× (observed, NaN in WMPC).
+    #   ALPHA=3.0: effective passivity = 3× MSE norm.
+    #              MSE degrades ~3-5× (acceptable). Violation drops ~250 J/s.
     #
-    # (b) Unilateral relu only penalises energy injection (positive rates).
-    #     Network learned to comply by injecting LARGE NEGATIVE energy (phantom
-    #     braking at −16,131 mJ per 10 ms step = −1613 J/s). This satisfies
-    #     relu(rate) = 0 but generates massive unphysical deceleration forces
-    #     → NaN gradients in WMPC _simulate_trajectory rollout.
-    #
-    # V5 DESIGN — TWO FIXES:
-    # ─────────────────────────────────────────────────────────────────────────
-    #
-    # Fix 1 — GRADIENT NORMALISATION (eliminates scale mismatch permanently):
-    #
-    #   Instead of scalar-weighted sum:  loss = MSE + λ × passivity
-    #   Use gradient-normalised sum:     ∇ = ∇_MSE + α × (‖∇_MSE‖/‖∇_pass‖) × ∇_pass
-    #
-    #   PASSIVITY_ALPHA = 1.0 guarantees passivity contributes exactly 1× the
-    #   MSE gradient norm, regardless of:
-    #     - violation magnitude (works at 11.89 J/s AND at 0.01 J/s)
-    #     - λ value (no tuning needed)
-    #     - training phase (scale adapts automatically as network improves)
-    #
-    #   Mathematical guarantee: the combined gradient is always in a 45° cone
-    #   between ∇_MSE and ∇_pass. Neither term can dominate the other.
-    #   Adam receives correctly-scaled gradients from the first Phase 2 epoch.
-    #
-    #   Requires two forward passes per step (1 for MSE, 1 for passivity).
-    #   For N=2000 samples and a 128-64 network, this adds ~40% compute.
-    #   Acceptable trade-off given the training is offline.
-    #
-    # Fix 2 — BILATERAL PASSIVITY LOSS + FRESH ADAM at Phase 2 start:
-    #
-    #   Port-Hamiltonian passivity: dH/dt ≤ 0 at zero external input.
-    #   Physical bounds for an FSAE car at 15 m/s:
-    #     Injection  (rate > 0):           forbidden. Full penalty.
-    #     Dissipation (0 ≥ rate ≥ −50):    physically normal. No penalty.
-    #     Phantom braking (rate < −50 J/s): unphysical. Soft penalty (10%).
-    #       (Real peak damper dissipation: ~30–80 W per corner = 120–320 J/s
-    #        total. DISSIPATION_THRESHOLD = 100 J/s is conservative.)
-    #
-    #   This steers the network away from the phantom-braking local minimum
-    #   that previous unilateral relu enabled.
-    #
-    #   Fresh Adam state at epoch PHASE_1_END + 1: m̂₁ = m̂₂ = 0 for h_tx_p2.
-    #   This eliminates the stale moment problem entirely — the optimiser
-    #   correctly sizes its first steps based on actual Phase 2 gradient scale.
-    #
-    # EXPECTED PHASE 2 OUTCOME:
-    #   MSE:                0.002 → 0.005–0.025 (slight degradation is fine)
-    #   Passivity violation: 11.89 → < 1.0 J/s  (gradient normalisation enforces)
-    #   Phantom braking:   −1613 → < −100 J/s   (bilateral penalty removes)
-    #   ΔKE (passive step):−16131 mJ → < −100 mJ (within physical range)
-    #   NaN in WMPC:        eliminated            (forces back in physical range)
+    # WHY FRESH ADAM AT PHASE 3:
+    #   Phase 2 with ALPHA=3 accumulates large m̂₂ for the passivity direction.
+    #   Without reset, Phase 3 ALPHA=1.0 would still be pushed by these stale
+    #   moments for ~100+ epochs. Fresh Adam at epoch 3201 clears this.
     # =========================================================================
 
-    NUM_EPOCHS            = 2000
-    PHASE_1_END           = 1500   # pure MSE phase (unchanged — works correctly)
-    PHASE_2_EPOCHS        = NUM_EPOCHS - PHASE_1_END   # = 500
-    PASSIVITY_ALPHA       = 20.0   # passivity ‖grad‖ = PASSIVITY_ALPHA × MSE ‖grad‖
-    # WHY 20.0:
-    # At v[0]~N(15,5) m/s, phantom rate ≈ -476 J/s → ‖∇_pass‖ >> ‖∇_MSE‖.
-    # PASSIVITY_ALPHA=1.0 gave PassScale=0.002, meaning passivity got 1/500th
-    # of intended weight. 20.0 brings PassScale to ~0.3-0.6 (measured from
-    # gradient ratio at operating speed) — strong enough to pull the network
-    # out of the phantom-braking basin within Phase 2.
+    NUM_EPOCHS            = 4000
+    PHASE_1_END           = 2500
+    PHASE_2_END           = 3200   # 700 Phase 2 epochs: aggressive passivity
+    PHASE_3_END           = 4000   # 800 Phase 3 epochs: MSE recovery
+    PHASE_2_EPOCHS        = PHASE_2_END - PHASE_1_END   # = 700
+    PHASE_3_EPOCHS        = PHASE_3_END - PHASE_2_END   # = 800
+
+    PASSIVITY_ALPHA_P2    = 3.0    # Phase 2: aggressive (3× MSE norm)
+    PASSIVITY_ALPHA_P3    = 1.0    # Phase 3: gentle (1× MSE norm)
     DISSIPATION_THRESHOLD = 100.0  # J/s — phantom-braking softness boundary
 
-    # Phase 1 optimizer — unchanged from v4, confirmed working
+    # Phase 1 optimizer
     h_schedule_p1 = optax.cosine_decay_schedule(init_value=1e-3,
                                                   decay_steps=PHASE_1_END,
                                                   alpha=0.01)
     h_tx_p1 = optax.adamw(learning_rate=h_schedule_p1, weight_decay=1e-4)
 
-    # Phase 2 optimizer — FRESH Adam, LR restarts at 5e-4 (50× higher than
-    # Phase 1 end LR of 1e-5) to give meaningful step sizes.
-    # Cosine to 5e-5 over 500 epochs (not decaying all the way to 1e-5).
+    # Phase 2 optimizer — fresh Adam, cosine 5e-4→5e-5 over 700 epochs
     h_schedule_p2 = optax.cosine_decay_schedule(init_value=5e-4,
                                                   decay_steps=PHASE_2_EPOCHS,
                                                   alpha=0.1)
     h_tx_p2 = optax.adamw(learning_rate=h_schedule_p2, weight_decay=1e-4)
+
+    # Phase 3 optimizer — fresh Adam, cosine 2e-4→1e-5 over 800 epochs.
+    # Lower starting LR than Phase 2: MSE recovery needs finer steps.
+    h_schedule_p3 = optax.cosine_decay_schedule(init_value=2e-4,
+                                                  decay_steps=PHASE_3_EPOCHS,
+                                                  alpha=0.05)
+    h_tx_p3 = optax.adamw(learning_rate=h_schedule_p3, weight_decay=1e-4)
 
     # ─────────────────────────────────────────────────────────────────────────
     # PHASE 1 UPDATE — pure MSE, no passivity
@@ -260,98 +232,87 @@ def train_neural_residuals():
         return optax.apply_updates(params, updates), new_state, loss
 
     # ─────────────────────────────────────────────────────────────────────────
-    # PHASE 2 UPDATE — gradient-normalised MSE + bilateral passivity
+    # PHASE 2/3 UPDATE FACTORY — gradient-normalised MSE + bilateral passivity
     # ─────────────────────────────────────────────────────────────────────────
+    # Two separate JIT-compiled functions are required because PASSIVITY_ALPHA
+    # is captured as a compile-time constant by @jax.jit. Passing it as a
+    # dynamic argument would force retracing every epoch. One function per phase.
 
-    @jax.jit
-    def h_update_p2(params, opt_state, q, p, setup, target_norm):
+    def _make_h_update(alpha_val, optimizer):
         """
-        Phase 2: gradient-normalised joint optimisation.
+        Returns a JIT-compiled update function for Phase 2 or Phase 3.
 
-        Two forward passes:
-          1. MSE gradient  → ∇_MSE  (same as Phase 1)
-          2. Passivity gradient → ∇_pass (bilateral: penalise injection AND phantom braking)
+        Combined gradient: ∇ = ∇_MSE + alpha_val × (‖∇_MSE‖/‖∇_pass‖) × ∇_pass
 
-        Combined update: ∇ = ∇_MSE + PASSIVITY_ALPHA × (‖∇_MSE‖/‖∇_pass‖) × ∇_pass
-
-        Guarantees:
-          - Passivity always contributes exactly PASSIVITY_ALPHA × MSE gradient norm
-          - No λ tuning required — the scale self-adapts each step
-          - Adam receives correctly-scaled gradients from epoch 1501 onward
-          - Passivity cannot overwhelm MSE (they compete at equal footing)
+        Guarantees passivity contributes exactly alpha_val × MSE gradient norm,
+        regardless of violation magnitude — the scale self-adapts each step.
         """
+        @jax.jit
+        def _update(params, opt_state, q, p, setup, target_norm):
+            def mse_loss(params_):
+                def per_sample(q_s, p_s, setup_s, t_s):
+                    total    = h_net.apply(params_, q_s, p_s, setup_s)
+                    T_prior  = 0.5 * jnp.sum((p_s ** 2) / M_diag)
+                    V_struct = 0.5 * jnp.sum(q_s[6:10] ** 2) * 30000.0
+                    residual = (total - T_prior - V_struct) / h_scale
+                    return (residual - t_s) ** 2
+                return jnp.mean(jax.vmap(per_sample)(q, p, setup, target_norm))
 
-        def mse_loss(params_):
-            def per_sample(q_s, p_s, setup_s, t_s):
-                total    = h_net.apply(params_, q_s, p_s, setup_s)
-                T_prior  = 0.5 * jnp.sum((p_s ** 2) / M_diag)
-                V_struct = 0.5 * jnp.sum(q_s[6:10] ** 2) * 30000.0
-                residual = (total - T_prior - V_struct) / h_scale
-                return (residual - t_s) ** 2
-            return jnp.mean(jax.vmap(per_sample)(q, p, setup, target_norm))
+            def passivity_loss(params_):
+                """
+                Bilateral passivity loss.
 
-        def passivity_loss(params_):
-            """
-            Bilateral passivity loss.
+                Port-Hamiltonian energy rate at zero external input:
+                  dH/dt = (∂H/∂q)ᵀ · v
 
-            Port-Hamiltonian energy rate at zero external input:
-              dH/dt = (∂H/∂q)ᵀ · (p/M) + (∂H/∂p)ᵀ · F_ext=0
-                    = (∂H/∂q)ᵀ · v
+                  rate > 0:               energy injection     → full penalty
+                  -THRESHOLD ≤ rate ≤ 0:  physical dissipation → no penalty
+                  rate < -THRESHOLD:       phantom braking      → 10% penalty
+                """
+                def per_sample(q_s, p_s, setup_s):
+                    dH_dq  = jax.grad(
+                        lambda q_: h_net.apply(params_, q_, p_s, setup_s)
+                    )(q_s)
+                    v      = p_s / M_diag
+                    rate   = jnp.dot(dH_dq, v)
+                    inject  = jax.nn.relu(rate)
+                    phantom = 0.1 * jax.nn.relu(-rate - DISSIPATION_THRESHOLD)
+                    return inject + phantom
+                return jnp.mean(jax.vmap(per_sample)(q, p, setup))
 
-            Physical decomposition:
-              rate > 0:                energy injection     → forbidden, full penalty
-              -THRESHOLD ≤ rate ≤ 0:   physical dissipation → allowed, zero penalty
-              rate < -THRESHOLD:        phantom braking      → unphysical, soft penalty
+            mse_val,  mse_grads  = jax.value_and_grad(mse_loss)(params)
+            pass_val, pass_grads = jax.value_and_grad(passivity_loss)(params)
 
-            The phantom-braking penalty (weight 0.1) is lighter because large negative
-            rates are less catastrophic than large positive rates (they slow the car
-            down rather than accelerating it unphysically). The threshold of 100 J/s
-            corresponds to ~2× the peak damper dissipation of a typical FSAE car.
-            """
-            def per_sample(q_s, p_s, setup_s):
-                dH_dq  = jax.grad(
-                    lambda q_: h_net.apply(params_, q_, p_s, setup_s)
-                )(q_s)
-                v      = p_s / M_diag
-                rate   = jnp.dot(dH_dq, v)
-                inject  = jax.nn.relu(rate)                                         # injection
-                phantom = 0.1 * jax.nn.relu(-rate - DISSIPATION_THRESHOLD)          # phantom braking
-                return inject + phantom
-            return jnp.mean(jax.vmap(per_sample)(q, p, setup))
+            mse_norm_sq = sum(
+                jnp.sum(g ** 2)
+                for g in jax.tree_util.tree_leaves(mse_grads)
+            )
+            pass_norm_sq = sum(
+                jnp.sum(g ** 2)
+                for g in jax.tree_util.tree_leaves(pass_grads)
+            )
+            mse_norm  = jnp.sqrt(mse_norm_sq  + 1e-12)
+            pass_norm = jnp.sqrt(pass_norm_sq + 1e-12)
 
-        # Compute both gradients
-        mse_val,  mse_grads  = jax.value_and_grad(mse_loss)(params)
-        pass_val, pass_grads = jax.value_and_grad(passivity_loss)(params)
+            # scale: ‖alpha × scale × ∇_pass‖ = alpha × ‖∇_MSE‖
+            scale = alpha_val * mse_norm / (pass_norm + 1e-8)
 
-        # Gradient norms — sum over all leaves of the parameter pytree
-        # jax.tree_util.tree_leaves is static at trace time (Flax pytree structure
-        # is fixed), so Python's sum() on JAX arrays is well-defined inside jit.
-        mse_norm_sq = sum(
-            jnp.sum(g ** 2)
-            for g in jax.tree_util.tree_leaves(mse_grads)
-        )
-        pass_norm_sq = sum(
-            jnp.sum(g ** 2)
-            for g in jax.tree_util.tree_leaves(pass_grads)
-        )
-        mse_norm  = jnp.sqrt(mse_norm_sq  + 1e-12)
-        pass_norm = jnp.sqrt(pass_norm_sq + 1e-12)
+            combined_grads = jax.tree_util.tree_map(
+                lambda gm, gp: gm + scale * gp,
+                mse_grads, pass_grads,
+            )
 
-        # Passivity scale: ensures ‖PASSIVITY_ALPHA × scale × ∇_pass‖ = PASSIVITY_ALPHA × ‖∇_MSE‖
-        scale = PASSIVITY_ALPHA * mse_norm / (pass_norm + 1e-8)
+            updates, new_state = optimizer.update(combined_grads, opt_state, params)
+            new_params = optax.apply_updates(params, updates)
+            return new_params, new_state, mse_val, pass_val, scale
 
-        # Combined gradient: MSE term + normalised passivity term
-        combined_grads = jax.tree_util.tree_map(
-            lambda gm, gp: gm + scale * gp,
-            mse_grads, pass_grads,
-        )
+        return _update
 
-        updates, new_state = h_tx_p2.update(combined_grads, opt_state, params)
-        new_params = optax.apply_updates(params, updates)
-        return new_params, new_state, mse_val, pass_val, scale
+    h_update_p2 = _make_h_update(PASSIVITY_ALPHA_P2, h_tx_p2)
+    h_update_p3 = _make_h_update(PASSIVITY_ALPHA_P3, h_tx_p3)
 
     # ─────────────────────────────────────────────────────────────────────────
-    # R_net loss and update (unchanged — R_net training is not the bottleneck)
+    # R_net loss and update
     # ─────────────────────────────────────────────────────────────────────────
 
     r_schedule = optax.cosine_decay_schedule(init_value=1e-3,
@@ -360,23 +321,8 @@ def train_neural_residuals():
     r_tx = optax.adamw(learning_rate=r_schedule, weight_decay=1e-4)
     r_opt_state = r_tx.init(r_params)
 
-    # DOF-specific dissipation weights.
-    # WHY THIS MATTERS:
-    # Previous target was jnp.eye(14)*scalar — the same magnitude for all 14
-    # DOFs. R_net's L@L.T structure means off-diagonal terms trend toward 0
-    # automatically. But with a uniform diagonal target, all 196 MSE terms
-    # compete equally and 92.9% of the gradient comes from near-zero
-    # off-diagonals being held near zero — the 14 physically meaningful
-    # diagonal DOFs get only 7.1% of gradient signal.
-    #
-    # Fix 1: compute loss on DIAGONAL elements only (14 terms, not 196).
-    #        Gives 14× more gradient signal per diagonal DOF.
-    # Fix 2: weight diagonal by physical role:
-    #   - Unsprung heave [6-9]: primary damper DOFs, highest dissipation
-    #   - Sprung heave [2]: body vertical motion, secondary
-    #   - Roll/pitch [3,4]: ARB + spring coupling
-    #   - Wheel spin [10-13]: rolling resistance only, tiny
-    #   - Sprung x/y [0,1]: constrained by tire — minimal damping
+    # DOF-specific dissipation weights — diagonal-only loss gives 14× more
+    # gradient signal per DOF vs the previous 196-element full-matrix loss.
     R_DOF_WEIGHTS = jnp.array([
         0.08, 0.08, 0.80, 0.40, 0.40, 0.15,   # sprung: x,y,z,roll,pitch,yaw
         1.00, 1.00, 1.00, 1.00,                # unsprung heave FL/FR/RL/RR
@@ -386,8 +332,8 @@ def train_neural_residuals():
     @jax.jit
     def r_loss_fn(params, q, p, target_mag_norm):
         preds     = jax.vmap(r_net.apply, in_axes=(None, 0, 0))(params, q, p)
-        pred_diag = jax.vmap(jnp.diag)(preds)                        # (N, 14)
-        tgt_diag  = target_mag_norm[:, None] * R_DOF_WEIGHTS[None,:] # (N, 14)
+        pred_diag = jax.vmap(jnp.diag)(preds)
+        tgt_diag  = target_mag_norm[:, None] * R_DOF_WEIGHTS[None,:]
         return jnp.mean((pred_diag - tgt_diag) ** 2)
 
     @jax.jit
@@ -397,22 +343,22 @@ def train_neural_residuals():
         return optax.apply_updates(params, updates), new_opt_state, loss
 
     # ─────────────────────────────────────────────────────────────────────────
-    # H_net training loop
+    # H_net training loop — three phases
     # ─────────────────────────────────────────────────────────────────────────
     print("\n[Neural Physics] Training H_net (Energy Landscape Residual)...")
     print(f"  [Config] Epochs: {NUM_EPOCHS} | AdamW | weight_decay: 1e-4")
-    print(f"  [Two-Phase Design — v6: gradient normalisation + physical momenta]")
+    print(f"  [Three-Phase Design — v7: graduated passivity schedule]")
     print(f"  Phase 1 (ep 1→{PHASE_1_END}): λ=0.0 — PURE MSE.")
     print(f"    Network learns torsional energy landscape with zero constraint interference.")
-    print(f"  Phase 2 (ep {PHASE_1_END+1}→{NUM_EPOCHS}): gradient-normalised MSE + bilateral passivity.")
-    print(f"    Fresh Adam state at phase transition (eliminates stale second-moment problem).")
-    print(f"    Passivity gradient scaled to {PASSIVITY_ALPHA}× MSE gradient norm every step.")
-    print(f"    Bilateral: penalises injection (full) AND phantom braking >100 J/s (10% weight).")
-    print(f"    Training momenta: physical (v[0]~N(15,5) m/s) — passivity penalty fires at operating speed.")
-    print(f"    LR: cosine 5e-4→5e-5 (Phase 2 restarts higher than Phase 1 end LR of ~1e-5).")
+    print(f"  Phase 2 (ep {PHASE_1_END+1}→{PHASE_2_END}): ALPHA={PASSIVITY_ALPHA_P2:.1f} — aggressive passivity.")
+    print(f"    Burns violation 758→~250 J/s. Fresh Adam restart at transition.")
+    print(f"  Phase 3 (ep {PHASE_2_END+1}→{PHASE_3_END}): ALPHA={PASSIVITY_ALPHA_P3:.1f} — MSE recovery.")
+    print(f"    MSE recovers toward 0.1-0.3. Fresh Adam restart clears Phase 2 moments.")
+    print(f"    Training momenta: physical (v[0]~N(15,5) m/s) — fires at operating speed.")
 
     h_opt_state_p1 = h_tx_p1.init(h_params)
     h_opt_state_p2 = None   # initialised lazily at first Phase 2 epoch
+    h_opt_state_p3 = None   # initialised lazily at first Phase 3 epoch
 
     for epoch in range(1, NUM_EPOCHS + 1):
 
@@ -422,54 +368,74 @@ def train_neural_residuals():
                 h_params, h_opt_state_p1,
                 q_data, p_data, setup_data, target_H_norm,
             )
-
             if epoch % 200 == 0:
                 lr_now = float(h_schedule_p1(epoch))
                 print(f"  Epoch {epoch:4d} | Loss: {h_loss:.6f} | "
                       f"lr: {lr_now:.2e} | Phase 1 (pure MSE)")
 
-        else:
-            # ── Phase 2: gradient-normalised MSE + bilateral passivity ────────
+        elif epoch <= PHASE_2_END:
+            # ── Phase 2: aggressive passivity (ALPHA=3.0) ─────────────────────
             if h_opt_state_p2 is None:
-                # One-time fresh Adam initialisation at phase transition.
-                # h_tx_p2 has never seen any gradients: m̂₁ = m̂₂ = 0.
-                # This gives Adam correct step-size calibration for Phase 2
-                # gradient scales from the very first update.
                 h_opt_state_p2 = h_tx_p2.init(h_params)
-                print(f"\n  [Phase 2 START] Epoch {epoch}: fresh Adam state (LR=5e-4). "
+                print(f"\n  [Phase 2 START] Epoch {epoch}: fresh Adam (LR=5e-4). "
+                      f"ALPHA={PASSIVITY_ALPHA_P2:.1f}. "
                       f"Gradient normalisation + bilateral passivity active.")
 
             h_params, h_opt_state_p2, mse_l, pass_l, p_scale = h_update_p2(
                 h_params, h_opt_state_p2,
                 q_data, p_data, setup_data, target_H_norm,
             )
-
             if epoch % 200 == 0:
-                p2_pct = (epoch - PHASE_1_END) / PHASE_2_EPOCHS * 100
+                p2_pct = int(100 * (epoch - PHASE_1_END) / PHASE_2_EPOCHS)
                 lr_now = float(h_schedule_p2(epoch - PHASE_1_END))
                 print(f"  Epoch {epoch:4d} | "
                       f"MSE: {float(mse_l):.6f} | "
                       f"Violation: {float(pass_l):.4f} J/s | "
                       f"PassScale: {float(p_scale):.3f} | "
                       f"lr: {lr_now:.2e} | "
-                      f"Phase 2 ({p2_pct:.0f}%)")
+                      f"Phase 2 ({p2_pct}%) α=3.0")
 
-    # REPLACE WITH:
+        else:
+            # ── Phase 3: MSE recovery with gentle passivity (ALPHA=1.0) ───────
+            if h_opt_state_p3 is None:
+                # Fresh Adam: clears Phase 2's large passivity moment estimates.
+                # Without this, stale m̂₂ from Phase 2 continues pushing the
+                # network in the passivity direction for ~100+ epochs despite
+                # the reduced ALPHA. Fresh start gives correct step calibration
+                # from the first Phase 3 epoch.
+                h_opt_state_p3 = h_tx_p3.init(h_params)
+                print(f"\n  [Phase 3 START] Epoch {epoch}: fresh Adam (LR=2e-4). "
+                      f"ALPHA={PASSIVITY_ALPHA_P3:.1f}. MSE recovery + gentle passivity.")
+
+            h_params, h_opt_state_p3, mse_l, pass_l, p_scale = h_update_p3(
+                h_params, h_opt_state_p3,
+                q_data, p_data, setup_data, target_H_norm,
+            )
+            if epoch % 200 == 0:
+                p3_pct = int(100 * (epoch - PHASE_2_END) / PHASE_3_EPOCHS)
+                lr_now = float(h_schedule_p3(epoch - PHASE_2_END))
+                print(f"  Epoch {epoch:4d} | "
+                      f"MSE: {float(mse_l):.6f} | "
+                      f"Violation: {float(pass_l):.4f} J/s | "
+                      f"PassScale: {float(p_scale):.3f} | "
+                      f"lr: {lr_now:.2e} | "
+                      f"Phase 3 ({p3_pct}%) α=1.0")
+
     # ─────────────────────────────────────────────────────────────────────────
     # R_net training loop — two-phase with LR restart at midpoint
-    # WHY: Single cosine decay from 1e-3→1e-5 over 2000 epochs caused
-    # plateau at loss=0.101 from epoch 200. LR was ~3.5e-4 at epoch 200
-    # but gradient signal was too weak (old diagonal-all target + 196-element
-    # loss dilution). With new diagonal-only target, gradients are 14× larger.
-    # Add a midpoint LR restart (cosine 5e-4→5e-5 over second 1000 epochs)
-    # to let the network recover from its early plateau.
     # ─────────────────────────────────────────────────────────────────────────
-    R_PHASE_1_END = 1000
-    r_schedule_p2 = optax.cosine_decay_schedule(init_value=5e-4,
-                                                  decay_steps=NUM_EPOCHS - R_PHASE_1_END,
-                                                  alpha=0.1)
-    r_tx_p2       = optax.adamw(learning_rate=r_schedule_p2, weight_decay=1e-4)
+    R_PHASE_1_END  = 1000
+    r_schedule_p2  = optax.cosine_decay_schedule(init_value=5e-4,
+                                                   decay_steps=NUM_EPOCHS - R_PHASE_1_END,
+                                                   alpha=0.1)
+    r_tx_p2        = optax.adamw(learning_rate=r_schedule_p2, weight_decay=1e-4)
     r_opt_state_p2 = None
+
+    @jax.jit
+    def r_update_p2(params, opt_state, q, p, target_mag_norm):
+        loss, grads = jax.value_and_grad(r_loss_fn)(params, q, p, target_mag_norm)
+        updates, new_state = r_tx_p2.update(grads, opt_state, params)
+        return optax.apply_updates(params, updates), new_state, loss
 
     print("\n[Neural Physics] Training R_net (Dissipation Matrix Residual)...")
     for epoch in range(1, NUM_EPOCHS + 1):
@@ -485,12 +451,6 @@ def train_neural_residuals():
             if r_opt_state_p2 is None:
                 r_opt_state_p2 = r_tx_p2.init(r_params)
                 print(f"  [R Phase 2] Epoch {epoch}: fresh Adam, LR restart 5e-4.")
-
-            @jax.jit
-            def r_update_p2(params, opt_state, q, p, target_mag_norm):
-                loss, grads = jax.value_and_grad(r_loss_fn)(params, q, p, target_mag_norm)
-                updates, new_state = r_tx_p2.update(grads, opt_state, params)
-                return optax.apply_updates(params, updates), new_state, loss
 
             r_params, r_opt_state_p2, r_loss = r_update_p2(
                 r_params, r_opt_state_p2,

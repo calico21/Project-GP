@@ -541,6 +541,16 @@ class MORL_SB_TRPO_Optimizer:
                     new_leaves.append(leaf)
                 opt_state = jax.tree_util.tree_unflatten(
                     jax.tree_util.tree_structure(opt_state), new_leaves)
+                # B3: flush _params_history for restarted members so KL=0 at restart.
+                # Zeroing Adam moments only fixes the step-size spike.
+                # KL is computed against _params_history[0] — restarted members
+                # still appear at their old location in the deque, giving KL=22-74.
+                # Overwriting those slots collapses KL to ~0.001 per-step baseline.
+                new_mu_snap = jnp.array(self.ensemble_params['mu'])
+                new_ls_snap = jnp.array(self.ensemble_params['log_std'])
+                for snap in self._params_history:
+                    snap['mu']      = snap['mu'].at[restarted_idx].set(new_mu_snap[restarted_idx])
+                    snap['log_std'] = snap['log_std'].at[restarted_idx].set(new_ls_snap[restarted_idx])
                 print(f"   [FIX G] i={i}: restarted bottom {self.N_RESTART} members "
                       f"(grips: {sorted(self._last_grips)[:self.N_RESTART]})")
 
