@@ -1,0 +1,20 @@
+
+============================================================
+PHASE 4: DYNAMIC AI SETUP DISCOVERY (MORL-SB-TRPO)
+============================================================
+[VehicleDynamics] H_net scale loaded: 103.31 J
+
+[MORL-SB-TRPO] Initialising Pareto Policy Ensemble…
+[SB-TRPO] Compiling 46-DOF physics gradients via XLA…
+   [DIAG] Soft grip: 1.5290 G | Hard grip: 1.4838 G
+[SB-TRPO] Testing gradient flow through objective…
+   Grip gradient norm : 0.531407
+   [OK] Gradient flow confirmed — TRPO is active.
+   [DIAG] Entropy bonus: coeff=0.0050 | At log_std=-1.0: Σ contribution = -0.0400 G-equiv per member
+   [DIAG] At log_std=-3.0 (collapsed): -0.1200 G-equiv — resists collapse.
+   [DIAG] KL: per-step≈0.000739, 10-step lag≈0.007389 (threshold=0.0005)
+   [OK] Trust region activates after 10-iter burn-in.
+   [Fix H] Chebyshev omegas: 8/20 members in high-grip region [0.7, 1.0] (vs 6 with linear spacing).
+   [Fix B] Stability_Overshoot cap: 5.0 — artefact setups (k_f at boundary) will be filtered from archive.
+   [Fix G] Population restart: every 200 iters, bottom 5 members reinitialised to random logit-space.
+[SB-TRPO] Running feasibility pre-check…

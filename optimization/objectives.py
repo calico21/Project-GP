@@ -75,6 +75,41 @@ import jax.numpy as jnp
 # ── BUG FIX: raised from 10 → 20 to halve the smooth-max bias ────────────────
 _LSE_BETA = 20.0
 
+# ADD this new function above compute_skidpad_objective:
+
+def compute_step_steer_objective(simulate_step_fn, setup_params, x_init):
+    """
+    Step-steer transient: applies δ=0.08 rad at t=0 on a straight.
+    Measures yaw rate overshoot and settling time via 40-step rollout.
+    Damping (c_f, c_r) strongly affects this — activates the zero-sensitivity gap.
+
+    Returns: -overshoot_penalty (higher = better damped = more stable transient)
+    A well-damped car: wz peaks once then settles. Overdamped: slow response.
+    Target: critically damped response (ζ≈0.7), penalise both over and under.
+    """
+    dt = 0.005
+    u_step = jnp.array([0.08, 500.0])   # steering step + mild throttle
+
+    def rollout_step(carry, _):
+        x = carry
+        x = simulate_step_fn(x, u_step, setup_params, dt)
+        return x, x[19]   # carry state, emit wz
+
+    _, wz_history = jax.lax.scan(rollout_step, x_init, None, length=40)
+
+    wz_peak    = jnp.max(jnp.abs(wz_history))
+    wz_final   = jnp.abs(wz_history[-1])
+    wz_initial = jnp.abs(wz_history[5])   # after first ~25ms
+
+    # Overshoot ratio: ideal=1.0 (no overshoot), >1.3 = underdamped, <0.6 = overdamped
+    overshoot_ratio = wz_peak / jnp.maximum(wz_initial, 0.01)
+    overshoot_cost  = jnp.abs(overshoot_ratio - 1.0)   # 0=ideal
+
+    # Settling: wz should decay, not oscillate
+    settling_cost = wz_final / jnp.maximum(wz_initial, 0.01)
+
+    # Combined: lower = better transient response
+    return -(overshoot_cost + 0.5 * settling_cost)
 
 def compute_skidpad_objective(simulate_step_fn, params, x_init, dt=0.005, T_max=2.0):
     """

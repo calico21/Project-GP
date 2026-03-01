@@ -1,0 +1,63 @@
+_wandb:
+    value:
+        cli_version: 0.25.0
+        e:
+            ivo23c5nudzautqpe2i33pg23pu6i5en:
+                args:
+                    - --mode
+                    - setup
+                codePath: main.py
+                codePathLocal: main.py
+                cpu_count: 8
+                cpu_count_logical: 16
+                cudaVersion: "13.0"
+                disk:
+                    /:
+                        total: "1081101176832"
+                        used: "18489794560"
+                email: alexrevillaperez@gmail.com
+                executable: /home/alexr/project_gp_env/bin/python
+                git:
+                    commit: 846b80a4a2cfed532c1eec8854c7780fd5721c4f
+                    remote: https://github.com/calico21/Project-GP.git
+                gpu: NVIDIA GeForce RTX 4060 Laptop GPU
+                gpu_count: 1
+                gpu_nvidia:
+                    - architecture: Ada
+                      memoryTotal: "8585740288"
+                      name: NVIDIA GeForce RTX 4060 Laptop GPU
+                      uuid: GPU-ba169738-654c-63ce-1cac-81f601baa2e5
+                host: ALEXRP
+                memory:
+                    total: "25199558656"
+                os: Linux-6.6.87.2-microsoft-standard-WSL2-x86_64-with-glibc2.39
+                program: /home/alexr/FS_Driver_Setup_Optimizer/main.py
+                python: CPython 3.12.3
+                root: /home/alexr/FS_Driver_Setup_Optimizer
+                startedAt: "2026-03-01T18:19:15.219954Z"
+                writerId: ivo23c5nudzautqpe2i33pg23pu6i5en
+        m: []
+        python_version: 3.12.3
+        t:
+            "1":
+                - 12
+                - 45
+            "2":
+                - 12
+                - 45
+            "3":
+                - 2
+                - 13
+                - 16
+            "4": 3.12.3
+            "5": 0.25.0
+            "12": 0.25.0
+            "13": linux-x86_64
+horizon:
+    value: 128
+iterations:
+    value: 1500
+log:
+    value: null
+mode:
+    value: setup

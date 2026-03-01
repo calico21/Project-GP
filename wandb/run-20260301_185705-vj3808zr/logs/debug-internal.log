@@ -1,0 +1,6 @@
+{"time":"2026-03-01T18:57:05.872914513+01:00","level":"INFO","msg":"stream: starting","core version":"0.25.0"}
+{"time":"2026-03-01T18:57:06.231707965+01:00","level":"INFO","msg":"stream: created new stream","id":"vj3808zr"}
+{"time":"2026-03-01T18:57:06.231858531+01:00","level":"INFO","msg":"handler: started","stream_id":"vj3808zr"}
+{"time":"2026-03-01T18:57:06.231940469+01:00","level":"INFO","msg":"stream: started","id":"vj3808zr"}
+{"time":"2026-03-01T18:57:06.232040629+01:00","level":"INFO","msg":"writer: started","stream_id":"vj3808zr"}
+{"time":"2026-03-01T18:57:06.232069521+01:00","level":"INFO","msg":"sender: started","stream_id":"vj3808zr"}

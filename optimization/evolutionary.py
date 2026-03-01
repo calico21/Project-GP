@@ -212,7 +212,6 @@ class MORL_SB_TRPO_Optimizer:
         obj_grip, min_safety = compute_skidpad_objective(
             self.vehicle.simulate_step, params, x_init_skidpad
         )
-        # Physical sanity clip before TRPO loss (retained)
         obj_grip = jnp.clip(obj_grip, GRIP_MIN_PHYSICAL, GRIP_MAX_PHYSICAL)
 
         x_init_freq = jnp.zeros(46).at[14].set(15.0)
@@ -220,6 +219,12 @@ class MORL_SB_TRPO_Optimizer:
             self.vehicle.simulate_step, params, x_init_freq
         )
         obj_stability = -resonance
+        # NOTE: compute_step_steer_objective removed from this path.
+        # Calling simulate_step inside vmap(grad(jit(...))) creates a
+        # scan-inside-scan XLA graph that hangs compilation indefinitely.
+        # c_f/c_r sensitivity is already present via obj_stability —
+        # compute_frequency_response_objective uses damp_rate_f/r directly
+        # in zeta_heave, zeta_roll, zeta_pitch.
         return obj_grip, obj_stability, min_safety
 
     # ─────────────────────────────────────────────────────────────────────────
@@ -430,7 +435,7 @@ class MORL_SB_TRPO_Optimizer:
             mu[k]      = np.log(setup_rand / (1.0 - setup_rand + 1e-8))
             log_std[k] = np.full(self.dim, -1.0)   # reset to initial exploration width
 
-        return {'mu': jnp.array(mu), 'log_std': jnp.array(log_std)}
+        return {'mu': jnp.array(mu), 'log_std': jnp.array(log_std)}, worst_idx
 
     # ─────────────────────────────────────────────────────────────────────────
     # Main optimisation loop
@@ -520,9 +525,22 @@ class MORL_SB_TRPO_Optimizer:
         for i in range(iterations):
             # ── FIX G: population restart at interval ─────────────────────────
             if i > 0 and i % self.RESTART_INTERVAL == 0:
-                self.ensemble_params = self._restart_bottom_members(
+                self.ensemble_params, restarted_idx = self._restart_bottom_members(
                     self.ensemble_params, self._last_grips, restart_rng
                 )
+                # Zero Adam moments for restarted members only.
+                # This prevents the stale m̂₂ from the old location from
+                # creating KL spikes of 22-73 on the first post-restart step.
+                # We only zero the slots for the N_RESTART members — the other
+                # 15 members keep their accumulated moments undisturbed.
+                opt_state_leaves = jax.tree_util.tree_leaves(opt_state)
+                new_leaves = []
+                for leaf in opt_state_leaves:
+                    if hasattr(leaf, 'shape') and len(leaf.shape) >= 1 and leaf.shape[0] == self.ensemble_size:
+                        leaf = leaf.at[restarted_idx].set(jnp.zeros_like(leaf[restarted_idx]))
+                    new_leaves.append(leaf)
+                opt_state = jax.tree_util.tree_unflatten(
+                    jax.tree_util.tree_structure(opt_state), new_leaves)
                 print(f"   [FIX G] i={i}: restarted bottom {self.N_RESTART} members "
                       f"(grips: {sorted(self._last_grips)[:self.N_RESTART]})")
 
@@ -543,6 +561,19 @@ class MORL_SB_TRPO_Optimizer:
                 grads_clipped, opt_state, self.ensemble_params
             )
             self.ensemble_params = optax.apply_updates(self.ensemble_params, updates)
+
+            # Hard lower bound on log_std — prevents variance collapse.
+            # Without this, Adam weight_decay × LR pulls log_std toward 0
+            # cumulatively over 1000 iterations: -1.00 → -1.063 → eventually -1.5+
+            # At log_std=-1.5: σ=0.223, exploration radius shrinks 37% from init.
+            # Safe count collapses to 1-4/20 because the ensemble is sampling
+            # a tiny region that mostly falls outside the safety boundary.
+            # Floor at -1.2: allows natural tightening (exploitation) while
+            # preventing runaway collapse. At -1.2: σ=0.301, still meaningful.
+            self.ensemble_params = {
+                'mu':      self.ensemble_params['mu'],
+                'log_std': jnp.maximum(self.ensemble_params['log_std'], -1.2),
+            }
 
             # Append post-update snapshot — deque auto-evicts oldest
             self._params_history.append(
@@ -661,21 +692,31 @@ class MORL_SB_TRPO_Optimizer:
 
             bounds_range = self.raw_bounds[1] - self.raw_bounds[0]
             sensitivity_rows = []
+            all_grips_arr = df_pareto['grip'].values
             for idx in range(len(df_pareto)):
                 phys_setup = jnp.array(
                     df_pareto[self.var_keys].values[idx], dtype=jnp.float32)
                 setup_norm = jnp.clip(
                     (phys_setup - self.raw_bounds[0]) / (bounds_range + 1e-8),
                     0.02, 0.98)
+                grip_val = df_pareto['grip'].values[idx]
+                stab_val = df_pareto['Stability_Overshoot'].values[idx]
+                # Infer omega from Pareto position so sensitivity reflects
+                # the actual trade-off weight for this setup.
+                # d(reward)/d(param) = omega*d(grip)/d(param) + (1-omega)*d(stab)/d(param)
+                # c_f/c_r appear in d(stab)/d(param) via zeta_heave/roll/pitch.
+                grip_min = float(np.min(all_grips_arr))
+                grip_max = float(np.max(all_grips_arr))
+                omega_est = float(np.clip(
+                    0.3 + 0.6 * (grip_val - grip_min) / max(grip_max - grip_min, 1e-6),
+                    0.3, 0.9))
                 try:
-                    dGrip = jax.grad(
-                        lambda s: self.evaluate_setup_jax(s)[0]
-                    )(setup_norm)
-                    # Scale: G per 10% of parameter range (engineering-relevant unit)
-                    sens = np.array(dGrip) * np.array(bounds_range) * 0.10
+                    def total_reward(s):
+                        g, st, _ = self.evaluate_setup_jax(s)
+                        return omega_est * g + (1.0 - omega_est) * st
+                    dReward = jax.grad(total_reward)(setup_norm)
+                    sens = np.array(dReward) * np.array(bounds_range) * 0.10
                     sensitivity_rows.append(sens)
-                    grip_val = df_pareto['grip'].values[idx]
-                    stab_val = df_pareto['Stability_Overshoot'].values[idx]
                     sens_str = "  ".join(f"{s:+7.4f}" for s in sens)
                     print(f"  {idx+1:<6} {grip_val:>6.3f} {stab_val:>6.2f}  {sens_str}")
                 except Exception:
