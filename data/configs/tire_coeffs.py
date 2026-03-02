@@ -36,7 +36,7 @@ tire_coeffs = {
 
     # ── Longitudinal — RETAINED (USE_MODE=2 in .tir, all Fx coeffs zeroed) ──
     'PCX1':   1.579,
-    'PDX1':   1.000,
+    'PDX1':   2.400,
     'PDX2':  -0.041,
     'PDX3':   0.000,
     'PEX1':   0.312,
