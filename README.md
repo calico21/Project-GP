@@ -165,8 +165,8 @@ python main.py --mode setup
 # Run the full pipeline (Telemetry -> Track Gen -> Ghost Car -> Coaching)
 python main.py --mode full --log /path/to/motec_telemetry.csv
 
-
-_________________________________________________________________________________________________________________________________
+```
+---
 
 # Project-GP — Gemelo Digital de Formula Student Diferenciable de Extremo a Extremo
 
