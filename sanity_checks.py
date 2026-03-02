@@ -66,32 +66,9 @@ def test_forward_pass():
     try:
         vehicle = DifferentiableMultiBodyVehicle(VP_DICT, TP_DICT)
 
-        # 46-D state: x[14] = vx
         x0    = jnp.zeros(46).at[14].set(10.0)
         setup = jnp.array([35000., 38000., 400., 450., 2500., 2800., 0.28, 0.60])
 
-        # ── FIX C: passive energy budget check ───────────────────────────────
-        # Problem: the previous version ran Test 2 with active controls (u=[0.2,
-        # 1000]), which combines energy injection from the physics engine with
-        # the engine's own drive force.  An unphysical H_net that injects energy
-        # is invisible in this test because the drive force dominates.
-        #
-        # Fix: run a SEPARATE zero-input (u=[0, 0]) rollout first.
-        # In a passive rollout, the ONLY source of kinetic energy change is the
-        # H_net (since Fx_drive=0, Fx_brake=0).  Any ΔKE > 100 mJ is therefore
-        # a direct fingerprint of passivity violation in the neural physics.
-        #
-        # Budget: 100 mJ (0.10 J) per time step.
-        # This is generous for a 230 kg car at 10 m/s — the kinematic energy is
-        # 0.5 × 230 × 100 = 11 500 J.  A 100 mJ drift is < 0.001% of KE.
-        #
-        # The test produces a [PASS] / [WARN] outcome:
-        #   [PASS] : abs(ΔKE) < 100 mJ  — passivity enforced ✓
-        #   [WARN] : abs(ΔKE) ≥ 100 mJ  — H_net still injecting energy;
-        #             retrain with the corrected λ_max=100 curriculum.
-        # We use WARN rather than FAIL because the physics simulation can
-        # still be useful (rollout stable, forces finite) even before the
-        # passivity constraint is fully converged.
         print("\n  ── Passive energy budget check (u=[0,0]) ──")
         u_passive = jnp.array([0.0, 0.0])
         x_passive = vehicle.simulate_step(x0, u_passive, setup, dt=0.01)
@@ -100,23 +77,19 @@ def test_forward_pass():
         vx0      = float(x0[14])
         vx_pass  = float(x_passive[14])
         delta_KE = 0.5 * m_total * (vx_pass ** 2 - vx0 ** 2)
-        budget_J = 0.10   # 100 mJ
+        budget_J = 0.10
 
         if jnp.all(jnp.isfinite(x_passive)):
             if abs(delta_KE) < budget_J:
                 print(f"  > Passive ΔKE: {delta_KE * 1000:.2f} mJ  (budget: {budget_J * 1000:.0f} mJ)")
-                print("[PASS] Energy budget satisfied — H_net is passive (no energy injection).")
+                print("[PASS] Energy budget satisfied — H_net is passive.")
             else:
                 print(f"  > Passive ΔKE: {delta_KE * 1000:.1f} mJ  (budget: {budget_J * 1000:.0f} mJ)")
                 print(f"[WARN] Energy budget EXCEEDED by "
                       f"{abs(delta_KE) / budget_J:.0f}× — passivity not yet converged.")
-                print(f"       H_net has a non-zero gradient at q=0 across non-torsion DOFs.")
-                print(f"       This is expected with synthetic training data — real 4-post rig")
-                print(f"       data will reduce this further. The rollout is stable.")
         else:
             print("[FAIL] Passive rollout produced NaN — physics engine unstable.")
 
-        # ── Active rollout: original test ─────────────────────────────────────
         print("\n  ── Active forward pass (u=[0.2, 1000]) ──")
         u_active = jnp.array([0.2, 1000.0])
         print("Executing single simulate_step (dt=0.01s)...")
@@ -152,9 +125,28 @@ def test_circular_track():
     track_x   = 20.0 * np.sin(track_psi)
     track_y   = 20.0 * (1.0 - np.cos(track_psi))
 
-    print("Solving MPC for constant curvature (R=20m). Expected physical limit ~16.6 m/s...")
+    # P3 FIX: tighten the PASS envelope to match the true physics limit.
+    #
+    # For a circular track with R = 20 m (k = 0.05 1/m) and mu = 1.4:
+    #   v_max = sqrt(mu × g / k) = sqrt(1.4 × 9.81 / 0.05) ≈ 16.57 m/s
+    #
+    # Previous upper bound was 19.5 m/s (or 18.0 m/s in some versions),
+    # which allowed the test to PASS even when the solver returned a speed
+    # significantly above the tire-friction limit — masking a badly
+    # converged trajectory.
+    #
+    # New bounds: 13.0–17.5 m/s.
+    #   Lower = 13.0: generous margin for a well-tuned but imperfect solver.
+    #   Upper = 17.5: 16.57 + 0.93 m/s tolerance for warm-start rounding.
+    #   Any result above 17.5 m/s on this track indicates the optimizer
+    #   found a trajectory that violates tire-friction limits.
+    WMPC_V_LOWER = 13.0
+    WMPC_V_UPPER = 17.5   # P3 fix: was 19.5 / 18.0 in previous versions
 
-    # Step-by-step NaN hunt to confirm physics stability before MPC solve
+    print(f"Solving MPC for constant curvature (R=20m). "
+          f"Expected physical limit ~16.6 m/s "
+          f"(PASS envelope: {WMPC_V_LOWER}–{WMPC_V_UPPER} m/s)...")
+
     from models.vehicle_dynamics import DifferentiableMultiBodyVehicle
     from data.configs.vehicle_params import vehicle_params as VP
     from data.configs.tire_coeffs import tire_coeffs as TC
@@ -167,9 +159,8 @@ def test_circular_track():
         _x_next = _veh.simulate_step(_x, _u, _sp, dt=0.01)
         if not jnp.all(jnp.isfinite(_x_next)) or jnp.any(jnp.abs(_x_next) > 1e6):
             nan_idx = jnp.where(~jnp.isfinite(_x_next))[0]
-            print(f"   [DEBUG] NaN first appeared at step {_i}, state indices: {nan_idx}")
-            print(f"   [DEBUG] State before NaN: vx={float(_x[14]):.3f} "
-                  f"wz={float(_x[19]):.4f} Z={float(_x[2]):.4f} phi={float(_x[3]):.4f}")
+            print(f"   [DEBUG] NaN first appeared at step {_i}, "
+                  f"state indices: {nan_idx}")
             nan_found = True
             break
         _x = _x_next
@@ -190,11 +181,15 @@ def test_circular_track():
         print(f"  > Solver achieved mean speed: {mean_v:.2f} m/s")
         print(f"  > Solver achieved Lat G: {mean_g:.2f} G")
 
-        if 13.0 < mean_v < 18.0:
+        if WMPC_V_LOWER < mean_v < WMPC_V_UPPER:
             print("[PASS] Solver correctly discovered the exact physical limit of the tires.")
+        elif mean_v >= WMPC_V_UPPER:
+            print(f"[FAIL] Solver velocity ({mean_v:.2f} m/s) EXCEEDS physical tire limit "
+                  f"({WMPC_V_UPPER:.1f} m/s). Trajectory violates friction constraint.")
         else:
-            print(f"[FAIL] Solver velocity ({mean_v:.2f} m/s) outside expected "
-                  f"physical envelope (13–18 m/s).")
+            print(f"[FAIL] Solver velocity ({mean_v:.2f} m/s) below expected lower bound "
+                  f"({WMPC_V_LOWER:.1f} m/s). Optimizer may not have converged.")
+
     except Exception as e:
         print(f"  [WARN] WMPC Optimization failed/skipped "
               f"(often normal if CasADi dependencies are missing locally): {e}")
@@ -210,7 +205,6 @@ def test_friction_circle():
     _, Fy_comb = tire.compute_force(jnp.deg2rad(8.), -0.15, 1000., 0., T_r, 90., 15.)
 
     reduction = (1.0 - float(Fy_comb) / float(Fy_pure)) * 100.0
-    # Bound expanded to 40% to match physical MF6.2 Hoosier characteristics
     if float(Fy_comb) < float(Fy_pure) and 3 < reduction < 40:
         print(f"[PASS] Friction circle working: {reduction:.1f}% Fy reduction at kappa=-0.15")
     else:
@@ -250,10 +244,8 @@ def test_diagonal_load_transfer():
     tf    = VP_DICT.get('track_front', 1.20)
     tr    = VP_DICT.get('track_rear',  1.18)
     L     = lf + lr
-    ay, ax = 0.8 * g, 0.5 * g   # lateral left, braking
+    ay, ax = 0.8 * g, 0.5 * g
 
-    # Corrected algebraic signs:
-    # Under braking ax > 0: front loads UP, rear unloads DOWN
     Fz_fl = M * g * lr / (L * 2) - M * ay * h_cg / (2 * tf) * 0.5 + M * ax * h_cg / (2 * L)
     Fz_fr = M * g * lr / (L * 2) + M * ay * h_cg / (2 * tf) * 0.5 + M * ax * h_cg / (2 * L)
     Fz_rl = M * g * lf / (L * 2) - M * ay * h_cg / (2 * tr) * 0.5 - M * ax * h_cg / (2 * L)
@@ -292,11 +284,10 @@ def test_differential_yaw_moment():
     print("=" * 60)
     veh = DifferentiableMultiBodyVehicle(VP_DICT, TP_DICT)
 
-    # Left turn under heavy throttle
     T_drive = 2000.0
     vx      = 15.0
     wz      = 0.5
-    Fz_rl   = 600.0   # weight transferred to outside
+    Fz_rl   = 600.0
     Fz_rr   = 1000.0
     a_rl    = 0.05
     a_rr    = 0.05
@@ -331,7 +322,6 @@ def test_spring_rate_not_pinned():
         lower_bound_count = sum(1 for k in k_f_vals if k < 16000)
         fraction = lower_bound_count / max(len(k_f_vals), 1)
 
-        # Also verify stability cap is working
         max_stab = float(np.max(stabs)) if len(stabs) > 0 else 0.0
         from optimization.evolutionary import STABILITY_MAX
         stab_ok = max_stab <= STABILITY_MAX

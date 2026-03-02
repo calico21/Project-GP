@@ -23,4 +23,4 @@ python main.py --mode setup
 
 streamlit run visualization/dashboard.py
 
-python sanity_checks.py
+python -m optimization.residual_fitting
