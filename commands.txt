@@ -16,6 +16,10 @@ source ~/project_gp_env/bin/activate
 export ACADOS_SOURCE_DIR=~/acados
 export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:~/acados/lib
 
+cd simulator
+python udp_server.py
+python visualizer_client.py
+
 
 python sanity_checks.py
 
