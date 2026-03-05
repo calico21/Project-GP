@@ -780,18 +780,14 @@ class DifferentiableMultiBodyVehicle:
 
     @partial(jax.jit, static_argnums=(0,))
     def simulate_step(self, x, u, setup_params, dt=0.005):
-        """
-        P9: Uses _variational_step (implicit midpoint) instead of leapfrog.
-        5 substeps of dt_sub = dt/5 = 0.001 s each.
-        """
         dt_sub = dt / 5.0
 
-        def scan_fn(carry, _):
-            return self._variational_step(carry, u, setup_params, dt_sub), None
+        def euler_step(carry, _):
+            dx = self._compute_derivatives(carry, u, setup_params)
+            return carry + dt_sub * dx, None
 
-        x_out, _ = jax.lax.scan(scan_fn, x, None, length=5)
+        x_out, _ = jax.lax.scan(euler_step, x, None, length=5)
 
-        # State bounds (same as before)
         x_out = x_out.at[14].set(jnp.clip(x_out[14], -80.0, 80.0))
         x_out = x_out.at[15].set(jnp.clip(x_out[15], -30.0, 30.0))
         x_out = x_out.at[17:20].set(jnp.clip(x_out[17:20], -8.0, 8.0))

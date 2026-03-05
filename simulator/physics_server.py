@@ -88,10 +88,10 @@ except ImportError:
 # ─────────────────────────────────────────────────────────────────────────────
 # Configuration
 # ─────────────────────────────────────────────────────────────────────────────
-PHYSICS_HZ    = 200
-DT            = 1.0 / PHYSICS_HZ
-SUBSTEPS      = 5
-DT_SUB        = DT / SUBSTEPS
+PHYSICS_HZ    = 200         # sim advances at this rate — machine may run slower than real-time, that's OK
+DT            = 1.0 / PHYSICS_HZ   # 5ms per loop iteration
+SUBSTEPS      = 5           # substep dt = 1ms — required for H_net numerical stability
+DT_SUB        = DT / SUBSTEPS      # 0.001s — DO NOT increase this, H_net trained at this timestep
 
 # Drive-assist parameters
 TC_KAPPA_LIMIT  = 0.20   # longitudinal slip threshold for traction control
@@ -184,6 +184,8 @@ class PhysicsServer:
         self._steer_cmd   = 0.0
         self._throttle_f  = 0.0
         self._brake_f     = 0.0
+        self._last_ctrl_time = 0.0   # wall-clock time of last received control packet
+        self._t_start        = 0.0   # set when run() loop begins
 
         # Performance profiling
         self._frame_times : deque = deque(maxlen=1000)
@@ -200,64 +202,69 @@ class PhysicsServer:
     def _make_initial_state(self, x: float = 0.0, y: float = 0.0,
                              yaw: float = 0.0, speed: float = 5.0) -> jnp.ndarray:
         """
-        Compute a physically correct initial state at static equilibrium.
+        Build an initial state at the true static spring equilibrium.
 
-        COORDINATE CONVENTION (from vehicle_dynamics.py):
-            Spring force: F = −wheel_rate × Z_corner + F_gas
-            where Z_corner = Z_cg − lf×θ − (t_w/2)×φ
+        COORDINATE TRUTH (from vehicle_dynamics._compute_derivatives):
+          state[2] = Z = spring-deformation generalised coordinate.
+          z_fl = Z - (track_w/2)*roll - lf*pitch   (corner heave, line 455)
+          F_spring_fl = -wheel_rate_f * z_fl + F_gas_f
 
-            When Z < 0: spring is COMPRESSED → produces UPWARD force (correct)
-            When Z > 0: spring is extended   → pulls DOWN
+          At equilibrium (flat, Fz_susp = m_s*g):
+            Z_eq = (2*(F_gas_f + F_gas_r) - m_s*g) / (2*(wr_f + wr_r))
+            ≈ -12.5 mm
 
-        STATIC EQUILIBRIUM (flat, zero pitch/roll):
-            Fz_total = 0: −m·g + 2(−wr_f·Z + Fg_f) + 2(−wr_r·Z + Fg_r) = 0
-            → Z_eq = (2(Fg_f + Fg_r) − m·g) / (2(wr_f + wr_r))
-            With defaults: Z_eq ≈ −0.016 m  (16 mm BELOW natural length)
+          PhysicsNormalizer q_mean[2] = 0.3 is the *normaliser* centre used
+          during H_net training — it is NOT the physical equilibrium.
 
-        This Z_eq is what the car state converges to when running correctly.
-        Setting Z=0.30 creates 30,000 N upward force vs 2,256 N gravity
-        — the car rockets upward then clips to −0.5 m (underground).
+          state[6:10] = independent suspension displacement DOFs in the
+          Hamiltonian (q_mean=0, scale=0.05 m). Set to 0 at nominal.
+
+        Visualiser transform (in _extract_telemetry):
+          tf.z = state[2] + h_cg_viz  →  world CG height above ground grid.
         """
         s = jnp.zeros(46)
 
-        tire_r  = VP_DICT.get('tire_radius', VP_DICT.get('wheel_radius', 0.2032))
-        mass    = VP_DICT.get('total_mass', 230.0)
-        g       = 9.81
-        k_f     = float(DEFAULT_SETUP[0])
-        k_r     = float(DEFAULT_SETUP[1])
-        mr_f    = VP_DICT.get('motion_ratio_f_poly', [1.20])[0]
-        mr_r    = VP_DICT.get('motion_ratio_r_poly', [1.15])[0]
-        wr_f    = k_f / (mr_f ** 2)
-        wr_r    = k_r / (mr_r ** 2)
-        Fg_f    = VP_DICT.get('damper_gas_force_f', 120.0) / mr_f
-        Fg_r    = VP_DICT.get('damper_gas_force_r', 120.0) / mr_r
+        tire_r = VP_DICT.get('tire_radius', VP_DICT.get('wheel_radius', 0.2032))
+        m_s    = VP_DICT.get('sprung_mass', VP_DICT.get('total_mass', 230.0) - 40.0)
+        g      = 9.81
+        k_f    = float(DEFAULT_SETUP[0])
+        k_r    = float(DEFAULT_SETUP[1])
+        mr_f   = VP_DICT.get('motion_ratio_f_poly', [1.20])[0]
+        mr_r   = VP_DICT.get('motion_ratio_r_poly', [1.15])[0]
+        wr_f   = k_f / (mr_f ** 2)
+        wr_r   = k_r / (mr_r ** 2)
+        Fg_f   = VP_DICT.get('damper_gas_force_f', 120.0) / mr_f
+        Fg_r   = VP_DICT.get('damper_gas_force_r', 120.0) / mr_r
 
-        # Correct equilibrium Z (spring deformation convention, not absolute height)
-        Z_eq = (2.0 * (Fg_f + Fg_r) - mass * g) / (2.0 * (wr_f + wr_r))
+        # True static equilibrium of the spring model (net Fz = 0)
+        Z_eq = (2.0 * (Fg_f + Fg_r) - m_s * g) / (2.0 * (wr_f + wr_r))
 
         omega0 = speed / max(tire_r, 0.1)
 
-        # Body pose — Z at static equilibrium
+        # Body pose — Z at spring equilibrium
         s = s.at[0].set(x).at[1].set(y)
-        s = s.at[2].set(float(Z_eq))       # CG height in spring-deformation coords
-        s = s.at[3].set(0.0)               # phi  = 0 (level)
-        s = s.at[4].set(0.0)               # theta = 0 (no pitch)
+        s = s.at[2].set(float(Z_eq))   # spring-deformation coord, NOT physical height
+        s = s.at[3].set(0.0)           # roll  = 0
+        s = s.at[4].set(0.0)           # pitch = 0
         s = s.at[5].set(yaw)
 
-        # Forward velocity + wheel spin
-        s = s.at[14].set(speed)            # vx
-        # Wheel angular velocity at indices 24-27 (p[10:14])
+        # state[6:10] = suspension displacement DOFs (q_mean=0) → leave at 0
+
+        # Forward velocity and wheel spin
+        s = s.at[14].set(speed)
         s = s.at[24].set(omega0)
         s = s.at[25].set(omega0)
         s = s.at[26].set(omega0)
         s = s.at[27].set(omega0)
 
-        # Tire temperatures — ambient start
-        s = s.at[28].set(25.0).at[29].set(25.0).at[30].set(25.0).at[31].set(25.0)
+        # Tire temperatures — pre-warmed (70°C ≈ 93% grip)
+        # Starting at 25°C (34% grip) gives only 1.9x margin on 9m hairpin at 5m/s;
+        # any speed transient above 6.9m/s → slide. 70°C gives 3.8x margin.
+        s = s.at[28].set(70.0).at[29].set(70.0).at[30].set(70.0).at[31].set(70.0)
 
-        print(f"[Server] Initial state: Z_eq={Z_eq*1000:.1f}mm  "
-              f"(visual CG height={tire_r + Z_eq:.3f}m)  "
-              f"wr_f={wr_f:.0f}N/m  wr_r={wr_r:.0f}N/m")
+        h_cg_viz = VP_DICT.get('h_cg', 0.30)
+        print(f"[Server] Initial state: Z_eq={Z_eq*1000:.1f}mm (spring coord) | "
+              f"world_CG={Z_eq+h_cg_viz:.3f}m | vx={speed:.1f}m/s")
         return s
 
     def _settle_physics(self, fast_step, n_steps: int = 400):
@@ -290,9 +297,12 @@ class PhysicsServer:
             def substep(x_s, _):
                 return vehicle.simulate_step(x_s, controls, setup, DT_SUB), None
             next_state, _ = jax.lax.scan(substep, state, None, length=SUBSTEPS)
-            # NaN guard
-            safe = jnp.isfinite(next_state[14])
-            return jnp.where(safe, next_state, state)
+            # Guard: if vx, roll, or pitch goes non-finite or hits clip walls → keep prev state
+            vx_ok    = jnp.isfinite(next_state[14])
+            roll_ok  = jnp.abs(next_state[3]) < 0.39   # clip wall is ±0.4
+            pitch_ok = jnp.abs(next_state[4]) < 0.39
+            healthy  = vx_ok & roll_ok & pitch_ok
+            return jnp.where(healthy, next_state, state)
 
         return fast_step
 
@@ -379,11 +389,20 @@ class PhysicsServer:
         wy = float(s[18])
         wz = float(np.clip(s[19], -8, 8))
 
-        # Wheel angular velocities (indices 24-27 in q/momentum; 34-37 in state)
-        omega_fl = float(s[34]) if len(s) > 37 else 0.0
-        omega_fr = float(s[35]) if len(s) > 37 else 0.0
-        omega_rl = float(s[36]) if len(s) > 37 else 0.0
-        omega_rr = float(s[37]) if len(s) > 37 else 0.0
+        # Wheel angular velocities — derived from transient longitudinal slip states
+        # state[38:46] = [alpha_fl, kappa_fl, alpha_fr, kappa_fr, alpha_rl, kappa_rl, alpha_rr, kappa_rr]
+        # IMPORTANT: state[34:37] = T_ribs_r (tire temperatures) — NOT wheel speeds!
+        # Correct: omega = vx * (1 + kappa_t) / tire_radius
+        tire_r_omega = VP_DICT.get('tire_radius', VP_DICT.get('wheel_radius', 0.2032))
+        vx_safe_omega = max(abs(float(np.clip(s[14], -80, 80))), 0.5)
+        kappa_t_fl = float(np.clip(s[39], -0.5, 0.5)) if len(s) > 41 else 0.0
+        kappa_t_fr = float(np.clip(s[41], -0.5, 0.5)) if len(s) > 41 else 0.0
+        kappa_t_rl = float(np.clip(s[43], -0.5, 0.5)) if len(s) > 43 else 0.0
+        kappa_t_rr = float(np.clip(s[45], -0.5, 0.5)) if len(s) > 45 else 0.0
+        omega_fl = vx_safe_omega * (1.0 + kappa_t_fl) / tire_r_omega
+        omega_fr = vx_safe_omega * (1.0 + kappa_t_fr) / tire_r_omega
+        omega_rl = vx_safe_omega * (1.0 + kappa_t_rl) / tire_r_omega
+        omega_rr = vx_safe_omega * (1.0 + kappa_t_rr) / tire_r_omega
 
         # Suspension heave (derived)
         tw = VP_DICT.get('track_front', 1.20)
@@ -391,21 +410,34 @@ class PhysicsServer:
         lr = VP_DICT.get('lr', 0.920)
         tire_r = VP_DICT.get('tire_radius', VP_DICT.get('wheel_radius', 0.2032))
 
-        # Spring-deformation-frame Z values (used by visualizer for geometry)
-        z_fl_model = float(Z - (tw/2)*roll - lf*pitch)
-        z_fr_model = float(Z + (tw/2)*roll - lf*pitch)
-        z_rl_model = float(Z - (tw/2)*roll + lr*pitch)
-        z_rr_model = float(Z + (tw/2)*roll + lr*pitch)
+        # state[2] = Z = spring-deformation coordinate (Z_eq ≈ -12.5 mm at rest).
+        # Physical CG height above ground = (Z - Z_eq) + h_cg
+        #   → at equilibrium: (Z_eq - Z_eq) + h_cg = h_cg = 0.30m ✓
+        #   → tire bottom = h_cg - (h_cg - R_TIRE) - R_TIRE = 0.0m ✓
+        h_cg    = VP_DICT.get('h_cg', 0.30)
+        m_s_viz = VP_DICT.get('sprung_mass', VP_DICT.get('total_mass', 230.0) - 40.0)
+        k_f_viz = float(DEFAULT_SETUP[0])
+        k_r_viz = float(DEFAULT_SETUP[1])
+        mr_f_v  = VP_DICT.get('motion_ratio_f_poly', [1.20])[0]
+        mr_r_v  = VP_DICT.get('motion_ratio_r_poly', [1.15])[0]
+        wr_f_v  = k_f_viz / (mr_f_v ** 2)
+        wr_r_v  = k_r_viz / (mr_r_v ** 2)
+        Fg_f_v  = VP_DICT.get('damper_gas_force_f', 120.0) / mr_f_v
+        Fg_r_v  = VP_DICT.get('damper_gas_force_r', 120.0) / mr_r_v
+        Z_eq_v  = (2.0 * (Fg_f_v + Fg_r_v) - m_s_viz * 9.81) / (2.0 * (wr_f_v + wr_r_v))
+        h_cg_viz = h_cg - Z_eq_v        # offset so tire bottom = 0 at equilibrium
+        Z_viz = float(Z) + h_cg_viz
 
-        # ── COORDINATE TRANSFORM FOR VISUALIZER ──────────────────────────────
-        # The model's Z=0 is the spring natural length reference (~16mm above ground).
-        # Add tire_radius so visualizer sees the real-world CG height above the grid.
-        # At equilibrium:  Z_model ≈ −0.016m  →  Z_viz ≈ 0.187m (hub height) ✓
-        Z_viz   = float(Z)    + tire_r
-        z_fl    = z_fl_model  + tire_r
-        z_fr    = z_fr_model  + tire_r
-        z_rl    = z_rl_model  + tire_r
-        z_rr    = z_rr_model  + tire_r
+        tw = VP_DICT.get('track_front', 1.20)
+        lf = VP_DICT.get('lf', 0.680)
+        lr = VP_DICT.get('lr', 0.920)
+        tire_r = VP_DICT.get('tire_radius', VP_DICT.get('wheel_radius', 0.2032))
+
+        # Corner world heights = CG world height ± pitch/roll geometry
+        z_fl = Z_viz - lf * pitch - (tw / 2) * roll
+        z_fr = Z_viz - lf * pitch + (tw / 2) * roll
+        z_rl = Z_viz + lr * pitch - (tw / 2) * roll
+        z_rr = Z_viz + lr * pitch + (tw / 2) * roll
 
         # Accelerations from state derivative
         ax_raw = (vx - float(s_p[14])) / DT
@@ -583,6 +615,53 @@ class PhysicsServer:
 
     # ── Main loop ─────────────────────────────────────────────────────────────
 
+    def _autopilot_step(self, vx: float):
+        """
+        Pure-pursuit autopilot using track heading (cpsi) at the lookahead point.
+
+        WHY cpsi NOT atan2:
+          atan2(ty-y, tx-x) gives the CHORD direction to the lookahead point.
+          Mid-hairpin this chord points back across the corner and the sign flips,
+          commanding the wrong steer direction.
+          cpsi is the track's own tangent heading — always correct regardless of
+          where on the arc the car is.
+
+        DS = 0.5m per track index.
+        """
+        import math
+        TARGET_SPEED_MS = 5.0
+        MAX_THROTTLE_N  = 1500.0
+        MAX_BRAKE_N     = 3000.0
+        LOOKAHEAD_M     = max(8.0, abs(vx) * 1.5)   # at least 8m, ~1.5s preview
+        DS              = 0.5
+
+        s = np.array(self.state)
+        x, y = float(s[0]), float(s[1])
+        yaw  = float(s[5])
+
+        steer = 0.0
+        if self.track is not None:
+            try:
+                idx, _ = self.track.get_closest_point(x, y)
+                n_pts  = len(self.track.cx)
+                la_idx = int(idx + LOOKAHEAD_M / DS) % n_pts
+                # Use track tangent heading at lookahead — not atan2 chord bearing
+                target_angle = float(self.track.cpsi[la_idx])
+                err = target_angle - yaw
+                while err >  math.pi: err -= 2 * math.pi
+                while err < -math.pi: err += 2 * math.pi
+                steer = float(np.clip(err, -0.20, 0.20))
+            except Exception:
+                steer = 0.0
+
+        speed_err = TARGET_SPEED_MS - abs(vx)
+        if speed_err > 0:
+            net_lon = float(np.clip(speed_err * 300.0, 0.0, MAX_THROTTLE_N))
+        else:
+            net_lon = float(np.clip(speed_err * 500.0, -MAX_BRAKE_N, 0.0))
+
+        return steer, net_lon
+
     def run(self):
         print("=" * 60)
         print("  Project-GP: Enhanced JAX Physics Server v2")
@@ -616,9 +695,12 @@ class PhysicsServer:
         print("[2/4] Sockets ready.")
 
         print(f"[3/4] Initial state: vx=5.0 m/s, pos=(0,0)")
-        print(f"[4/4] Entering {PHYSICS_HZ}Hz real-time loop…\n")
+        print(f"[4/4] Entering {PHYSICS_HZ}Hz real-time loop…")
+        print(f"      Autopilot ACTIVE until a control client connects on :{self.port_recv}\n")
 
-        frame_log_counter = 0
+        frame_log_counter    = 0
+        _first_ctrl_received = False
+        self._t_start        = time.perf_counter()
 
         try:
             while True:
@@ -653,6 +735,13 @@ class PhysicsServer:
                             self._steer_cmd  = ctrl['steer']
                             self._throttle_f = ctrl['throttle_f']
                             self._brake_f    = ctrl['brake_f']
+                            self._last_ctrl_time = time.perf_counter()
+                            if not _first_ctrl_received:
+                                _first_ctrl_received = True
+                                print(f"[Server] ✓ First control packet: "
+                                      f"steer={ctrl['steer']:.3f} "
+                                      f"thr={ctrl['throttle_f']:.0f}N "
+                                      f"brk={ctrl['brake_f']:.0f}N")
                 except BlockingIOError:
                     pass
 
@@ -663,8 +752,12 @@ class PhysicsServer:
                 # ── Drive assists ─────────────────────────────────────────
                 s_arr = np.array(self.state)
                 vx    = float(np.clip(s_arr[14], -80, 80))
-                omega_rl = float(s_arr[36]) if len(s_arr) > 37 else 0.0
-                omega_rr = float(s_arr[37]) if len(s_arr) > 37 else 0.0
+                # Derive wheel omega from transient slip states (state[38:46])
+                # state[36:38] = T_ribs_r[2], T_gas_r  ← DO NOT use for omega!
+                _tr = VP_DICT.get('tire_radius', 0.2032)
+                _vxs = max(abs(vx), 0.5)
+                omega_rl = _vxs * (1.0 + float(np.clip(s_arr[43], -0.5, 0.5))) / _tr
+                omega_rr = _vxs * (1.0 + float(np.clip(s_arr[45], -0.5, 0.5))) / _tr
                 m  = VP_DICT.get('total_mass', 230.0)
                 Fz_rear = m * 9.81 * VP_DICT.get('lf', 0.68) / (VP_DICT.get('lf', 0.68) + VP_DICT.get('lr', 0.92))
                 steer_c, thr_c, brk_c = self._apply_drive_assists(
@@ -672,6 +765,15 @@ class PhysicsServer:
                     vx, omega_rl, omega_rr, Fz_rear,
                 )
                 net_lon = thr_c - brk_c
+
+                # ── Autopilot fallback ────────────────────────────────────
+                # If no control client has sent a packet in the last 1 second,
+                # drive autonomously using track centreline pure-pursuit.
+                # This keeps the car moving without needing control_interface.py.
+                _now = time.perf_counter()
+                if _now - self._last_ctrl_time > 1.0:
+                    steer_c, net_lon = self._autopilot_step(vx)
+
                 controls_jax = jnp.array([steer_c, net_lon])
 
                 # ── Physics step ──────────────────────────────────────────
@@ -715,11 +817,12 @@ class PhysicsServer:
                 if now - self._last_perf_print > 5.0:
                     avg_ms = np.mean(self._frame_times) * 1000
                     hz     = 1000.0 / avg_ms if avg_ms > 0 else 0
-                    print(f"[Server] t={self.sim_time:.1f}s | "
-                          f"Hz={hz:.1f} (avg {avg_ms:.2f}ms/frame) | "
-                          f"v={spd:.1f}km/h | "
-                          f"Lap {timing.get('lap_number',0)+1}: {timing.get('lap_time',0.0):.2f}s"
-                          + (" [TC]" if self._tc_active else "")
+                    rt     = hz / PHYSICS_HZ
+                    _ctrl_src = "AUTO" if (now - self._last_ctrl_time > 1.0) else "HUMAN"
+                    print(f"[Server] sim={self.sim_time:.1f}s wall={now-self._t_start:.0f}s | "
+                          f"RT={rt:.2f}x ({hz:.0f}/{PHYSICS_HZ}Hz) | "
+                          f"v={spd:.1f}km/h [{_ctrl_src}]"
+                          + (" [TC]"  if self._tc_active  else "")
                           + (" [ABS]" if self._abs_active else ""))
                     self._last_perf_print = now
 

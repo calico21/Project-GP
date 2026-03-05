@@ -4,7 +4,7 @@ simulator/control_interface.py
 Human control interface for the physics server.
 
 Modes:
-  · Keyboard  — Arrow keys / WASD, no dependencies beyond stdlib + pynput
+  · Keyboard  — Arrow keys / WASD via termios raw-mode stdin (Wayland-safe)
   · Gamepad   — Xbox/PS controller via pygame.joystick (optional)
   · Autopilot — Path-following using track centreline + PD steering
 
@@ -130,72 +130,122 @@ class ControlState:
 
 class KeyboardInput:
     """
-    Captures keyboard state using pynput.
-    Falls back gracefully if pynput is not installed.
+    Terminal keyboard input using termios raw mode.
+
+    Replaces pynput entirely — reads directly from stdin byte-by-byte.
+    Works on Wayland, X11, SSH, and any terminal emulator.
+    pynput silently fails on pure Wayland sessions without /dev/input access.
+
+    Key map:
+      W / ↑   = throttle        S / ↓   = brake
+      A / ←   = steer left      D / →   = steer right
+      R       = reset            P       = pause
+      Q / ESC = quit             1-4     = preset setups
     """
 
     def __init__(self, ctrl: ControlState):
-        self.ctrl = ctrl
-        self._keys = set()
-        self._listener = None
+        self.ctrl     = ctrl
+        self._keys    = set()      # currently held keys (string names)
+        self._running = False
+        self._thread  = None
+        self._old_settings = None
+
+        # Arrow-key escape sequences → friendly names
+        self._ESC_MAP = {
+            '\x1b[A': 'up',
+            '\x1b[B': 'down',
+            '\x1b[C': 'right',
+            '\x1b[D': 'left',
+        }
 
     def start(self) -> bool:
+        import tty, termios, threading
         try:
-            from pynput import keyboard
-
-            def on_press(key):
-                k = getattr(key, 'char', None) or str(key)
-                self._keys.add(str(k).lower())
-                self._handle_oneshot(k)
-
-            def on_release(key):
-                k = getattr(key, 'char', None) or str(key)
-                self._keys.discard(str(k).lower())
-
-            self._listener = keyboard.Listener(
-                on_press=on_press, on_release=on_release,
-            )
-            self._listener.start()
-            return True
-        except Exception as e:
-            print(f"[Keyboard] pynput not available ({e}). Install: pip install pynput")
+            self._old_settings = termios.tcgetattr(sys.stdin.fileno())
+        except termios.error:
+            print("[Keyboard] stdin is not a tty — using autopilot mode instead.")
             return False
 
-    def _handle_oneshot(self, key):
-        """Handle single-press actions."""
-        k = str(getattr(key, 'char', None) or key).lower()
-        if k == 'r':
+        self._running = True
+        self._thread  = threading.Thread(target=self._read_loop, daemon=True)
+        self._thread.start()
+        print("[Keyboard] Terminal raw-mode active (Wayland-safe).")
+        print("[Keyboard] W/↑=throttle  S/↓=brake  A/←=left  D/→=right  R=reset  Q=quit")
+        return True
+
+    def _read_loop(self):
+        import tty, termios, select
+        fd = sys.stdin.fileno()
+        tty.setraw(fd)
+        try:
+            while self._running:
+                r, _, _ = select.select([sys.stdin], [], [], 0.01)
+                if not r:
+                    continue
+                ch = sys.stdin.read(1)
+                if ch == '\x1b':
+                    # Read up to 2 more bytes for escape sequence (non-blocking)
+                    r2, _, _ = select.select([sys.stdin], [], [], 0.02)
+                    if r2:
+                        ch2 = sys.stdin.read(1)
+                        r3, _, _ = select.select([sys.stdin], [], [], 0.01)
+                        if r3 and ch2 == '[':
+                            ch3 = sys.stdin.read(1)
+                            seq = '\x1b[' + ch3
+                            name = self._ESC_MAP.get(seq)
+                            if name:
+                                self._keys.add(name)
+                                # Arrow keys auto-release after a short hold
+                                # (they repeat via the OS key-repeat mechanism)
+                                threading.Timer(0.15, lambda n=name: self._keys.discard(n)).start()
+                            continue
+                    # Bare ESC = quit
+                    self.ctrl.quit = True
+                    continue
+
+                c = ch.lower()
+                self._keys.add(c)
+                self._handle_oneshot(c)
+                # Auto-release after short hold for held-key simulation
+                threading.Timer(0.08, lambda k=c: self._keys.discard(k)).start()
+        finally:
+            termios.tcsetattr(fd, termios.TCSADRAIN, self._old_settings)
+
+    def _handle_oneshot(self, c: str):
+        if c == 'r':
             self.ctrl.issue_reset()
-            print("[Control] Reset!")
-        elif k == 'p':
+            print("\n[Control] ↺ Reset")
+        elif c == 'p':
             self.ctrl.issue_pause()
-        elif k in ('q', 'escape', "key.esc"):
+        elif c in ('q', '\x03'):   # q or Ctrl-C
             self.ctrl.quit = True
-        elif k in PRESET_SETUPS:
-            kf, kr, af, ar, name = PRESET_SETUPS[k]
+        elif c in PRESET_SETUPS:
+            kf, kr, af, ar, name = PRESET_SETUPS[c]
             self.ctrl.apply_setup(kf, kr, af, ar)
-            print(f"[Control] Setup {k}: {name} (k_f={kf}, k_r={kr})")
+            print(f"\n[Control] Setup {c}: {name}")
 
     def poll(self):
-        """Update ctrl state from current key set. Call at 60Hz."""
         keys = set(self._keys)
 
         # Steering
         s = 0.0
-        if 'a' in keys or 'key.left' in keys:  s -= 1.0
-        if 'd' in keys or 'key.right' in keys: s += 1.0
+        if 'a' in keys or 'left'  in keys: s -= 1.0
+        if 'd' in keys or 'right' in keys: s += 1.0
         self.ctrl.set_steer(s)
 
         # Throttle / brake
-        if 'w' in keys or 'key.up' in keys:
+        if 'w' in keys or 'up' in keys:
             self.ctrl.set_throttle(self.ctrl.sensitivity)
             self.ctrl.set_brake(0.0)
-        elif 's' in keys or 'key.down' in keys:
+        elif 's' in keys or 'down' in keys:
             self.ctrl.set_throttle(0.0)
             self.ctrl.set_brake(1.0)
         else:
             self.ctrl.set_throttle(0.0)
             self.ctrl.set_brake(0.0)
+
+    def stop(self):
+        self._running = False
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -380,6 +430,7 @@ class ControlInterface:
 
     def run(self):
         print(f"[Control] Interface starting (mode={self.mode})")
+        print(f"[Control] NOTE: Terminal will enter raw mode — typed keys won't echo.")
         src = self._make_input_source()
 
         # Sockets
@@ -501,6 +552,8 @@ class ControlInterface:
         except KeyboardInterrupt:
             print("\n[Control] Shutting down.")
         finally:
+            if hasattr(src, 'stop'):
+                src.stop()
             sock_send.close()
             if sock_recv is not None:
                 sock_recv.close()

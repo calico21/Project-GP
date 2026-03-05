@@ -38,7 +38,7 @@ python simulator/physics_server.py --track fsg_autocross
 ### Terminal 2 — Visualizer
 ```bash
 source ~/project_gp_env/bin/activate
-pip install rerun-sdk  # first time only
+#pip install rerun-sdk  # first time only
 
 python simulator/visualizer_client.py --track fsg_autocross
 ```
