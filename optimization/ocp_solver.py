@@ -307,9 +307,9 @@ class DiffWMPCSolver:
         # ── 5. Friction circle — Augmented Lagrangian (UPGRADE-1) ─────────────
         # Constraint: g_i = (a_lat²_i + a_lon²_i) / (μ·g)² - 1 ≤ 0
         g_val       = 9.81
-        vx_traj     = x_traj[:, STATE_VX]
+        vx_traj = x_traj[:, STATE_VX].ravel()                      # guaranteed (N,)
         a_lat_sq    = (vx_traj ** 2 * jnp.abs(track_k)) ** 2
-        vx_prev     = jnp.concatenate([x0[STATE_VX:STATE_VX + 1], vx_traj[:-1]])
+        vx_prev = jnp.concatenate([x0[STATE_VX:STATE_VX + 1].ravel(), vx_traj[:-1]])  # (N,)
         a_lon_sq    = ((vx_traj - vx_prev) / (self.dt_control + 1e-6)) ** 2
         circle_lim  = (self.mu_friction * g_val) ** 2 + 1e-4
         g_circle    = (a_lat_sq + a_lon_sq) / circle_lim - 1.0   # (N,)

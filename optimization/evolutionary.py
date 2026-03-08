@@ -273,7 +273,7 @@ class MORL_SB_TRPO_Optimizer:
         x_init = jnp.zeros(46).at[14].set(15.0).at[28:38].set(
             jnp.array([85., 85., 85., 85., 80., 85., 85., 85., 85., 80.]))
 
-        grip = compute_skidpad_objective(
+        grip, _ = compute_skidpad_objective(
             self._vehicle.simulate_step, setup_phys, x_init)
         stab = compute_step_steer_objective(
             self._vehicle.simulate_step, setup_phys, x_init)

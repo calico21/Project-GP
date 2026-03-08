@@ -67,7 +67,10 @@ def test_forward_pass():
         vehicle = DifferentiableMultiBodyVehicle(VP_DICT, TP_DICT)
 
         x0    = jnp.zeros(46).at[14].set(10.0)
-        setup = jnp.array([35000., 38000., 400., 450., 2500., 2800., 0.28, 0.60])
+        from optimization.objectives import _expand_8_to_28_setup
+        setup = _expand_8_to_28_setup(
+            jnp.array([35000., 38000., 400., 450., 2500., 2800., 0.28, 0.60])
+        )
 
         print("\n  ── Passive energy budget check (u=[0,0]) ──")
         u_passive = jnp.array([0.0, 0.0])
@@ -150,10 +153,16 @@ def test_circular_track():
     from models.vehicle_dynamics import DifferentiableMultiBodyVehicle
     from data.configs.vehicle_params import vehicle_params as VP
     from data.configs.tire_coeffs import tire_coeffs as TC
+    from optimization.objectives import _expand_8_to_28_setup  # <--- Add import
+    
     _veh = DifferentiableMultiBodyVehicle(VP, TC)
     _x   = jnp.zeros(46).at[14].set(15.0)
     _u   = jnp.array([0.15, 1000.0])
-    _sp  = jnp.array([35000., 38000., 400., 450., 2500., 2800., 0.28, 0.60])
+    
+    # <--- Wrap the 8-element array
+    _sp  = _expand_8_to_28_setup(
+        jnp.array([35000., 38000., 400., 450., 2500., 2800., 0.28, 0.60])
+    )
     nan_found = False
     for _i in range(200):
         _x_next = _veh.simulate_step(_x, _u, _sp, dt=0.01)
