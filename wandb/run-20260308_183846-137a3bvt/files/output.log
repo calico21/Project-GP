@@ -1,0 +1,36 @@
+
+============================================================
+PHASE 4: DYNAMIC AI SETUP DISCOVERY (MORL-SB-TRPO)
+============================================================
+/home/alexr/FS_Driver_Setup_Optimizer/main.py:163: UserWarning: [MORL] dim=8 requested but canonical dim=28. Upgrading to 28.
+  optimizer = MORL_SB_TRPO_Optimizer(ensemble_size=20, dim=8)
+[VehicleDynamics] H_net scale loaded: 102.62 J
+[VehicleDynamics] Loaded h_net.bytes
+[VehicleDynamics] Loaded r_net.bytes
+
+[MORL-SB-TRPO] Initialising 28-dim Pareto Policy Ensemble…
+[SB-TRPO] Compiling 46-DOF physics gradients via XLA…
+[SB-TRPO] dim=28 | KL_threshold=0.00935 | Chebyshev N=20
+   [DIAG] Soft grip: 1.6161 G | Hard grip: 1.1121 G
+   Grip gradient norm: 0.734130
+   [OK] Gradient flow confirmed.
+
+[Phase 0] ARD-BO cold-start on 28-dim space (10 init + 30 EI)…
+   [BO] Phase 0a (10 evals): best = 1.4340 G
+   [BO] Phase 0b iter  5/30: best = 1.4428 G | mean ls_0: 1.708 ls_2: 1.262
+   [BO] Phase 0b iter 10/30: best = 1.5117 G | mean ls_0: 1.102 ls_2: 1.568
+   [BO] Phase 0b iter 15/30: best = 1.5117 G | mean ls_0: 1.345 ls_2: 1.080
+   [BO] Phase 0b iter 20/30: best = 1.5117 G | mean ls_0: 1.679 ls_2: 1.079
+   [BO] Phase 0b iter 25/30: best = 1.5117 G | mean ls_0: 1.898 ls_2: 1.064
+   [BO] Phase 0b iter 30/30: best = 1.5259 G | mean ls_0: 2.000 ls_2: 1.035
+   [BO] 5 diverse basins found. Top grips: ['1.5259G', '1.5117G', '1.4810G', '1.4756G', '1.4755G']
+[Phase 0] Seeded 5 BO basins into ensemble.
+[SB-TRPO] Running feasibility pre-check…
+   [DIAG] Chebyshev omegas: 8/20 members in high-grip region [0.7,1.0]
+   [DIAG] Stability cap: 5.0 rad/s
+   [DIAG] dim=28 KL_threshold=0.00935
+[SB-TRPO] i=   0 | Safe: 20/20 | Valid: 20/20 | Grip: 1.5262 G | log_std: -0.995 | Trust: off
+[SB-TRPO] i=   1 | Safe: 20/20 | Valid: 20/20 | Grip: 1.5264 G | log_std: -0.990 | Trust: off
+[SB-TRPO] i=   2 | Safe: 20/20 | Valid: 20/20 | Grip: 1.5266 G | log_std: -0.985 | Trust: off
+[SB-TRPO] i=   3 | Safe: 20/20 | Valid: 20/20 | Grip: 1.5269 G | log_std: -0.980 | Trust: off
+[SB-TRPO] i=   4 | Safe: 20/20 | Valid: 20/20 | Grip: 1.5271 G | log_std: -0.975 | Trust: off

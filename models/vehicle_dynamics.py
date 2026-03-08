@@ -833,15 +833,36 @@ class DifferentiableMultiBodyVehicle:
 
         # UPGRADE-7: softplus floor — gradient = sigmoid(x-floor) ∈ (0,1), never zero.
         # Critical when a corner goes light: jnp.maximum gradient is zero below floor.
-        Fz_fl = _softplus_floor(F_grav_f * 0.5 + F_susp_fl - dFz_accel * 0.5 - dFz_lat * 0.5)
-        Fz_fr = _softplus_floor(F_grav_f * 0.5 + F_susp_fr - dFz_accel * 0.5 + dFz_lat * 0.5)
-        Fz_rl = _softplus_floor(F_grav_r * 0.5 + F_susp_rl + dFz_accel * 0.5 - dFz_lat * 0.5)
-        Fz_rr = _softplus_floor(F_grav_r * 0.5 + F_susp_rr + dFz_accel * 0.5 + dFz_lat * 0.5)
+        # Quasi-static contact forces for Pacejka — F_grav is the TOTAL vehicle
+        # weight distribution (includes sprung + unsprung).  F_susp is an INTERNAL
+        # force (spring connects sprung to unsprung); including it in Fz double-counts
+        # its effect in F_ext[20] and makes equilibrium impossible at ANY z_fl.
+        #
+        # Proof: with F_susp included,
+        #   F_ext[20] = -F_susp + (F_grav_f/2 + F_susp) - m_us*g
+        #             = F_grav_f/2 - m_us*g ≈ 583 N  ∀ z_fl
+        # → unsprung mass accelerates at 75 m/s² regardless of spring state.
+        # → z_fl ≈ 1.2 m after 18 steps → F_bs ≈ 600 kN → Pacejka overflow → NaN.
+        #
+        # Correct model: Fz (contact) = quasi-static weight distribution + load transfer.
+        # Spring forces appear ONLY in sprung mass EOM (F_ext[16..18]) and
+        # unsprung mass EOM (F_ext[20..23]) — NOT in the contact force definition.
+        # At equilibrium: F_ext[20] = -F_susp_eq + Fz_static - m_us*g = 0 ✓
+        # Equilibrium spring force: F_susp_eq = F_grav_f/2 - m_us*g ≈ 583 N
+        # Equilibrium deflection:   z_fl_eq = 583 / (k_f * MR²) ≈ 12.8 mm
+        Fz_fl = _softplus_floor(F_grav_f * 0.5 - dFz_accel * 0.5 - dFz_lat * 0.5)
+        Fz_fr = _softplus_floor(F_grav_f * 0.5 - dFz_accel * 0.5 + dFz_lat * 0.5)
+        Fz_rl = _softplus_floor(F_grav_r * 0.5 + dFz_accel * 0.5 - dFz_lat * 0.5)
+        Fz_rr = _softplus_floor(F_grav_r * 0.5 + dFz_accel * 0.5 + dFz_lat * 0.5)
 
         Fz_aero_f, Fz_aero_r, Fx_aero, My_aero, Mx_aero = self.aero_map.apply(
             self.Aero_params, vx, theta_pitch, phi_roll,
             z_fl + z_fr, z_rl + z_rr,
         )
+        # ─────────────────────────────────────────────────────────────────────────────
+        # REPLACE the aero addition block (search for "Fz_fl = Fz_fl + Fz_aero_f")
+        # Aero downforce DOES add to contact force — keep these unchanged.
+        # ─────────────────────────────────────────────────────────────────────────────
         Fz_fl = Fz_fl + Fz_aero_f * 0.5
         Fz_fr = Fz_fr + Fz_aero_f * 0.5
         Fz_rl = Fz_rl + Fz_aero_r * 0.5
@@ -871,10 +892,16 @@ class DifferentiableMultiBodyVehicle:
         eps_v        = 0.5
         v_corner_fl  = vx - wz * tf2
         v_corner_fr  = vx + wz * tf2
-        alpha_kin_fl = jnp.arctan2(vy - wz * self.lf, jnp.maximum(jnp.abs(v_corner_fl), eps_v)) - delta_fl
-        alpha_kin_fr = jnp.arctan2(vy - wz * self.lf, jnp.maximum(jnp.abs(v_corner_fr), eps_v)) - delta_fr
-        alpha_kin_rl = jnp.arctan2(vy + wz * self.lr, jnp.maximum(jnp.abs(vx - wz * tr2), eps_v)) + delta_comply_r
-        alpha_kin_rr = jnp.arctan2(vy + wz * self.lr, jnp.maximum(jnp.abs(vx + wz * tr2), eps_v)) + delta_comply_r
+        # SAE slip angle: α = δ - arctan2(v_corner_y, v_corner_x)
+        # Contact patch lateral velocity in body frame:
+        #   Front (at +lf from CG): v_y_front = vy + wz*lf  (ω×r, z-up, x-forward, y-left)
+        #   Rear  (at -lr from CG): v_y_rear  = vy - wz*lr
+        # Previous code had both signs inverted AND arctan-delta order reversed,
+        # producing negative Fy for positive steer → -4 rad/s yaw with δ=+0.2.
+        alpha_kin_fl = delta_fl       - jnp.arctan2(vy + wz * self.lf, jnp.maximum(jnp.abs(v_corner_fl), eps_v))
+        alpha_kin_fr = delta_fr       - jnp.arctan2(vy + wz * self.lf, jnp.maximum(jnp.abs(v_corner_fr), eps_v))
+        alpha_kin_rl = delta_comply_r - jnp.arctan2(vy - wz * self.lr, jnp.maximum(jnp.abs(vx - wz * tr2), eps_v))
+        alpha_kin_rr = delta_comply_r - jnp.arctan2(vy - wz * self.lr, jnp.maximum(jnp.abs(vx + wz * tr2), eps_v))
 
         rl  = self.vp.get('relaxation_length', 0.35)
         tau = rl / (jnp.maximum(jnp.abs(vx), 1.0))
@@ -939,13 +966,18 @@ class DifferentiableMultiBodyVehicle:
         F_ext = F_ext.at[21].set(-F_susp_fr + Fz_fr - self.m_us_f * self.g)
         F_ext = F_ext.at[22].set(-F_susp_rl + Fz_rl - self.m_us_r * self.g)
         F_ext = F_ext.at[23].set(-F_susp_rr + Fz_rr - self.m_us_r * self.g)
-        F_ext = F_ext.at[24].set((-Fx_fl * self.R_wheel) / self.Iw)
-        F_ext = F_ext.at[25].set((-Fx_fr * self.R_wheel) / self.Iw)
-        F_ext = F_ext.at[26].set((-Fx_rl * self.R_wheel + T_drive * 0.5) / self.Iw)
-        F_ext = F_ext.at[27].set((-Fx_rr * self.R_wheel + T_drive * 0.5) / self.Iw)
+        F_ext = F_ext.at[24].set(-Fx_fl * self.R_wheel)
+        F_ext = F_ext.at[25].set(-Fx_fr * self.R_wheel)
+        F_ext = F_ext.at[26].set(-Fx_rl * self.R_wheel + T_drive * 0.5)
+        F_ext = F_ext.at[27].set(-Fx_rr * self.R_wheel + T_drive * 0.5)
 
-        inv_M2   = jnp.concatenate([1.0 / self.M_diag, 1.0 / self.M_diag])
-        dx_mech  = PH_accel * inv_M2 + F_ext
+        # Correct PH dynamics in (q, v) coordinates.
+        # PH_accel[0:14]  = ∂H/∂p = v  → already m/s or rad/s, zero mass scaling.
+        # PH_accel[14:28] = -∂H/∂q - R·v  → forces/torques [N, N·m], divide by M.
+        # F_ext[14:28]    = external forces/torques [N, N·m], same M division.
+        dq_dt   = PH_accel[0:14]                                   # (14,) [m/s, rad/s]
+        dv_dt   = (PH_accel[14:28] + F_ext[14:28]) / self.M_diag  # (14,) [m/s², rad/s²]
+        dx_mech = jnp.concatenate([dq_dt, dv_dt])                  # (28,)
 
         dx_therm = (self.tire.compute_thermal_derivatives(
             x[28:38],
@@ -1132,6 +1164,36 @@ def build_default_setup_28(vp: dict) -> jax.Array:
     """
     return make_setup_from_params(vp).to_vector()
 
+# Add to vehicle_dynamics.py §6 (after build_default_setup_28)
+
+def compute_equilibrium_suspension(setup_vec: jax.Array, vp: dict) -> jax.Array:
+    """
+    Returns static equilibrium suspension displacements (z_fl, z_fr, z_rl, z_rr) [m].
+
+    At equilibrium, F_ext[20] = 0 → F_susp_eq = Fz_contact - m_us*g
+    With quasi-static Fz (no F_susp in contact force):
+        F_susp_eq = m*g*lr/(2L) - m_us_f*g  (front)
+        F_susp_eq = m*g*lf/(2L) - m_us_r*g  (rear)
+        z_eq = F_susp_eq / (k * MR₀²)  [MR₀ = constant term of motion ratio poly]
+
+    Fully differentiable w.r.t. setup_vec — safe inside jit/grad/vmap.
+    """
+    k_f  = setup_vec[0];  k_r  = setup_vec[1]
+    m    = jnp.array(vp.get('total_mass',    300.0))
+    g    = 9.81
+    lf   = jnp.array(vp.get('lf',          0.8525))
+    lr   = jnp.array(vp.get('lr',          0.6975))
+    L    = lf + lr
+    muf  = jnp.array(vp.get('unsprung_mass_f', 7.74))
+    mur  = jnp.array(vp.get('unsprung_mass_r', 7.76))
+    mr_f = jnp.array(vp.get('motion_ratio_f_poly', [1.14, 2.5, 0.0]))[0]
+    mr_r = jnp.array(vp.get('motion_ratio_r_poly', [1.16, 2.0, 0.0]))[0]
+
+    F_susp_f_eq = m * g * lr / (2.0 * L) - muf * g
+    F_susp_r_eq = m * g * lf / (2.0 * L) - mur * g
+    z_f_eq = F_susp_f_eq / (k_f * mr_f ** 2 + 1e-6)
+    z_r_eq = F_susp_r_eq / (k_r * mr_r ** 2 + 1e-6)
+    return jnp.array([z_f_eq, z_f_eq, z_r_eq, z_r_eq])
 
 # ─────────────────────────────────────────────────────────────────────────────
 # §7  Backward-compat aliases

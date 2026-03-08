@@ -18,6 +18,7 @@ if current_dir not in sys.path:
     sys.path.append(current_dir)
 
 from models.vehicle_dynamics import DifferentiableMultiBodyVehicle
+from models.vehicle_dynamics import compute_equilibrium_suspension, DEFAULT_SETUP
 from models.tire_model import PacejkaTire
 from optimization.residual_fitting import train_neural_residuals
 from optimization.ocp_solver import DiffWMPCSolver
@@ -66,7 +67,23 @@ def test_forward_pass():
     try:
         vehicle = DifferentiableMultiBodyVehicle(VP_DICT, TP_DICT)
 
-        x0    = jnp.zeros(46).at[14].set(10.0)
+        # CRITICAL: setup must be defined BEFORE compute_equilibrium_suspension.
+        # Python sees `setup` as a local name (assigned on the next statement),
+        # so any reference before assignment raises UnboundLocalError — even if
+        # the runtime would never reach it before the assignment in exec order.
+        from optimization.objectives import _expand_8_to_28_setup
+        setup = _expand_8_to_28_setup(
+            jnp.array([35000., 38000., 400., 450., 2500., 2800., 0.28, 0.60])
+        )
+
+        _z_eq = compute_equilibrium_suspension(setup, VP_DICT)
+        x0 = (jnp.zeros(46)
+              .at[14].set(10.0)
+              .at[6:10].set(_z_eq)
+              .at[28:38].set(jnp.array([85., 85., 85., 80., 75.,
+                                         85., 85., 85., 80., 75.])))
+
+        # ── rest of test_forward_pass is UNCHANGED below this line ─────────
         from optimization.objectives import _expand_8_to_28_setup
         setup = _expand_8_to_28_setup(
             jnp.array([35000., 38000., 400., 450., 2500., 2800., 0.28, 0.60])

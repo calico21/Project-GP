@@ -260,25 +260,21 @@ class MORL_SB_TRPO_Optimizer:
         return lb + (ub - lb) * setup_norm
 
     @partial(jax.jit, static_argnums=(0,))
-    def evaluate_setup_jax(
-        self, setup_norm: jax.Array
-    ) -> Tuple[jax.Array, jax.Array, jax.Array]:
-        """
-        Evaluate one member: returns (grip_G, -stability_overshoot, safety_metric).
-        All differentiable w.r.t. setup_norm.
-        """
+    def evaluate_setup_jax(self, setup_norm):
+        from models.vehicle_dynamics import compute_equilibrium_suspension
         setup_phys = self._norm_to_physical(setup_norm)
 
-        # Initial state: straight-ahead at 15 m/s
-        x_init = jnp.zeros(46).at[14].set(15.0).at[28:38].set(
-            jnp.array([85., 85., 85., 85., 80., 85., 85., 85., 85., 80.]))
+        # Setup-dependent equilibrium IC — differentiable w.r.t. setup_norm
+        z_eq   = compute_equilibrium_suspension(setup_phys, VP)
+        x_init = (jnp.zeros(46)
+                    .at[14].set(15.0)
+                    .at[6:10].set(z_eq)
+                    .at[28:38].set(jnp.array([85., 85., 85., 85., 80.,
+                                               85., 85., 85., 85., 80.])))
 
-        grip, _ = compute_skidpad_objective(
-            self._vehicle.simulate_step, setup_phys, x_init)
-        stab = compute_step_steer_objective(
-            self._vehicle.simulate_step, setup_phys, x_init)
-        safety = jax.nn.sigmoid((grip - SAFETY_THRESHOLD) * 10.0)
-
+        grip, _ = compute_skidpad_objective(self._vehicle.simulate_step, setup_phys, x_init)
+        stab    = compute_step_steer_objective(self._vehicle.simulate_step, setup_phys, x_init)
+        safety  = jax.nn.sigmoid((grip - SAFETY_THRESHOLD) * 10.0)
         return grip, stab, safety
 
     # ─────────────────────────────────────────────────────────────────────────

@@ -142,41 +142,60 @@ class DiffWMPCSolver:
     # ─────────────────────────────────────────────────────────────────────────
 
     def _dwt_1d_single_level(self, sig):
+        # mode='full' gives exactly len(sig)+len(filter)-1 — deterministic under
+        # jit+grad. .ravel() collapses any spurious unit dim from lax internals.
         n  = sig.shape[0]
-        lo = jnp.convolve(sig, _DB4_LO, mode='full')[3::2][:n // 2]
-        hi = jnp.convolve(sig, _DB4_HI, mode='full')[3::2][:n // 2]
+        lo = jnp.convolve(sig, _DB4_LO, mode='full').ravel()[3::2][:n // 2]
+        hi = jnp.convolve(sig, _DB4_HI, mode='full').ravel()[3::2][:n // 2]
         return lo, hi
 
     def _idwt_1d_single_level(self, lo, hi):
-        n  = lo.shape[0]
+        n     = lo.shape[0]
         lo_up = jnp.zeros(2 * n).at[::2].set(lo)
         hi_up = jnp.zeros(2 * n).at[::2].set(hi)
-        sig = (jnp.convolve(lo_up, _DB4_LO_R, mode='full')[2:2 * n + 2]
-               + jnp.convolve(hi_up, _DB4_HI_R, mode='full')[2:2 * n + 2])
+        sig   = (jnp.convolve(lo_up, _DB4_LO_R, mode='full').ravel()[2:2 * n + 2]
+                 + jnp.convolve(hi_up, _DB4_HI_R, mode='full').ravel()[2:2 * n + 2])
         return sig[:2 * n]
 
+    def _dwt_1d_3level(self, sig_1d):
+        """Single-channel 3-level Db4 DWT. sig_1d: (N,) → (N,)"""
+        lo1, hi1 = self._dwt_1d_single_level(sig_1d)
+        lo2, hi2 = self._dwt_1d_single_level(lo1)
+        lo3, hi3 = self._dwt_1d_single_level(lo2)
+        return jnp.concatenate([lo3, hi3, hi2, hi1])
+
+    def _idwt_1d_3level(self, c):
+        """Single-channel 3-level Db4 IDWT. c: (N,) → (N,)"""
+        n3 = self.N // 8; n2 = self.N // 4
+        lo3 = c[:n3]
+        hi3 = c[n3     : n3 * 2]
+        hi2 = c[n3 * 2 : n3 * 2 + n2]
+        hi1 = c[n3 * 2 + n2:]
+        lo2 = self._idwt_1d_single_level(lo3, hi3)
+        lo1 = self._idwt_1d_single_level(lo2, hi2)
+        return self._idwt_1d_single_level(lo1, hi1)
+
     def _db4_dwt(self, signal):
-        """3-level DWT. signal: (N, 2) → coeffs: (N, 2)"""
-        def dwt_1d_3level(sig_1d):
-            lo1, hi1 = self._dwt_1d_single_level(sig_1d)
-            lo2, hi2 = self._dwt_1d_single_level(lo1)
-            lo3, hi3 = self._dwt_1d_single_level(lo2)
-            n3 = lo3.shape[0]; n2 = hi2.shape[0]; n1 = hi1.shape[0]
-            return jnp.concatenate([lo3, hi3, hi2, hi1])
-        return jax.vmap(dwt_1d_3level, in_axes=1, out_axes=1)(signal)
+        """3-level DWT.  signal: (N, 2) → coeffs: (N, 2)
+
+        jax.vmap over jnp.convolve is NOT stable across JAX versions — under
+        abstract tracing vmap materialises the batch axis inside convolve's
+        lax.conv_general_dilated lowering, producing (batch, N+filter-1) shapes
+        that propagate as (1, N) through subsequent slicing, causing the
+        downstream jnp.concatenate inside dwt_1d_3level to receive 2-D arrays
+        and raising: 'got (1,), (1, 64)'.
+        Two explicit calls over 2 channels is zero overhead and avoids the class
+        of vmap-convolve abstract-trace shape instability permanently.
+        """
+        ch0 = self._dwt_1d_3level(signal[:, 0])   # steering  (N,)
+        ch1 = self._dwt_1d_3level(signal[:, 1])   # accel     (N,)
+        return jnp.stack([ch0, ch1], axis=1)        # (N, 2) — unambiguous
 
     def _db4_idwt(self, coeffs):
-        """3-level IDWT. coeffs: (N, 2) → signal: (N, 2)"""
-        def idwt_1d_3level(c):
-            n1 = self.N // 2; n2 = self.N // 4; n3 = self.N // 8
-            hi1 = c[n3 * 2 + n2:]
-            hi2 = c[n3 * 2:n3 * 2 + n2]
-            hi3 = c[n3:n3 * 2]
-            lo3 = c[:n3]
-            lo2 = self._idwt_1d_single_level(lo3, hi3)
-            lo1 = self._idwt_1d_single_level(lo2, hi2)
-            return self._idwt_1d_single_level(lo1, hi1)
-        return jax.vmap(idwt_1d_3level, in_axes=1, out_axes=1)(coeffs)
+        """3-level IDWT.  coeffs: (N, 2) → signal: (N, 2)"""
+        ch0 = self._idwt_1d_3level(coeffs[:, 0])   # steering  (N,)
+        ch1 = self._idwt_1d_3level(coeffs[:, 1])   # accel     (N,)
+        return jnp.stack([ch0, ch1], axis=1)         # (N, 2) — unambiguous
 
     # ─────────────────────────────────────────────────────────────────────────
     # §3  Unscented Transform
