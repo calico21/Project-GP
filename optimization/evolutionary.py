@@ -39,6 +39,7 @@ from __future__ import annotations
 import os
 import math
 import time
+from functools import partial
 from typing import List, Tuple, Optional
 
 import numpy as np

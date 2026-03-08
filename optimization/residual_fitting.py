@@ -363,7 +363,12 @@ def train_neural_residuals():
         pass_norm = _norm(pass_grads)
 
         scale_ph   = ALPHA_PHANTOM * mse_norm / (ph_norm   + 1e-8)
-        scale_pass = ALPHA_PASS    * mse_norm / (pass_norm + 1e-8)
+        # Floor prevents large pass_norm from silencing the penalty entirely.
+        # The gradient direction is preserved; only its magnitude is floored.
+        scale_pass = jnp.maximum(
+            ALPHA_PASS * mse_norm / (pass_norm + 1e-8),
+            ALPHA_PASS * 0.01,   # ≥ 1% of raw alpha survives regardless of norm ratio
+        )
 
         combined_grads = jax.tree_util.tree_map(
             lambda gm, gph, gp: gm + scale_ph * gph + scale_pass * gp,
@@ -502,7 +507,7 @@ def train_neural_residuals():
     try:
         from models.vehicle_dynamics import DifferentiableMultiBodyVehicle
         from data.configs.tire_coeffs import tire_coeffs as TP_DICT
-        from optimization.ocp_solver import _build_default_setup_28
+        from models.vehicle_dynamics import build_default_setup_28 as _build_default_setup_28
 
         _veh = DifferentiableMultiBodyVehicle(VP_DICT, TP_DICT)
         _x0  = jnp.zeros(46).at[14].set(10.0)

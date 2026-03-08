@@ -62,9 +62,10 @@ class SpectralDense(nn.Module):
         # Power iteration estimate of spectral norm
         u = self.param('u_vec', jax.nn.initializers.normal(),
                        (self.features,))
-        v  = W.T @ (W @ u)
+        v  = W.T @ (W @ u)                           # power iter: (out_dim,)
         v  = v / (jnp.linalg.norm(v) + 1e-8)
-        sigma = jnp.dot(u, W @ v)
+        # σ_max = ‖W v_r‖  — W@v: (in_dim,), norm: scalar — no shape conflict
+        sigma = jnp.linalg.norm(W @ v)
         W_sn  = W / (sigma + 1e-8)
 
         out = x @ W_sn
