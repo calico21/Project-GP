@@ -558,9 +558,11 @@ class DiffWMPCSolver:
                     track_w_left, track_w_right,
                     1.0, 0.0, self.dt_control,
                 )
-                vx_al    = x_al[:, STATE_VX]
+                vx_al    = x_al[:, STATE_VX].ravel()                              # strict (N,)
                 a_lat_sq = (vx_al ** 2 * jnp.abs(track_k)) ** 2
-                vx_prev  = jnp.concatenate([x0[STATE_VX:STATE_VX + 1], vx_al[:-1]])
+                vx_prev  = jnp.concatenate([
+                    x0[STATE_VX:STATE_VX + 1].ravel(), vx_al[:-1]
+                ])                                                                 # (N,) guaranteed
                 a_lon_sq = ((vx_al - vx_prev) / self.dt_control) ** 2
                 g_al     = (a_lat_sq + a_lon_sq) / ((self.mu_friction * 9.81) ** 2 + 1e-4) - 1.0
 

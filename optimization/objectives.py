@@ -57,67 +57,10 @@ _LSE_BETA = 20.0
 def _expand_8_to_28_setup(params_8):
     """
     Expand the 8-element MORL setup vector to the 28-element P10 format.
-
-    This is a pure JAX operation — JIT-compatible and differentiable.
-    Used by compute_step_steer_objective so it can accept either an 8-element
-    (MORL/analytical) or 28-element (full P10) setup vector.
-
-    Parameters
-    ----------
-    params_8 : jnp.ndarray shape (8,)
-        [k_f, k_r, arb_f, arb_r, c_f, c_r, h_cg, brake_bias_f]
-
-    Returns
-    -------
-    params_28 : jnp.ndarray shape (28,)
-        Full P10 setup vector.  Unmapped positions filled with
-        PhysicsNormalizer.setup_mean values (sensible FS defaults).
+    Uses the canonical SuspensionSetup loader to ensure parameter mapping is exact.
     """
-    import jax.numpy as jnp
-    from models.vehicle_dynamics import PhysicsNormalizer
-
-    k_f          = params_8[0]
-    k_r          = params_8[1]
-    arb_f        = params_8[2]
-    arb_r        = params_8[3]
-    c_f          = params_8[4]
-    c_r          = params_8[5]
-    h_cg         = params_8[6]
-    brake_bias_f = params_8[7]
-
-    # 4-way damper split — identical to _build_default_setup_28
-    c_ls_bump_f = c_f * 0.60
-    c_hs_bump_f = c_f * 0.40
-    c_ls_reb_f  = c_f * 0.90    # 0.60 × 1.5
-    c_hs_reb_f  = c_f * 0.60    # 0.40 × 1.5
-
-    c_ls_bump_r = c_r * 0.60
-    c_hs_bump_r = c_r * 0.40
-    c_ls_reb_r  = c_r * 0.90
-    c_hs_reb_r  = c_r * 0.60
-
-    # Defaults for unmapped positions from PhysicsNormalizer.setup_mean
-    m = PhysicsNormalizer.setup_mean
-
-    return jnp.array([
-        k_f,           k_r,            # [0-1]  springs
-        m[2],          m[3],           # [2-3]  k_heave_f/r (default 5000 N/m)
-        arb_f,         arb_r,          # [4-5]  ARBs
-        c_ls_bump_f,   c_hs_bump_f,    # [6-7]  front damper bump
-        c_ls_reb_f,    c_hs_reb_f,     # [8-9]  front damper rebound
-        c_ls_bump_r,   c_hs_bump_r,    # [10-11] rear damper bump
-        c_ls_reb_r,    c_hs_reb_r,     # [12-13] rear damper rebound
-        m[14],         m[15],          # [14-15] v_knee_f/r (default 0.10 m/s)
-        m[16],         m[17],          # [16-17] toe_f/r
-        m[18],         m[19],          # [18-19] camber_f/r_deg
-        m[20],                         # [20]    caster_deg
-        h_cg,                          # [21]    h_cg_setup
-        brake_bias_f,                  # [22]    brake_bias_f
-        m[23],                         # [23]    diff_lock (default 1.0)
-        m[24],         m[25],          # [24-25] arb_preload_f/r (default 0.0)
-        m[26],         m[27],          # [26-27] bumpstop_gap_f/r
-    ])
-
+    from models.vehicle_dynamics import SuspensionSetup
+    return SuspensionSetup.from_legacy_8(params_8).to_vector()
 
 def compute_step_steer_objective(simulate_step_fn, setup_params, x_init):
     """
@@ -183,35 +126,33 @@ def compute_step_steer_objective(simulate_step_fn, setup_params, x_init):
 def compute_skidpad_objective(simulate_step_fn, params, x_init, dt=0.005, T_max=2.0):
     """
     Differentiable analytical steady-state cornering balance.
-
-    API NOTE: simulate_step_fn, dt, and T_max are accepted for interface
-    compatibility but are NOT called inside this function.  The cornering
-    balance is computed analytically, not by integrating the ODE.  This is
-    intentional — the analytical formulation is exact, fully differentiable
-    everywhere, and does not require a simulation horizon to reach steady-state.
-
-    SETUP PARAMS NOTE: this function reads only params[0..7] (k_f, k_r, arb_f,
-    arb_r, c_f, c_r, h_cg, brake_bias_f) — it is compatible with both the
-    8-element MORL vector and a full 28-element P10 vector.  No expansion needed.
-
-    Returns
-    -------
-    obj_grip      : scalar — maximise this (units: lateral G, range ~0.5–2.5)
-    safety_margin : scalar — must be > 0 (positive = understeer = safe)
+    Penalty functions are scaled so max violation costs ~0.10 G.
     """
     from data.configs.vehicle_params import vehicle_params as VP
 
-    k_f          = params[0]
-    k_r          = params[1]
-    arb_f        = params[2]
-    arb_r        = params[3]
-    c_f          = params[4]
-    c_r          = params[5]
-    h_cg         = params[6]
-    brake_bias_f = params[7]
+    # ── P10 FIX: Unpack correctly based on the true 28-dim layout ──
+    if params.shape[-1] == 28:
+        k_f          = params[0]
+        k_r          = params[1]
+        arb_f        = params[2]   # arb_f [N·m/rad]
+        arb_r        = params[3]   # arb_r [N·m/rad]
+        c_f          = params[4]   # c_low_f [N·s/m]
+        c_r          = params[5]   # c_low_r [N·s/m]
+        h_cg         = params[25]  # h_cg [m]
+        brake_bias_f = params[24]  # brake_bias_f [-]
+    else:
+        k_f          = params[0]
+        k_r          = params[1]
+        arb_f        = params[2]
+        arb_r        = params[3]
+        c_f          = params[4]
+        c_r          = params[5]
+        h_cg         = params[6]
+        brake_bias_f = params[7]
 
     mr_f = jnp.array(VP.get('motion_ratio_f_poly', [1.20]))[0]
     mr_r = jnp.array(VP.get('motion_ratio_r_poly', [1.15]))[0]
+    
 
     wheel_rate_f = k_f  / (mr_f ** 2)
     wheel_rate_r = k_r  / (mr_r ** 2)
@@ -363,23 +304,20 @@ def compute_skidpad_objective(simulate_step_fn, params, x_init, dt=0.005, T_max=
 
 
 def compute_frequency_response_objective(simulate_step_fn, params, x_init,
-                                          dt=0.005, T_max=2.0):
+                                         dt=0.005, T_max=2.0):
     """
-    Damping ratio objective — sum of squared deviations from target zeta values.
-    Lower = better (used as obj_stability = -resonance in evolutionary.py).
-
-    This function is the SOLE enforcer of ride frequency / wheel-hop constraints.
-    compute_skidpad_objective no longer touches frequency penalties (FIX 4).
-
-    SETUP PARAMS NOTE: reads only params[0..1] (k_f, k_r) and params[4..5]
-    (c_f, c_r) — compatible with both 8-element and 28-element setup vectors.
-
-    Unchanged from previous version — correctly scaled and fully differentiable.
+    ...
     """
     from data.configs.vehicle_params import vehicle_params as VP
 
-    k_f, k_r = params[0], params[1]
-    c_f, c_r = params[4], params[5]
+    if params.shape[-1] == 28:
+        k_f, k_r = params[0], params[1]
+        c_f, c_r = params[4], params[5]    # c_low_f, c_low_r
+    else:
+        k_f, k_r = params[0], params[1]
+        c_f, c_r = params[4], params[5]
+        
+    # ... (rest of the function stays the same)
 
     mr_f = jnp.array(VP.get('motion_ratio_f_poly', [1.20]))[0]
     mr_r = jnp.array(VP.get('motion_ratio_r_poly', [1.15]))[0]

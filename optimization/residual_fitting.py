@@ -174,12 +174,22 @@ def generate_synthetic_flex_data(num_samples=5000, key_seed=42):
     # Enforce hard physical lower bounds post-sampling (springs > 5 kN/m,
     # dampers > 50 Ns/m, bumpstop gap > 5 mm) to avoid degenerate training pts
     # that would generate NaN gradients inside H_net.
-    setup_params = setup_params.at[:, 0:4].set(
-        jnp.maximum(setup_params[:, 0:4], 5000.0))     # springs
-    setup_params = setup_params.at[:, 6:14].set(
-        jnp.maximum(setup_params[:, 6:14], 50.0))      # dampers
+    # Enforce hard physical lower bounds post-sampling (springs > 5 kN/m,
+    # dampers > 50 Ns/m) to avoid degenerate training pts
+    # that would generate NaN gradients inside H_net.
+    
+    # Enforce hard physical lower bounds post-sampling (springs > 5 kN/m,
+    # dampers > 50 Ns/m, bumpstop gap > 5 mm) to avoid degenerate training pts
+    # that would generate NaN gradients inside H_net.
+    
+    setup_params = setup_params.at[:, 0:2].set(
+        jnp.maximum(setup_params[:, 0:2], 5000.0))   # k_f, k_r only [N/m]
+
+    setup_params = setup_params.at[:, 4:8].set(
+        jnp.maximum(setup_params[:, 4:8], 50.0))     # c_low_f/r, c_high_f/r [N·s/m]
+        
     setup_params = setup_params.at[:, 26:28].set(
-        jnp.maximum(setup_params[:, 26:28], 0.005))    # bumpstop gaps
+        jnp.maximum(setup_params[:, 26:28], 0.005))    # Bumpstop gaps
 
     torsion      = (q[:, 6] - q[:, 7]) - (q[:, 8] - q[:, 9])
     k_torsion    = 15000.0
@@ -362,12 +372,17 @@ def train_neural_residuals():
         ph_norm   = _norm(ph_grads)
         pass_norm = _norm(pass_grads)
 
-        scale_ph   = ALPHA_PHANTOM * mse_norm / (ph_norm   + 1e-8)
-        # Floor prevents large pass_norm from silencing the penalty entirely.
-        # The gradient direction is preserved; only its magnitude is floored.
-        scale_pass = jnp.maximum(
-            ALPHA_PASS * mse_norm / (pass_norm + 1e-8),
-            ALPHA_PASS * 0.01,   # ≥ 1% of raw alpha survives regardless of norm ratio
+        # Rationale: when ph_norm < mse_norm * 1e-3, the phantom constraint is
+        # already satisfied (gradient is numerically zero) — scaling it by 1e8
+        # adds nothing physically meaningful but overflows float32.
+        scale_ph   = jnp.minimum(
+            ALPHA_PHANTOM * mse_norm / (ph_norm   + 1e-8),
+            500.0,   # phantom contribution ≤ 500× phantom grad norm — never overflows f32
+        )
+        scale_pass = jnp.clip(
+            ALPHA_PASS    * mse_norm / (pass_norm + 1e-8),
+            ALPHA_PASS * 0.01,
+            500.0,   # symmetric cap — pass_norm can also vanish on flat landscape
         )
 
         combined_grads = jax.tree_util.tree_map(
