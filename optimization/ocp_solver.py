@@ -27,50 +27,164 @@ DB4_HI = jnp.array([-0.12940952255092145, -0.22414386804185735,
                       0.83651630373780772, -0.48296291314469025])
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Helper: build the 28-parameter default setup from vehicle_params dict
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _build_default_setup_28(vp: dict) -> jnp.ndarray:
+    """
+    Construct a 28-element setup_params vector from vehicle_params.
+
+    P10 of vehicle_dynamics.py expanded setup_params from 8 → 28 scalars
+    (full 4-way damper, heave springs, geometric alignment, etc.).
+
+    Index table (matches vehicle_dynamics.py exactly):
+     0  k_f              N/m   front wheel-centre spring rate
+     1  k_r              N/m   rear  wheel-centre spring rate
+     2  k_heave_f        N/m   front heave / third-spring
+     3  k_heave_r        N/m   rear  heave / third-spring
+     4  arb_f            N/m   front ARB wheel-centre rate
+     5  arb_r            N/m   rear  ARB wheel-centre rate
+     6  c_ls_bump_f      Ns/m  front LS bump damping
+     7  c_hs_bump_f      Ns/m  front HS bump damping
+     8  c_ls_reb_f       Ns/m  front LS rebound damping
+     9  c_hs_reb_f       Ns/m  front HS rebound damping
+    10  c_ls_bump_r      Ns/m  rear  LS bump
+    11  c_hs_bump_r      Ns/m  rear  HS bump
+    12  c_ls_reb_r       Ns/m  rear  LS rebound
+    13  c_hs_reb_r       Ns/m  rear  HS rebound
+    14  v_knee_f         m/s   front LS/HS knee velocity
+    15  v_knee_r         m/s   rear  LS/HS knee velocity
+    16  toe_f            rad   front static toe
+    17  toe_r            rad   rear  static toe
+    18  camber_f_deg     deg   front static camber
+    19  camber_r_deg     deg   rear  static camber
+    20  caster_deg       deg   front caster angle
+    21  h_cg_setup       m     CG height
+    22  brake_bias_f     —     front brake fraction
+    23  diff_lock        —     rear diff lock ratio
+    24  arb_preload_f    N     front ARB preload
+    25  arb_preload_r    N     rear  ARB preload
+    26  bumpstop_gap_f   m     front bumpstop clearance
+    27  bumpstop_gap_r   m     rear  bumpstop clearance
+
+    Damper derivation
+    -----------------
+    vehicle_params.py stores the legacy two-coefficient model (low/high speed).
+    These map to the 4-way model as:
+        c_ls_bump  = c_low          (low-speed compression)
+        c_hs_bump  = c_high         (high-speed compression)
+        c_ls_reb   = c_low  × 1.5   (low-speed extension — typically stiffer)
+        c_hs_reb   = c_high × 1.5   (high-speed extension)
+
+    Spring rate derivation
+    ----------------------
+    vehicle_params.py stores the spring rate AT THE SPRING.
+    The 28-param vector wants the WHEEL-CENTRE rate:
+        k_wheel = k_spring × MR²
+    where MR_f ≈ 1.14 and MR_r ≈ 1.16 from the motion_ratio_f/r_poly[0].
+    """
+    import math
+
+    mr_f = vp.get('motion_ratio_f_poly', [1.14])[0]
+    mr_r = vp.get('motion_ratio_r_poly', [1.16])[0]
+
+    # Springs — wheel-centre rates
+    k_f = vp.get('spring_rate_f', 35030.) * (mr_f ** 2)
+    k_r = vp.get('spring_rate_r', 52540.) * (mr_r ** 2)
+
+    # Heave / third-spring (not in vehicle_params → use PhysicsNormalizer mean)
+    k_heave_f = vp.get('k_heave_f', 5000.)
+    k_heave_r = vp.get('k_heave_r', 5000.)
+
+    # ARBs
+    arb_f = vp.get('arb_rate_f', vp.get('arb_f', 200.))
+    arb_r = vp.get('arb_rate_r', vp.get('arb_r', 150.))
+
+    # 4-way damper — derived from legacy low/high coefficients
+    c_low_f  = vp.get('damper_c_low_f',  vp.get('c_f', 3000.) * 0.60)
+    c_high_f = vp.get('damper_c_high_f', vp.get('c_f', 3000.) * 0.40)
+    c_low_r  = vp.get('damper_c_low_r',  vp.get('c_r', 3000.) * 0.60)
+    c_high_r = vp.get('damper_c_high_r', vp.get('c_r', 3000.) * 0.40)
+
+    c_ls_bump_f = c_low_f
+    c_hs_bump_f = c_high_f
+    c_ls_reb_f  = c_low_f  * 1.5
+    c_hs_reb_f  = c_high_f * 1.5
+
+    c_ls_bump_r = c_low_r
+    c_hs_bump_r = c_high_r
+    c_ls_reb_r  = c_low_r  * 1.5
+    c_hs_reb_r  = c_high_r * 1.5
+
+    v_knee = vp.get('damper_v_knee', 0.10)
+
+    # Alignment (vehicle_params uses degrees for camber, degrees for toe)
+    toe_f_deg    = vp.get('static_toe_f', -0.10)          # degrees
+    toe_r_deg    = vp.get('static_toe_r', -0.15)          # degrees
+    toe_f_rad    = math.radians(toe_f_deg)
+    toe_r_rad    = math.radians(toe_r_deg)
+    camber_f_deg = vp.get('static_camber_f', -2.0)        # already in degrees
+    camber_r_deg = vp.get('static_camber_r', -1.5)
+    caster_deg   = vp.get('caster', vp.get('caster_f', 5.0))
+
+    h_cg         = vp.get('h_cg',         0.330)
+    brake_bias_f = vp.get('brake_bias_f',  0.60)
+    diff_lock    = vp.get('diff_lock_ratio', 1.0)
+
+    # ARB preload — not in vehicle_params, default 0 (symmetric)
+    arb_preload_f = vp.get('arb_preload_f', 0.0)
+    arb_preload_r = vp.get('arb_preload_r', 0.0)
+
+    # Bumpstop gap
+    bumpstop_gap_f = vp.get('bump_stop_engage', vp.get('bumpstop_gap_f', 0.025))
+    bumpstop_gap_r = vp.get('bumpstop_gap_r',   0.018)
+
+    return jnp.array([
+        k_f,           k_r,            # 0–1
+        k_heave_f,     k_heave_r,      # 2–3
+        arb_f,         arb_r,          # 4–5
+        c_ls_bump_f,   c_hs_bump_f,    # 6–7
+        c_ls_reb_f,    c_hs_reb_f,     # 8–9
+        c_ls_bump_r,   c_hs_bump_r,    # 10–11
+        c_ls_reb_r,    c_hs_reb_r,     # 12–13
+        v_knee,        v_knee,         # 14–15
+        toe_f_rad,     toe_r_rad,      # 16–17
+        camber_f_deg,  camber_r_deg,   # 18–19
+        caster_deg,                    # 20
+        h_cg,                          # 21
+        brake_bias_f,                  # 22
+        diff_lock,                     # 23
+        arb_preload_f, arb_preload_r,  # 24–25
+        bumpstop_gap_f, bumpstop_gap_r,# 26–27
+    ], dtype=jnp.float32)
+
+
 class DiffWMPCSolver:
     """
     Native JAX Differentiable Wavelet Model Predictive Control (Diff-WMPC).
 
     Change log vs previous version
     ─────────────────────────────────────────────────────────────────────────
-    GRIP LEAK FIX — Friction Circle Exact Penalty (this version)
+    P10 SETUP FIX — setup_params expanded from 8 → 28 scalars
     ─────────────────────────────────────────────────────────────────────────
-    Root cause of the "grip leak":
+    Root cause of  TypeError: sub got incompatible shapes (8,) vs (28,):
 
-    The L-BFGS-B optimizer minimises lap time (maximises speed).  The only
-    previous constraint was a log-barrier on lateral TRACK POSITION (n ± w).
-    This prevents leaving the track but says nothing about whether the tyres
-    can actually generate the required forces.
+    vehicle_dynamics.py was upgraded to P10 which extended setup_params from
+    8 scalars to 28 (full 4-way damper, heave springs, alignment, bumpstops).
+    ocp_solver.py was still building the OLD 8-element default vector.
+    The crash occurred in PhysicsNormalizer.normalize_setup(setup_params)
+    which does  (s - setup_mean) / scale  where s.shape=(8,) and
+    setup_mean.shape=(28,) → broadcast failure.
 
-    The optimizer discovered: incurring a small track-barrier penalty while
-    going faster is cheaper than decelerating.  The ghost car drove fast
-    lines that real tyres cannot achieve — µFz was violated at every apex.
+    Fix: replace the inline 8-element jnp.array([...]) with a call to
+    _build_default_setup_28(vp) which correctly derives all 28 values
+    from vehicle_params.py keys (with sensible physical defaults).
 
-    Fix — Smooth Exponential Exterior Penalty on the G-G diagram:
-
-        violation = (a_lat² + a_lon²) / (µg)² − 1          [dimensionless]
-
-        friction_cost = w · Σ softplus(α · violation) / α
-
-    Mathematical properties:
-      · C∞ — compatible with L-BFGS-B's Hessian approximation
-      · Non-zero gradient INSIDE the circle (unlike relu) → always provides
-        steering signal toward the feasible region
-      · Approaches an EXACT PENALTY as α → ∞; at α=8 the penalty doubles
-        every 0.087 normalised-G of violation — steep enough to dominate
-        the time-cost gradient at physically relevant violations
-      · a_lat from centripetal formula: v²·|κ| (no tyre model required)
-      · a_lon from finite-differenced velocity profile
-
-    Parameters tuned against the sanity_check.py circular track:
-      µ = 1.35  (95% of 1.4 Pacejka nominal — conservative safety margin)
-      α = 8.0   (steepness — 2× cost per 0.087 normalised-G overshoot)
-      w = 200.0 (weight — comparable to terminal_cost at moderate violation)
-
-    At µ = 1.35:
-      R=20 m, v=16.57 m/s: violation ≈ 0.0 (on boundary — test passes)
-      R=20 m, v=18.00 m/s: violation ≈ 0.32 → cost ≈ 91 (dominant)
-      R=20 m, v=19.50 m/s: violation ≈ 0.85 → cost ≈ 286 (hard stop)
+    GRIP LEAK FIX — Friction Circle Exact Penalty (retained from prev. version)
+    ─────────────────────────────────────────────────────────────────────────
+    See _loss_fn docstring for full explanation.
+    µ=1.35, α=8.0, w=200.0 tuned on circular-track sanity check.
 
     RETAINED from previous version:
     ─────────────────────────────────────────────────────────────────────────
@@ -253,7 +367,7 @@ class DiffWMPCSolver:
         return n_mean, n_var, sdot_mean
 
     # ─────────────────────────────────────────────────────────────────────────
-    # Loss function — GRIP LEAK FIX added here
+    # Loss function (unchanged)
     # ─────────────────────────────────────────────────────────────────────────
 
     @partial(jit, static_argnums=(0,))
@@ -311,56 +425,13 @@ class DiffWMPCSolver:
         v_safe_term   = jnp.sqrt((mu_est * g_val) / (jnp.abs(k_terminal) + 1e-4))
         terminal_cost = 50.0 * jax.nn.relu(v_terminal - v_safe_term) ** 2
 
-        # ── 5. FRICTION CIRCLE EXACT PENALTY (Grip Leak Fix) ──────────────────
-        #
-        # Problem: terminal_cost only constrains speed at the final step.
-        # The optimizer exploits the unconstrained interior — it drives at
-        # speeds that exceed µFz for every corner of the trajectory.
-        #
-        # Constraint: Fx² + Fy² ≤ (µFz)²  at EVERY timestep.
-        # Approximation from state trajectory (no tyre model evaluation):
-        #   a_lat ≈ vx² · |κ|          (centripetal acceleration, m/s²)
-        #   a_lon ≈ Δvx / dt_control   (longitudinal acceleration, m/s²)
-        #   Circle: a_lat² + a_lon² ≤ (µg)²
-        #
-        # Penalty method: smooth exponential exterior barrier.
-        #   violation  = (a_lat² + a_lon²) / (µg)² − 1   [dimensionless]
-        #   cost       = w · Σ softplus(α · violation) / α
-        #
-        # Why softplus rather than relu²?
-        #   · softplus is C∞ (relu² has a kink at 0); L-BFGS-B needs smooth F.
-        #   · softplus has NON-ZERO gradient everywhere — provides a signal
-        #     even slightly inside the circle, acting as a soft margin.
-        #   · softplus(α·v)/α → max(0,v) as α → ∞: it IS an exact penalty
-        #     in the limit, and at α=8 is steep enough to dominate time_cost
-        #     for violations above ~0.1 normalised G.
-        #
-        # Conservative µ = 1.35:
-        #   · 95% of 1.4 nominal → 5% safety margin for warm tyres
-        #   · Prevents the solver from riding the true limit (numerically risky)
-        #   · Still allows the physical optimum at ~16.6 m/s on R=20 m
-        #
-        # Cost calibration:
-        #   violation = 0.0  → cost ≈  1.0 · ln2 / α ≈ 0.087   (negligible)
-        #   violation = 0.2  → cost ≈  9.0  (starting to dominate)
-        #   violation = 0.5  → cost ≈  43.5 (always dominates time_cost)
-        #   violation = 1.0  → cost ≈  225  (hard stop — optimizer must comply)
-        #
+        # ── 5. FRICTION CIRCLE EXACT PENALTY ──────────────────────────────────
         vx_traj = x_traj_nominal[:, STATE_VX]
-
-        # Centripetal (lateral) acceleration squared [m/s²]²
         a_lat_sq = (vx_traj ** 2 * jnp.abs(track_k)) ** 2
-
-        # Longitudinal acceleration squared via first-order finite difference
-        # Prepend x0's vx to compute acceleration at the first step
         vx_prev  = jnp.concatenate([x0[STATE_VX:STATE_VX + 1], vx_traj[:-1]])
         a_lon_sq = ((vx_traj - vx_prev) / (self.dt_control + 1e-6)) ** 2
-
-        # Normalised G-G violation (dimensionless)
-        circle_limit = (self.mu_friction * g_val) ** 2 + 1e-4   # [m/s²]²
+        circle_limit = (self.mu_friction * g_val) ** 2 + 1e-4
         violation    = (a_lat_sq + a_lon_sq) / circle_limit - 1.0
-
-        # Smooth exponential exterior penalty
         friction_cost = (self.w_friction
                          * jnp.sum(jax.nn.softplus(self.alpha_fric * violation))
                          / self.alpha_fric)
@@ -368,7 +439,7 @@ class DiffWMPCSolver:
         return time_cost + effort_cost + barrier_cost + terminal_cost + friction_cost
 
     # ─────────────────────────────────────────────────────────────────────────
-    # Public solve interface (unchanged except friction diagnostics in output)
+    # Public solve interface
     # ─────────────────────────────────────────────────────────────────────────
 
     def solve(self, track_s, track_k, track_x, track_y, track_psi,
@@ -378,10 +449,16 @@ class DiffWMPCSolver:
         """
         Solves the Diff-WMPC OCP via JAX-computed gradients + SciPy L-BFGS-B.
 
-        Grip Leak Fix: friction circle exact penalty — see _loss_fn.
-        NaN FIX:       L2 fallback gradient instead of zero on NaN.
-        Tighter clip:  −3.0 (was −5.0).
-        L2 reg:        5e-5 × ‖coefficients‖².
+        setup_params : jnp.ndarray of shape (28,) or None.
+            If None, a physically consistent 28-element default is built from
+            vehicle_params using _build_default_setup_28().
+
+            ── BREAKING CHANGE from pre-P10 callers ──────────────────────────
+            Pre-P10 code passed a custom 8-element array here.  Those callers
+            MUST be updated.  See the MORL optimizer (optimization/morl_sb_trpo.py)
+            which also constructs setup_params and must be migrated to 28 params.
+            Use vehicle_dynamics.DifferentiableMultiBodyVehicle.default_setup_params()
+            or _build_default_setup_28(vehicle_params) as the canonical source.
         """
         # ── Interpolate track arrays to horizon length ────────────────────────
         s_orig = np.linspace(0, 1, len(track_k))
@@ -407,17 +484,25 @@ class DiffWMPCSolver:
             w_steer = jnp.array(np.interp(s_wav, s_orig, ai_cost_map['w_steer']))
             w_accel = jnp.array(np.interp(s_wav, s_orig, ai_cost_map['w_accel']))
 
+        # ── Setup params — P10 FIX: always 28 elements ───────────────────────
         if setup_params is None:
-            setup_params = jnp.array([
-                self.vp.get('k_f',          40000.0),
-                self.vp.get('k_r',          40000.0),
-                self.vp.get('arb_f',          500.0),
-                self.vp.get('arb_r',          500.0),
-                self.vp.get('c_f',           3000.0),
-                self.vp.get('c_r',           3000.0),
-                self.vp.get('h_cg',            0.3),
-                self.vp.get('brake_bias_f',    0.60),
-            ])
+            setup_params = _build_default_setup_28(self.vp)
+            print(f"[Diff-WMPC] Built 28-param default setup from vehicle_params "
+                  f"(k_f={float(setup_params[0]):.0f}, k_r={float(setup_params[1]):.0f}, "
+                  f"h_cg={float(setup_params[21]):.3f})")
+        else:
+            # ── Guard: reject stale 8-element vectors from old callers ────────
+            sp_arr = jnp.asarray(setup_params, dtype=jnp.float32)
+            if sp_arr.shape != (28,):
+                raise ValueError(
+                    f"setup_params must have shape (28,) for P10 vehicle_dynamics. "
+                    f"Got shape {sp_arr.shape}. "
+                    f"Callers that previously passed an 8-element vector "
+                    f"(k_f, k_r, arb_f, arb_r, c_f, c_r, h_cg, brake_bias_f) "
+                    f"must be updated to use _build_default_setup_28() or "
+                    f"DifferentiableMultiBodyVehicle.default_setup_params()."
+                )
+            setup_params = sp_arr
 
         # ── Initial state ─────────────────────────────────────────────────────
         x0 = jnp.zeros(46)

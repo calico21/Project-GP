@@ -4,7 +4,8 @@ import optax
 import os
 import flax.serialization
 
-from models.vehicle_dynamics import NeuralEnergyLandscape, NeuralDissipationMatrix
+from models.vehicle_dynamics import (NeuralEnergyLandscape, NeuralDissipationMatrix,
+                                      PhysicsNormalizer)
 from data.configs.vehicle_params import vehicle_params as VP_DICT
 
 
@@ -51,6 +52,31 @@ LAST_PHRATE:    float = float('nan')   # final phantom-rate-at-eq loss
 #   Phase 2 MSE target: unchanged (0.020)
 #   PhRate convergence: ~800 epochs (was ~1000) — bilateral symmetry removes
 #   the largest off-diagonal spurious coupling.
+#
+# =============================================================================
+# P10 SETUP FIX — setup_params expanded from 8 → 28 scalars
+# =============================================================================
+#
+# vehicle_dynamics.py P10 expanded setup_params from 8 → 28 scalars.
+# NeuralEnergyLandscape.__call__ now expects a 28-element setup vector, which
+# is passed through PhysicsNormalizer.normalize_setup(setup_params).
+#
+# Impact on this file:
+#
+#   1. generate_synthetic_flex_data:
+#      OLD: setup_mean_train / setup_scale_train were hardcoded 8-element
+#           arrays.  h_net.init(key1, q[0], p[0], setup[0]) crashed because
+#           setup[0].shape=(8,) but normalize_setup expected shape (28,).
+#      FIX: use PhysicsNormalizer.setup_mean (shape 28) and
+#           PhysicsNormalizer.setup_scale (shape 28) directly, so training
+#           data spans the physical operating envelope of all 28 parameters.
+#
+#   2. Post-training diagnostic simulate_step call:
+#      OLD: _sp = jnp.array([35000., 38000., 400., 450., 2500., 2800., 0.28, 0.60])
+#           — 8-element vector, crashed simulate_step which unpacks 28 params.
+#      FIX: build _sp with _build_default_setup_28(VP_DICT) — 28 elements
+#           derived from vehicle_params.py, identical to the ocp_solver default.
+#
 # =============================================================================
 
 
@@ -79,6 +105,14 @@ def generate_synthetic_flex_data(num_samples=5000, key_seed=42):
     P5 NOTE: q is sampled from N(0, 0.05) including all 14 DOFs.
     The SE(3) feature extractor in NeuralEnergyLandscape handles all
     symmetry enforcement internally — training data format is unchanged.
+
+    P10 NOTE: setup_params expanded from 8 → 28 elements.
+    PhysicsNormalizer.setup_mean/scale (shape 28) replace the previous
+    hardcoded 8-element arrays.  The training distribution now covers all
+    28 physical setup parameters in the P10 model, including the 4-way
+    damper, heave springs, alignment, bumpstop gap, and ARB preload.
+    NeuralEnergyLandscape.__call__ passes setup through
+    PhysicsNormalizer.normalize_setup(setup_params) — requires shape (28,).
     """
     _m_s   = VP_DICT.get('total_mass', 230.0) - (
                 2 * VP_DICT.get('unsprung_mass_f', 10.0) +
@@ -119,10 +153,33 @@ def generate_synthetic_flex_data(num_samples=5000, key_seed=42):
     v_samples = jax.random.normal(k2, (num_samples, 14)) * v_std
     p         = v_samples * M_diag_train
 
-    setup_mean_train  = jnp.array([40000., 40000.,  500.,  500., 3000., 3000., 0.30, 0.60])
-    setup_scale_train = jnp.array([15000., 15000.,  300.,  300., 1500., 1500., 0.03, 0.08])
-    setup_params = (setup_mean_train
-                    + jax.random.normal(k3, (num_samples, 8)) * setup_scale_train)
+    # ── P10 FIX: 28-parameter setup training distribution ─────────────────────
+    # OLD (8-param, now crashes NeuralEnergyLandscape which expects 28):
+    #   setup_mean_train  = jnp.array([40000., 40000.,  500.,  500., 3000., 3000., 0.30, 0.60])
+    #   setup_scale_train = jnp.array([15000., 15000.,  300.,  300., 1500., 1500., 0.03, 0.08])
+    #   setup_params = setup_mean_train + jax.random.normal(k3, (num_samples, 8)) * setup_scale_train
+    #
+    # NEW: use PhysicsNormalizer.setup_mean/scale directly.
+    # These are the same statistics used by normalize_setup() inside the network,
+    # so training samples cover the full 28-parameter operating envelope uniformly
+    # in normalised space — ±1σ in each dimension.
+    #
+    # Note: we clip to ±2σ to avoid unphysical values (negative spring rates,
+    # bumpstop gap > suspension travel, etc.) during training.
+    setup_noise  = jax.random.normal(k3, (num_samples, 28))
+    setup_noise  = jnp.clip(setup_noise, -2.0, 2.0)
+    setup_params = (PhysicsNormalizer.setup_mean
+                    + setup_noise * PhysicsNormalizer.setup_scale)
+
+    # Enforce hard physical lower bounds post-sampling (springs > 5 kN/m,
+    # dampers > 50 Ns/m, bumpstop gap > 5 mm) to avoid degenerate training pts
+    # that would generate NaN gradients inside H_net.
+    setup_params = setup_params.at[:, 0:4].set(
+        jnp.maximum(setup_params[:, 0:4], 5000.0))     # springs
+    setup_params = setup_params.at[:, 6:14].set(
+        jnp.maximum(setup_params[:, 6:14], 50.0))      # dampers
+    setup_params = setup_params.at[:, 26:28].set(
+        jnp.maximum(setup_params[:, 26:28], 0.005))    # bumpstop gaps
 
     torsion      = (q[:, 6] - q[:, 7]) - (q[:, 8] - q[:, 9])
     k_torsion    = 15000.0
@@ -138,9 +195,17 @@ def train_neural_residuals():
     print("[Neural Physics] Generating Synthetic Chassis Flex Data...")
     print("[Neural Physics] P5 SE(3) architecture — 29 bilateral-invariant features.")
     print("                 Previously saved h_net.bytes is incompatible (36→29 features).")
+    print("[Neural Physics] P10 setup fix — 28-param setup vector (was 8-param).")
     print("                 New weights will be saved at end of training.")
 
     q_data, p_data, setup_data, target_H, target_R_mag = generate_synthetic_flex_data()
+
+    # Verify shape at runtime — catches any future setup expansion mismatches early
+    assert setup_data.shape[1] == 28, (
+        f"setup_data has shape {setup_data.shape} — expected (n, 28). "
+        f"generate_synthetic_flex_data must produce 28-element setup vectors for P10."
+    )
+    print(f"   [P10 check] setup_data shape: {setup_data.shape} ✓")
 
     # ── M_diag identical to generate_synthetic_flex_data ─────────────────────
     m_s   = VP_DICT.get('total_mass', 230.0) - (
@@ -159,6 +224,7 @@ def train_neural_residuals():
     r_net = NeuralDissipationMatrix(dim=14)
 
     key1, key2 = jax.random.split(jax.random.PRNGKey(0))
+    # setup_data[0] now has shape (28,) — matches NeuralEnergyLandscape P10 input
     h_params = h_net.init(key1, q_data[0], p_data[0], setup_data[0])
     r_params = r_net.init(key2, q_data[0], p_data[0])
 
@@ -259,10 +325,6 @@ def train_neural_residuals():
             return jnp.mean(jax.vmap(per_sample)(q, p, setup, target_norm))
 
         # ── Term 2: Phantom rate at equilibrium ───────────────────────────────
-        # q=0 is the equilibrium — identical to the diagnostic test point.
-        # With P5 SE(3) features, anti-symmetric coupling (vy, wz, roll)
-        # is architecturally eliminated. L_phantom still suppresses any
-        # even-function residual coupling through symmetric features (vx, vz).
         def phantom_rate_at_eq_loss(params_):
             q_eq = jnp.zeros(14)
             def per_sample(p_s, setup_s):
@@ -359,6 +421,7 @@ def train_neural_residuals():
     print("\n[Neural Physics] Training H_net (Energy Landscape Residual)...")
     print(f"  [Config] Epochs: {NUM_EPOCHS} | AdamW | weight_decay: 1e-4")
     print(f"  [P5 SE(3)] 29 bilateral-symmetric features (anti-sym as x² eliminates phantom-vy/wz)")
+    print(f"  [P10] 28-param setup vector — NeuralEnergyLandscape input: 4+7+3+7+28=49 features")
     print(f"  [Two-Phase v9: phantom rate at equilibrium]")
     print(f"  Phase 1 (ep 1→{PHASE_1_END}): PURE MSE.")
     print(f"  Phase 2 (ep {PHASE_1_END+1}→{NUM_EPOCHS}): "
@@ -439,10 +502,21 @@ def train_neural_residuals():
     try:
         from models.vehicle_dynamics import DifferentiableMultiBodyVehicle
         from data.configs.tire_coeffs import tire_coeffs as TP_DICT
+        from optimization.ocp_solver import _build_default_setup_28
+
         _veh = DifferentiableMultiBodyVehicle(VP_DICT, TP_DICT)
         _x0  = jnp.zeros(46).at[14].set(10.0)
         _u0  = jnp.array([0.0, 0.0])
-        _sp  = jnp.array([35000., 38000., 400., 450., 2500., 2800., 0.28, 0.60])
+
+        # P10 FIX: was jnp.array([35000., 38000., 400., 450., 2500., 2800., 0.28, 0.60])
+        # — 8-element vector crashed simulate_step which unpacks 28 params.
+        # Now use _build_default_setup_28 with a slight perturbation to test
+        # away from the mean (same spirit as the original diagnostic intent).
+        _sp_default = _build_default_setup_28(VP_DICT)
+        # Replicate the original perturbation: slightly stiffer rear, lower h_cg
+        _sp = _sp_default.at[1].set(38000.)   # k_r slightly stiffer
+        _sp = _sp.at[21].set(0.28)            # h_cg slightly lower (was 0.28)
+
         _x1  = _veh.simulate_step(_x0, _u0, _sp, dt=0.01)
         _m   = VP_DICT.get('total_mass', 230.0)
         _dKE = 0.5 * _m * (float(_x1[14]) ** 2 - float(_x0[14]) ** 2)

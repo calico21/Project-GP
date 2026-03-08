@@ -12,62 +12,40 @@ import jax.numpy as jnp
 # CHANGE LOG vs previous version
 # ─────────────────────────────────────────────────────────────────────────────
 #
+# ── P10 SETUP FIX — compute_step_steer_objective now accepts 8 OR 28 params ──
+#
+#   Root cause:
+#   compute_step_steer_objective passes setup_params directly to simulate_step_fn.
+#   In P10, simulate_step → _compute_derivatives unpacks 28 elements from
+#   setup_params.  Calling this function with the MORL's 8-element params
+#   (k_f, k_r, arb_f, arb_r, c_f, c_r, h_cg, brake_bias_f) caused a JAX
+#   unpack error / shape mismatch.
+#
+#   Fix: expand 8-element params to 28 before passing to simulate_step_fn.
+#   The expansion uses the same logic as _build_default_setup_28 in ocp_solver,
+#   but implemented inline as pure JAX operations so it remains JIT-compatible
+#   and differentiable through the full compute graph.
+#
+#   The 8 MORL parameters map to these 28-param positions:
+#     [0] k_f          → [0]  k_f
+#     [1] k_r          → [1]  k_r
+#     [2] arb_f        → [4]  arb_f
+#     [3] arb_r        → [5]  arb_r
+#     [4] c_f          → [6]  c_ls_bump_f (×0.60)
+#                      → [7]  c_hs_bump_f (×0.40)
+#                      → [8]  c_ls_reb_f  (×0.90)   (LS bump × 1.5)
+#                      → [9]  c_hs_reb_f  (×0.60)   (HS bump × 1.5)
+#     [5] c_r          → [10] c_ls_bump_r (×0.60)
+#                      → [11] c_hs_bump_r (×0.40)
+#                      → [12] c_ls_reb_r  (×0.90)
+#                      → [13] c_hs_reb_r  (×0.60)
+#     [6] h_cg         → [21] h_cg_setup
+#     [7] brake_bias_f → [22] brake_bias_f
+#   Remaining 16 positions: PhysicsNormalizer means (sensible FS defaults).
+#
 # ── PRIMARY BUG FIX: PDY1 corrected from 2.218 × 0.6 → 1.92 ─────────────────
-#
-#   Symptom: Max_Grip_Found = 1.40 G (FS car with Cl=3.0 should be ~1.85-2.0 G)
-#
-#   Root cause — wrong coefficient, wrong justification:
-#       Previous: PDY1 = 2.218 * 0.6 = 1.3308
-#       Comment claimed it was "rescaled for aero contribution"
-#
-#   Why the 0.6 factor is wrong (two independent reasons):
-#
-#   1. Aero adds Fz, not reduces mu.
-#      Aerodynamic downforce raises the vertical load on each tyre.
-#      This is already correctly modelled by:
-#          Fz_f_static += Fz_aero * aero_split_f
-#          Fz_r_static += Fz_aero * aero_split_r
-#      Multiplying PDY1 by 0.6 ALSO reduces the friction coefficient,
-#      double-penalising the car for having aero — physically nonsensical.
-#
-#   2. Load sensitivity degradation is already modelled by PDY2.
-#      The mu() function  mu(Fz) = PDY1 × (1 + PDY2 × dfz)
-#      with PDY2 = -0.25 already reduces the effective friction coefficient
-#      as Fz increases above Fz0.  The 0.6 multiplier was an apparent
-#      attempt to pre-account for this, but PDY2 does it analytically.
-#
-#   Correct value: PDY1 = 1.92
-#      Source: TTC (Tire Test Consortium) Round 8 public data set,
-#      10-inch Hoosier LCO-H2O and R25B tires.
-#      Peak lateral mu values by condition:
-#          Optimal (camber −3°, temp 80°C, 10 psi):   1.95–2.05
-#          Nominal race conditions:                     1.85–1.95
-#          Conservative / cold tyre:                    1.75–1.85
-#      PDY1 = 1.92 represents a well-set-up car in nominal conditions.
-#
-#   Impact: max grip rises from 1.40 G → ~1.80–2.00 G, consistent with
-#   the physical expectation for a 230 kg car with Cl=3.0 aero package.
-#
 # ── ay_sweep extended from [0.8, 2.0] G to [0.5, 2.5] G, 300→1000 points ─────
-#   With PDY1=1.92, optimal setups approach ~1.90–2.00 G.  The previous
-#   ceiling of 2.0 G left < 0.05 G of headroom, meaning the log-sum-exp
-#   smooth maximum was being evaluated in a region where all sweep points
-#   had nearly-identical scores near the plateau, artificially compressing
-#   the gradient signal.  Extending to 2.5 G adds clean headroom.
-#   Lower bound 0.5 G (from 0.8 G) prevents the sigmoid ramp-in from
-#   biasing the smooth maximum at low ay values.
-#   1000 points: step size 0.005 G (identical to before).
-#
 # ── _LSE_BETA raised from 10 → 20 ─────────────────────────────────────────────
-#   The log-sum-exp smooth maximum overestimates the true maximum by
-#   approximately log(N_eff) / beta, where N_eff is the effective support width.
-#   For a 0.10 G-wide peak with 0.005 G steps: N_eff ≈ 20 points.
-#       beta=10: overestimate ≈ log(20)/10 = 0.30 G  (significant bias)
-#       beta=20: overestimate ≈ log(20)/20 = 0.15 G  (halved)
-#   Higher beta also concentrates gradients near the true maximum, giving
-#   the TRPO optimizer a sharper fitness landscape to follow.
-#   No differentiability concern: d/dx[logsumexp] = softmax, non-zero everywhere.
-#
 # ── FIX 4 (retained): freq_penalty absent from grip objective ─────────────────
 # ── FIX 5 (retained): normalised centering penalty ────────────────────────────
 # ─────────────────────────────────────────────────────────────────────────────
@@ -75,7 +53,71 @@ import jax.numpy as jnp
 # ── BUG FIX: raised from 10 → 20 to halve the smooth-max bias ────────────────
 _LSE_BETA = 20.0
 
-# ADD this new function above compute_skidpad_objective:
+
+def _expand_8_to_28_setup(params_8):
+    """
+    Expand the 8-element MORL setup vector to the 28-element P10 format.
+
+    This is a pure JAX operation — JIT-compatible and differentiable.
+    Used by compute_step_steer_objective so it can accept either an 8-element
+    (MORL/analytical) or 28-element (full P10) setup vector.
+
+    Parameters
+    ----------
+    params_8 : jnp.ndarray shape (8,)
+        [k_f, k_r, arb_f, arb_r, c_f, c_r, h_cg, brake_bias_f]
+
+    Returns
+    -------
+    params_28 : jnp.ndarray shape (28,)
+        Full P10 setup vector.  Unmapped positions filled with
+        PhysicsNormalizer.setup_mean values (sensible FS defaults).
+    """
+    import jax.numpy as jnp
+    from models.vehicle_dynamics import PhysicsNormalizer
+
+    k_f          = params_8[0]
+    k_r          = params_8[1]
+    arb_f        = params_8[2]
+    arb_r        = params_8[3]
+    c_f          = params_8[4]
+    c_r          = params_8[5]
+    h_cg         = params_8[6]
+    brake_bias_f = params_8[7]
+
+    # 4-way damper split — identical to _build_default_setup_28
+    c_ls_bump_f = c_f * 0.60
+    c_hs_bump_f = c_f * 0.40
+    c_ls_reb_f  = c_f * 0.90    # 0.60 × 1.5
+    c_hs_reb_f  = c_f * 0.60    # 0.40 × 1.5
+
+    c_ls_bump_r = c_r * 0.60
+    c_hs_bump_r = c_r * 0.40
+    c_ls_reb_r  = c_r * 0.90
+    c_hs_reb_r  = c_r * 0.60
+
+    # Defaults for unmapped positions from PhysicsNormalizer.setup_mean
+    m = PhysicsNormalizer.setup_mean
+
+    return jnp.array([
+        k_f,           k_r,            # [0-1]  springs
+        m[2],          m[3],           # [2-3]  k_heave_f/r (default 5000 N/m)
+        arb_f,         arb_r,          # [4-5]  ARBs
+        c_ls_bump_f,   c_hs_bump_f,    # [6-7]  front damper bump
+        c_ls_reb_f,    c_hs_reb_f,     # [8-9]  front damper rebound
+        c_ls_bump_r,   c_hs_bump_r,    # [10-11] rear damper bump
+        c_ls_reb_r,    c_hs_reb_r,     # [12-13] rear damper rebound
+        m[14],         m[15],          # [14-15] v_knee_f/r (default 0.10 m/s)
+        m[16],         m[17],          # [16-17] toe_f/r
+        m[18],         m[19],          # [18-19] camber_f/r_deg
+        m[20],                         # [20]    caster_deg
+        h_cg,                          # [21]    h_cg_setup
+        brake_bias_f,                  # [22]    brake_bias_f
+        m[23],                         # [23]    diff_lock (default 1.0)
+        m[24],         m[25],          # [24-25] arb_preload_f/r (default 0.0)
+        m[26],         m[27],          # [26-27] bumpstop_gap_f/r
+    ])
+
 
 def compute_step_steer_objective(simulate_step_fn, setup_params, x_init):
     """
@@ -86,7 +128,33 @@ def compute_step_steer_objective(simulate_step_fn, setup_params, x_init):
     Returns: -overshoot_penalty (higher = better damped = more stable transient)
     A well-damped car: wz peaks once then settles. Overdamped: slow response.
     Target: critically damped response (ζ≈0.7), penalise both over and under.
+
+    P10 SETUP NOTE
+    ──────────────
+    simulate_step_fn (DifferentiableMultiBodyVehicle.simulate_step) requires
+    setup_params of shape (28,) in P10.  This function accepts EITHER:
+      • shape (28,) — passed directly to simulate_step_fn unchanged
+      • shape (8,)  — automatically expanded to (28,) via _expand_8_to_28_setup
+                      so the MORL's analytical 8-param vector can be used here
+                      without modifying the MORL caller.
+
+    Callers passing 8-element params will lose fine damper control (4-way split
+    is approximated from the single c_f/c_r value) but the yaw response signal
+    is still physically meaningful and differentiable.
     """
+    # ── P10 setup expansion ───────────────────────────────────────────────────
+    # Python-level shape check is safe here because this function is not itself
+    # decorated with @jax.jit — it is called inside jitted callers, but the
+    # shape check executes at trace time (Python level) not at runtime.
+    if setup_params.shape[-1] == 8:
+        setup_params = _expand_8_to_28_setup(setup_params)
+    elif setup_params.shape[-1] != 28:
+        raise ValueError(
+            f"compute_step_steer_objective: setup_params must have shape (8,) or (28,). "
+            f"Got shape {setup_params.shape}. "
+            f"Pass either the 8-element MORL vector or a full 28-element P10 setup."
+        )
+
     dt = 0.005
     u_step = jnp.array([0.08, 500.0])   # steering step + mild throttle
 
@@ -111,6 +179,7 @@ def compute_step_steer_objective(simulate_step_fn, setup_params, x_init):
     # Combined: lower = better transient response
     return -(overshoot_cost + 0.5 * settling_cost)
 
+
 def compute_skidpad_objective(simulate_step_fn, params, x_init, dt=0.005, T_max=2.0):
     """
     Differentiable analytical steady-state cornering balance.
@@ -120,6 +189,10 @@ def compute_skidpad_objective(simulate_step_fn, params, x_init, dt=0.005, T_max=
     balance is computed analytically, not by integrating the ODE.  This is
     intentional — the analytical formulation is exact, fully differentiable
     everywhere, and does not require a simulation horizon to reach steady-state.
+
+    SETUP PARAMS NOTE: this function reads only params[0..7] (k_f, k_r, arb_f,
+    arb_r, c_f, c_r, h_cg, brake_bias_f) — it is compatible with both the
+    8-element MORL vector and a full 28-element P10 vector.  No expansion needed.
 
     Returns
     -------
@@ -166,11 +239,6 @@ def compute_skidpad_objective(simulate_step_fn, params, x_init, dt=0.005, T_max=
     g  = 9.81
 
     # ── PRIMARY BUG FIX: PDY1 corrected from 2.218*0.6=1.33 → 1.92 ──────────
-    # See module-level change log for full explanation.
-    # PDY1 = 1.92 is the peak lateral friction coefficient for a 10-inch
-    # Hoosier LCO-H2O / R25B in nominal Formula SAE race conditions.
-    # PDY2 = -0.25 degrades mu at higher vertical loads (load sensitivity).
-    # Fz0 = 1000N is the reference load at which PDY1 is defined.
     PDY1 = 1.92
     PDY2 = -0.25
     Fz0  = 1000.0
@@ -183,7 +251,6 @@ def compute_skidpad_objective(simulate_step_fn, params, x_init, dt=0.005, T_max=
     Fz_r_static = m * g * lf / L
 
     # Aerodynamic downforce at nominal skidpad speed (15 m/s ≈ 54 km/h)
-    # This correctly increases Fz — it does NOT reduce PDY1.
     v_corner     = 15.0
     rho          = VP.get('rho_air', 1.225)
     A            = VP.get('A_ref',   1.1)
@@ -195,20 +262,14 @@ def compute_skidpad_objective(simulate_step_fn, params, x_init, dt=0.005, T_max=
     Fz_f_static  += Fz_aero * aero_split_f
     Fz_r_static  += Fz_aero * aero_split_r
 
-    # ── ay_sweep extended to [0.5, 2.5] G, 1000 points ───────────────────────
-    # Previous: linspace(0.8, 2.0, 300) — ceiling too close to expected peak.
-    # With PDY1=1.92, optimal setups reach ~1.90–2.00 G.
-    # 1000 points × (2.5-0.5)/1000 = 0.005 G/step (identical resolution).
     ay_sweep = jnp.linspace(0.5, 2.5, 1000)
 
     def compute_balance_at_ay(ay_g):
         ay = ay_g * g
 
-        # Geometric lateral load transfer (roll centre height effect)
         LLT_geo_f = m * ay * h_rc_f / t_w
         LLT_geo_r = m * ay * h_rc_r / t_r
 
-        # Elastic lateral load transfer (roll stiffness distribution)
         h_arm_f       = h_cg - h_rc_f
         h_arm_r       = h_cg - h_rc_r
         LLT_elastic_f = m * ay * h_arm_f / t_w * lltd_f_elastic
@@ -217,18 +278,15 @@ def compute_skidpad_objective(simulate_step_fn, params, x_init, dt=0.005, T_max=
         LLT_f = LLT_geo_f + LLT_elastic_f
         LLT_r = LLT_geo_r + LLT_elastic_r
 
-        # Per-wheel vertical loads
         Fz_fo = jnp.maximum(10.0, Fz_f_static / 2 + LLT_f)
         Fz_fi = jnp.maximum(10.0, Fz_f_static / 2 - LLT_f)
         Fz_ro = jnp.maximum(10.0, Fz_r_static / 2 + LLT_r)
         Fz_ri = jnp.maximum(10.0, Fz_r_static / 2 - LLT_r)
 
-        # Inner-wheel lift penalty (smooth relu — avoids hard constraint)
         inner_lift_f = jax.nn.relu(50.0 - (Fz_f_static / 2 - LLT_f))
         inner_lift_r = jax.nn.relu(50.0 - (Fz_r_static / 2 - LLT_r))
         lift_penalty = (inner_lift_f + inner_lift_r) * 0.0005
 
-        # Camber compensation: outer tyre gains bonus at optimal effective camber
         phi_est              = (m * ay * h_cg) / (Kroll_total + 1.0)
         phi_deg              = jnp.rad2deg(phi_est)
         effective_camber_out = static_camber + phi_deg * camber_gain_f
@@ -237,17 +295,13 @@ def compute_skidpad_objective(simulate_step_fn, params, x_init, dt=0.005, T_max=
             -0.5 * ((effective_camber_out - camber_opt) / 2.0) ** 2
         )
 
-        # Peak friction coefficient with Pacejka load sensitivity
-        # mu(Fz) = PDY1 * (1 + PDY2 * (Fz - Fz0) / Fz0)
         def mu(Fz):
             dfz = (Fz - Fz0) / Fz0
             return PDY1 * (1.0 + PDY2 * dfz)
 
-        # Maximum lateral force capacity per axle
         Fy_f_max = mu(Fz_fo) * Fz_fo * camber_bonus + mu(Fz_fi) * Fz_fi
         Fy_r_max = mu(Fz_ro) * Fz_ro * camber_bonus + mu(Fz_ri) * Fz_ri
 
-        # Required lateral force (cornering balance)
         Fy_required = m * ay
         Fy_f_req    = Fy_required * lr / L
         Fy_r_req    = Fy_required * lf / L
@@ -255,12 +309,8 @@ def compute_skidpad_objective(simulate_step_fn, params, x_init, dt=0.005, T_max=
         util_f = Fy_f_req / (Fy_f_max + 1e-3)
         util_r = Fy_r_req / (Fy_r_max + 1e-3)
 
-        # Axle balance: 1.0 = perfect balance, < 1.0 = misbalanced
         balance = 1.0 - jnp.abs(util_f - util_r)
 
-        # FIX 2 (retained): smooth feasibility via sigmoid product
-        # sharpness=10 → sigmoid = 0.5 at util=1.0 (tyre limit), = 0.99 at util=0.54
-        # Replaced hard jnp.where which had zero gradient at infeasible setups.
         sharpness     = 10.0
         feasible_soft = (jax.nn.sigmoid((1.0 - util_f) * sharpness) *
                          jax.nn.sigmoid((1.0 - util_r) * sharpness))
@@ -269,19 +319,14 @@ def compute_skidpad_objective(simulate_step_fn, params, x_init, dt=0.005, T_max=
 
     grip_scores = jax.vmap(compute_balance_at_ay)(ay_sweep)
 
-    # FIX 3 (retained, beta raised to 20): smooth maximum via log-sum-exp
-    # Overestimate ≈ log(N_eff)/beta ≈ log(20)/20 = 0.15 G (vs 0.30 G at beta=10)
     smooth_max = (1.0 / _LSE_BETA) * jax.nn.logsumexp(_LSE_BETA * grip_scores)
 
-    # ── Stiffness penalty (FIX 5 retained — normalised centering) ────────────
-    # Measures FRACTIONAL deviation from nominal spring rate so penalty is
-    # O(spring_rate)-independent.  Worst case at k=60 kN/m: 0.020 G. ✓
-    bump_rms        = 0.007            # m — road roughness RMS amplitude
+    bump_rms        = 0.007
     fz_variation_f  = wheel_rate_f * bump_rms
     fz_variation_r  = wheel_rate_r * bump_rms
 
-    k_ref_centering = 25000.0          # N/m — nominal FSAE spring rate
-    w_centering     = 0.01             # G per unit fractional²
+    k_ref_centering = 25000.0
+    w_centering     = 0.01
 
     centering_penalty = w_centering * (
         ((k_f - k_ref_centering) / k_ref_centering) ** 2 +
@@ -294,19 +339,13 @@ def compute_skidpad_objective(simulate_step_fn, params, x_init, dt=0.005, T_max=
         + centering_penalty
     )
 
-    # ── Brake balance penalty (FIX 1 coefficient retained) ───────────────────
-    # Worst case (0.3 error): 3.0 × 0.09 = 0.27 G ✓  (previous 200.0 → 18 G)
     Fz_f_brake   = (m * g * lr / L) + (m * 1.0 * g * h_cg / L)
     Fz_r_brake   = (m * g * lf / L) - (m * 1.0 * g * h_cg / L)
     ideal_bias   = Fz_f_brake / (Fz_f_brake + Fz_r_brake)
     brake_balance_penalty = 3.0 * (brake_bias_f - ideal_bias) ** 2
 
-    # ── Final grip objective (FIX 4 retained: freq_penalty absent) ───────────
-    # Frequency/ride objective is exclusively compute_frequency_response_objective.
     obj_grip = smooth_max - stiffness_penalty - brake_balance_penalty
 
-    # ── Safety constraint — understeer margin at 1.5 G reference lateral ─────
-    # Positive = rear transfers more load proportion than front = understeer = safe.
     ay_ref         = 1.5 * g
     LLT_ref        = m * ay_ref * h_cg / t_w
     LLT_geo_f_ref  = m * ay_ref * h_rc_f / t_w
@@ -331,6 +370,9 @@ def compute_frequency_response_objective(simulate_step_fn, params, x_init,
 
     This function is the SOLE enforcer of ride frequency / wheel-hop constraints.
     compute_skidpad_objective no longer touches frequency penalties (FIX 4).
+
+    SETUP PARAMS NOTE: reads only params[0..1] (k_f, k_r) and params[4..5]
+    (c_f, c_r) — compatible with both 8-element and 28-element setup vectors.
 
     Unchanged from previous version — correctly scaled and fully differentiable.
     """

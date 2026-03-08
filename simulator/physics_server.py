@@ -260,7 +260,10 @@ class PhysicsServer:
         # Tire temperatures — pre-warmed (70°C ≈ 93% grip)
         # Starting at 25°C (34% grip) gives only 1.9x margin on 9m hairpin at 5m/s;
         # any speed transient above 6.9m/s → slide. 70°C gives 3.8x margin.
-        s = s.at[28].set(70.0).at[29].set(70.0).at[30].set(70.0).at[31].set(70.0)
+        # Tire temperatures — pre-warmed (70°C ≈ 93% grip)
+        # Initialize all 10 thermal states (indices 28-37) for front and rear axles
+        for i in range(28, 38):
+            s = s.at[i].set(70.0)
 
         h_cg_viz = VP_DICT.get('h_cg', 0.30)
         print(f"[Server] Initial state: Z_eq={Z_eq*1000:.1f}mm (spring coord) | "
@@ -474,10 +477,11 @@ class PhysicsServer:
         kappa_rr = float(np.clip((v_wheel_rr - vx) / vx_safe, -1.0, 1.0))
 
         # Thermal states (indices 28-31 = tire surface temps)
-        T_fl = float(s[28]) if s[28] > 0 else 25.0
+        # Front ribs are indices 29-31, Rear ribs are indices 34-36
+        T_fl = float(s[29]) if s[29] > 0 else 25.0
         T_fr = float(s[29]) if s[29] > 0 else 25.0
-        T_rl = float(s[30]) if s[30] > 0 else 25.0
-        T_rr = float(s[31]) if s[31] > 0 else 25.0
+        T_rl = float(s[34]) if s[34] > 0 else 25.0
+        T_rr = float(s[34]) if s[34] > 0 else 25.0
         T_fl = float(np.clip(T_fl, 15.0, 120.0))
         T_fr = float(np.clip(T_fr, 15.0, 120.0))
         T_rl = float(np.clip(T_rl, 15.0, 120.0))
