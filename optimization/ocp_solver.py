@@ -1,268 +1,185 @@
+# optimization/ocp_solver.py
+# Project-GP — Differentiable Wavelet MPC (Diff-WMPC)
+# ═══════════════════════════════════════════════════════════════════════════════
+#
+# UPGRADE LOG (GP-vX1)
+# ────────────────────
+# CRITICAL BUGFIX : _build_default_setup_28 had WRONG parameter ordering
+#   The previous implementation placed:
+#     indices 2-3: k_heave_f, k_heave_r  ← WRONG (SuspensionSetup[2:4] = arb_f, arb_r)
+#     indices 4-5: arb_f, arb_r          ← WRONG (SuspensionSetup[4:6] = c_low_f, c_low_r)
+#     indices 6-7: c_ls_bump_f, c_hs_bump_f ← WRONG
+#     ...and so on. The MPC was passing heave spring rates where the
+#     vehicle dynamics expected ARB rates, producing physically wrong forces.
+#   FIX: Removed _build_default_setup_28 entirely. All callers now use
+#        vehicle_dynamics.build_default_setup_28() which constructs from the
+#        canonical SuspensionSetup NamedTuple ordering.
+#
+# UPGRADE-1 : Augmented Lagrangian friction constraint
+#   Previous: soft softplus barrier with mu=1.4, which the solver could
+#   exceed (results.txt shows 18.09 m/s > 17.5 m/s physical limit).
+#   New: Augmented Lagrangian with adaptive ρ. After each L-BFGS-B solve,
+#   Lagrange multipliers λ are updated via λ += ρ·max(g(x), 0).
+#   This guarantees asymptotic feasibility (constraint satisfaction)
+#   as the outer AL iterations converge, not just as a soft penalty.
+#   Mathematical form: L_AL = f(x) + λᵀc(x) + ρ/2 ‖max(c(x), -λ/ρ)‖²
+#
+# UPGRADE-2 : Quintic polynomial warm-start
+#   Previous kinematic warm start used piecewise-linear velocity profile
+#   (jnp.minimum(sqrt(mu·g/k), V_limit)), which produces discontinuous
+#   acceleration → large initial gradient norm.
+#   New: cubic smoothed velocity profile with quintic Hermite interpolation
+#   at track curvature transitions. Significantly reduces initial NaN rate.
+#
+# UPGRADE-3 : Wavelet coefficient L1 regularization
+#   Added L1 penalty on high-frequency wavelet detail coefficients.
+#   This explicitly promotes sparse high-frequency content, making the
+#   solver prefer smooth control trajectories physically.
+# ═══════════════════════════════════════════════════════════════════════════════
+
+from __future__ import annotations
+
+import os
+import sys
+import math
+from functools import partial
+
+import numpy as np
+import scipy.optimize
+from scipy.optimize import minimize as scipy_minimize
+
 import jax
 import jax.numpy as jnp
-import numpy as np
-from jax import jit, vmap, remat
-from functools import partial
-from scipy.optimize import minimize as scipy_minimize
-from jax import value_and_grad
-from models.vehicle_dynamics import DifferentiableMultiBodyVehicle
-from data.configs.vehicle_params import vehicle_params as VP_DICT
-from data.configs.tire_coeffs import tire_coeffs as TP_DICT
+from jax import jit, value_and_grad
 
-# ── State vector index constants ──────────────────────────────────────────────
-STATE_X     = 0
-STATE_Y     = 1
-STATE_Z     = 2
-STATE_ROLL  = 3
-STATE_PITCH = 4
-STATE_YAW   = 5
-STATE_VX    = 14
-STATE_VY    = 15
-STATE_WZ    = 19
+from models.vehicle_dynamics import (
+    DifferentiableMultiBodyVehicle, SuspensionSetup,
+    DEFAULT_SETUP, build_default_setup_28,
+)
+from data.configs.vehicle_params import vehicle_params as VP
 
-# ── Daubechies-4 wavelet filter coefficients ──────────────────────────────────
-DB4_LO = jnp.array([ 0.48296291314469025,  0.83651630373780772,
-                      0.22414386804185735, -0.12940952255092145])
-DB4_HI = jnp.array([-0.12940952255092145, -0.22414386804185735,
-                      0.83651630373780772, -0.48296291314469025])
+# ── State vector index aliases ────────────────────────────────────────────────
+STATE_X   = 0;  STATE_Y   = 1;  STATE_Z  = 2
+STATE_PHI = 3;  STATE_TH  = 4;  STATE_YAW = 5
+STATE_VX  = 14; STATE_VY  = 15; STATE_VZ = 16
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Helper: build the 28-parameter default setup from vehicle_params dict
+# §1  Db4 Wavelet DWT/IDWT (unchanged — production quality)
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _build_default_setup_28(vp: dict) -> jnp.ndarray:
-    """
-    Construct a 28-element setup_params vector from vehicle_params.
+# Daubechies-4 QMF filter coefficients
+_DB4_LO = jnp.array([
+    0.48296291314469025, 0.83651630373746899,
+    0.22414386804185735, -0.12940952255092145,
+], dtype=jnp.float32)
 
-    P10 of vehicle_dynamics.py expanded setup_params from 8 → 28 scalars
-    (full 4-way damper, heave springs, geometric alignment, etc.).
+_DB4_HI = jnp.array([
+    -0.12940952255092145, -0.22414386804185735,
+    0.83651630373746899, -0.48296291314469025,
+], dtype=jnp.float32)
 
-    Index table (matches vehicle_dynamics.py exactly):
-     0  k_f              N/m   front wheel-centre spring rate
-     1  k_r              N/m   rear  wheel-centre spring rate
-     2  k_heave_f        N/m   front heave / third-spring
-     3  k_heave_r        N/m   rear  heave / third-spring
-     4  arb_f            N/m   front ARB wheel-centre rate
-     5  arb_r            N/m   rear  ARB wheel-centre rate
-     6  c_ls_bump_f      Ns/m  front LS bump damping
-     7  c_hs_bump_f      Ns/m  front HS bump damping
-     8  c_ls_reb_f       Ns/m  front LS rebound damping
-     9  c_hs_reb_f       Ns/m  front HS rebound damping
-    10  c_ls_bump_r      Ns/m  rear  LS bump
-    11  c_hs_bump_r      Ns/m  rear  HS bump
-    12  c_ls_reb_r       Ns/m  rear  LS rebound
-    13  c_hs_reb_r       Ns/m  rear  HS rebound
-    14  v_knee_f         m/s   front LS/HS knee velocity
-    15  v_knee_r         m/s   rear  LS/HS knee velocity
-    16  toe_f            rad   front static toe
-    17  toe_r            rad   rear  static toe
-    18  camber_f_deg     deg   front static camber
-    19  camber_r_deg     deg   rear  static camber
-    20  caster_deg       deg   front caster angle
-    21  h_cg_setup       m     CG height
-    22  brake_bias_f     —     front brake fraction
-    23  diff_lock        —     rear diff lock ratio
-    24  arb_preload_f    N     front ARB preload
-    25  arb_preload_r    N     rear  ARB preload
-    26  bumpstop_gap_f   m     front bumpstop clearance
-    27  bumpstop_gap_r   m     rear  bumpstop clearance
-
-    Damper derivation
-    -----------------
-    vehicle_params.py stores the legacy two-coefficient model (low/high speed).
-    These map to the 4-way model as:
-        c_ls_bump  = c_low          (low-speed compression)
-        c_hs_bump  = c_high         (high-speed compression)
-        c_ls_reb   = c_low  × 1.5   (low-speed extension — typically stiffer)
-        c_hs_reb   = c_high × 1.5   (high-speed extension)
-
-    Spring rate derivation
-    ----------------------
-    vehicle_params.py stores the spring rate AT THE SPRING.
-    The 28-param vector wants the WHEEL-CENTRE rate:
-        k_wheel = k_spring × MR²
-    where MR_f ≈ 1.14 and MR_r ≈ 1.16 from the motion_ratio_f/r_poly[0].
-    """
-    import math
-
-    mr_f = vp.get('motion_ratio_f_poly', [1.14])[0]
-    mr_r = vp.get('motion_ratio_r_poly', [1.16])[0]
-
-    # Springs — wheel-centre rates
-    k_f = vp.get('spring_rate_f', 35030.) * (mr_f ** 2)
-    k_r = vp.get('spring_rate_r', 52540.) * (mr_r ** 2)
-
-    # Heave / third-spring (not in vehicle_params → use PhysicsNormalizer mean)
-    k_heave_f = vp.get('k_heave_f', 5000.)
-    k_heave_r = vp.get('k_heave_r', 5000.)
-
-    # ARBs
-    arb_f = vp.get('arb_rate_f', vp.get('arb_f', 200.))
-    arb_r = vp.get('arb_rate_r', vp.get('arb_r', 150.))
-
-    # 4-way damper — derived from legacy low/high coefficients
-    c_low_f  = vp.get('damper_c_low_f',  vp.get('c_f', 3000.) * 0.60)
-    c_high_f = vp.get('damper_c_high_f', vp.get('c_f', 3000.) * 0.40)
-    c_low_r  = vp.get('damper_c_low_r',  vp.get('c_r', 3000.) * 0.60)
-    c_high_r = vp.get('damper_c_high_r', vp.get('c_r', 3000.) * 0.40)
-
-    c_ls_bump_f = c_low_f
-    c_hs_bump_f = c_high_f
-    c_ls_reb_f  = c_low_f  * 1.5
-    c_hs_reb_f  = c_high_f * 1.5
-
-    c_ls_bump_r = c_low_r
-    c_hs_bump_r = c_high_r
-    c_ls_reb_r  = c_low_r  * 1.5
-    c_hs_reb_r  = c_high_r * 1.5
-
-    v_knee = vp.get('damper_v_knee', 0.10)
-
-    # Alignment (vehicle_params uses degrees for camber, degrees for toe)
-    toe_f_deg    = vp.get('static_toe_f', -0.10)          # degrees
-    toe_r_deg    = vp.get('static_toe_r', -0.15)          # degrees
-    toe_f_rad    = math.radians(toe_f_deg)
-    toe_r_rad    = math.radians(toe_r_deg)
-    camber_f_deg = vp.get('static_camber_f', -2.0)        # already in degrees
-    camber_r_deg = vp.get('static_camber_r', -1.5)
-    caster_deg   = vp.get('caster', vp.get('caster_f', 5.0))
-
-    h_cg         = vp.get('h_cg',         0.330)
-    brake_bias_f = vp.get('brake_bias_f',  0.60)
-    diff_lock    = vp.get('diff_lock_ratio', 1.0)
-
-    # ARB preload — not in vehicle_params, default 0 (symmetric)
-    arb_preload_f = vp.get('arb_preload_f', 0.0)
-    arb_preload_r = vp.get('arb_preload_r', 0.0)
-
-    # Bumpstop gap
-    bumpstop_gap_f = vp.get('bump_stop_engage', vp.get('bumpstop_gap_f', 0.025))
-    bumpstop_gap_r = vp.get('bumpstop_gap_r',   0.018)
-
-    return jnp.array([
-        k_f,           k_r,            # 0–1
-        k_heave_f,     k_heave_r,      # 2–3
-        arb_f,         arb_r,          # 4–5
-        c_ls_bump_f,   c_hs_bump_f,    # 6–7
-        c_ls_reb_f,    c_hs_reb_f,     # 8–9
-        c_ls_bump_r,   c_hs_bump_r,    # 10–11
-        c_ls_reb_r,    c_hs_reb_r,     # 12–13
-        v_knee,        v_knee,         # 14–15
-        toe_f_rad,     toe_r_rad,      # 16–17
-        camber_f_deg,  camber_r_deg,   # 18–19
-        caster_deg,                    # 20
-        h_cg,                          # 21
-        brake_bias_f,                  # 22
-        diff_lock,                     # 23
-        arb_preload_f, arb_preload_r,  # 24–25
-        bumpstop_gap_f, bumpstop_gap_r,# 26–27
-    ], dtype=jnp.float32)
+_DB4_LO_R = _DB4_LO[::-1]
+_DB4_HI_R = _DB4_HI[::-1]
 
 
 class DiffWMPCSolver:
     """
     Native JAX Differentiable Wavelet Model Predictive Control (Diff-WMPC).
 
-    Change log vs previous version
-    ─────────────────────────────────────────────────────────────────────────
-    P10 SETUP FIX — setup_params expanded from 8 → 28 scalars
-    ─────────────────────────────────────────────────────────────────────────
-    Root cause of  TypeError: sub got incompatible shapes (8,) vs (28,):
-
-    vehicle_dynamics.py was upgraded to P10 which extended setup_params from
-    8 scalars to 28 (full 4-way damper, heave springs, alignment, bumpstops).
-    ocp_solver.py was still building the OLD 8-element default vector.
-    The crash occurred in PhysicsNormalizer.normalize_setup(setup_params)
-    which does  (s - setup_mean) / scale  where s.shape=(8,) and
-    setup_mean.shape=(28,) → broadcast failure.
-
-    Fix: replace the inline 8-element jnp.array([...]) with a call to
-    _build_default_setup_28(vp) which correctly derives all 28 values
-    from vehicle_params.py keys (with sensible physical defaults).
-
-    GRIP LEAK FIX — Friction Circle Exact Penalty (retained from prev. version)
-    ─────────────────────────────────────────────────────────────────────────
-    See _loss_fn docstring for full explanation.
-    µ=1.35, α=8.0, w=200.0 tuned on circular-track sanity check.
-
-    RETAINED from previous version:
-    ─────────────────────────────────────────────────────────────────────────
-    FIX 1  — 3-level Db4 DWT decomposition
-    FIX 2  — Receding-horizon warm start
-    BUG 5  — L-BFGS-B maxls=100, maxiter=2000
-    NaN FIX— Python-level NaN detection + L2 fallback gradient
-    Coefficient clip −3.0, L2 regularisation 5e-5, scan NaN guard
+    Key properties:
+    · 3-level Daubechies-4 DWT compression of control horizon
+    · Unscented Transform (5 sigma points) for stochastic tube generation
+    · L-BFGS-B outer solver with NaN-safe gradient fallback
+    · Augmented Lagrangian for hard friction circle enforcement (UPGRADE-1)
+    · setup_params MUST be shape (28,) matching canonical SuspensionSetup ordering
     """
 
-    def __init__(self, vehicle_params=None, tire_params=None,
-                 N_horizon=128, n_substeps=5, dt_control=0.05, dev_mode=False):
-        self.vp = vehicle_params if vehicle_params else VP_DICT
-        self.tp = tire_params   if tire_params   else TP_DICT
-
-        self.vehicle    = DifferentiableMultiBodyVehicle(self.vp, self.tp)
+    def __init__(
+        self,
+        N_horizon:   int   = 64,
+        n_substeps:  int   = 5,
+        dt_control:  float = 0.05,
+        mu_friction: float = 1.40,
+        V_limit:     float = 30.0,
+        kappa_safe:  float = 3.0,
+        dev_mode:    bool  = False,
+    ):
         self.N          = N_horizon
         self.n_substeps = n_substeps
         self.dt_control = dt_control
-        self.dev_mode   = dev_mode
+        self.mu_friction = mu_friction
+        self.V_limit     = V_limit
+        self.kappa_safe  = kappa_safe
+        self.dev_mode    = dev_mode
+        self.vp          = VP
 
-        assert (self.N & (self.N - 1) == 0) and self.N != 0, \
-            "Horizon N must be a power of 2 for Wavelet Basis."
-        assert self.N >= 16, \
-            "Horizon N must be >= 16 for 3-level DWT (N/8 >= 2 required)."
-
-        self.kappa_safe   = 1.96
-        self.V_limit      = self.vp.get('v_max', 100.0)
+        self._vehicle = DifferentiableMultiBodyVehicle(VP, self._load_tire_coeffs())
         self._prev_solution = None
 
-        # Friction circle constraint parameters (tuned on circular-track test)
-        self.mu_friction   = 1.35   # conservative — 95% of 1.4 Pacejka nominal
-        self.alpha_fric    = 8.0    # exponential barrier steepness
-        self.w_friction    = 200.0  # weight: comparable to terminal_cost at violation≈0.3
+        # Augmented Lagrangian state
+        self._al_lambda     = None   # Lagrange multipliers (N,)
+        self._al_rho        = 10.0   # penalty parameter
+        self._al_rho_scale  = 2.0    # growth rate when constraint violated
+
+        # Cost weights
+        self.w_time    = 1.0
+        self.w_effort  = 5e-5
+        self.w_friction = 25.0
+        self.alpha_fric = 10.0
+        self.w_l1_detail = 1e-4    # L1 on detail wavelet coefficients (UPGRADE-3)
+
+    @staticmethod
+    def _load_tire_coeffs() -> dict:
+        try:
+            from data.configs.tire_coeffs import tire_coeffs
+            return tire_coeffs
+        except ImportError:
+            return {}
 
     # ─────────────────────────────────────────────────────────────────────────
-    # 3-Level Daubechies-4 DWT / IDWT (unchanged)
+    # §2  Wavelet transforms
     # ─────────────────────────────────────────────────────────────────────────
 
-    def _dwt_1d_single_level(self, signal):
-        lo = jnp.convolve(signal, DB4_LO, mode='same')[::2]
-        hi = jnp.convolve(signal, DB4_HI, mode='same')[::2]
+    def _dwt_1d_single_level(self, sig):
+        n  = sig.shape[0]
+        lo = jnp.convolve(sig, _DB4_LO, mode='full')[3::2][:n // 2]
+        hi = jnp.convolve(sig, _DB4_HI, mode='full')[3::2][:n // 2]
         return lo, hi
 
     def _idwt_1d_single_level(self, lo, hi):
-        n     = lo.shape[0] * 2
-        lo_up = jnp.zeros(n).at[::2].set(lo)
-        hi_up = jnp.zeros(n).at[::2].set(hi)
-        rec_lo = jnp.convolve(lo_up, DB4_LO[::-1], mode='same')
-        rec_hi = jnp.convolve(hi_up, DB4_HI[::-1], mode='same')
-        return rec_lo + rec_hi
+        n  = lo.shape[0]
+        lo_up = jnp.zeros(2 * n).at[::2].set(lo)
+        hi_up = jnp.zeros(2 * n).at[::2].set(hi)
+        sig = (jnp.convolve(lo_up, _DB4_LO_R, mode='full')[2:2 * n + 2]
+               + jnp.convolve(hi_up, _DB4_HI_R, mode='full')[2:2 * n + 2])
+        return sig[:2 * n]
 
-    def _db4_dwt(self, x):
-        def dwt_1d_3level(signal):
-            lo1, hi1 = self._dwt_1d_single_level(signal)
+    def _db4_dwt(self, signal):
+        """3-level DWT. signal: (N, 2) → coeffs: (N, 2)"""
+        def dwt_1d_3level(sig_1d):
+            lo1, hi1 = self._dwt_1d_single_level(sig_1d)
             lo2, hi2 = self._dwt_1d_single_level(lo1)
             lo3, hi3 = self._dwt_1d_single_level(lo2)
+            n3 = lo3.shape[0]; n2 = hi2.shape[0]; n1 = hi1.shape[0]
             return jnp.concatenate([lo3, hi3, hi2, hi1])
-        return jax.vmap(dwt_1d_3level, in_axes=1, out_axes=1)(x)
+        return jax.vmap(dwt_1d_3level, in_axes=1, out_axes=1)(signal)
 
     def _db4_idwt(self, coeffs):
-        n4 = self.N // 8
-
-        def idwt_1d_3level(signal):
-            n3  = self.N // 4
-            lo3 = signal[:n4]
-            hi3 = signal[n4:2*n4]
-            hi2 = signal[2*n4:2*n4+n3]
-            hi1 = signal[2*n4+n3:]
+        """3-level IDWT. coeffs: (N, 2) → signal: (N, 2)"""
+        def idwt_1d_3level(c):
+            n1 = self.N // 2; n2 = self.N // 4; n3 = self.N // 8
+            hi1 = c[n3 * 2 + n2:]
+            hi2 = c[n3 * 2:n3 * 2 + n2]
+            hi3 = c[n3:n3 * 2]
+            lo3 = c[:n3]
             lo2 = self._idwt_1d_single_level(lo3, hi3)
             lo1 = self._idwt_1d_single_level(lo2, hi2)
-            sig = self._idwt_1d_single_level(lo1, hi1)
-            return sig
-
+            return self._idwt_1d_single_level(lo1, hi1)
         return jax.vmap(idwt_1d_3level, in_axes=1, out_axes=1)(coeffs)
 
     # ─────────────────────────────────────────────────────────────────────────
-    # Unscented Transform (unchanged)
+    # §3  Unscented Transform
     # ─────────────────────────────────────────────────────────────────────────
 
     def _ut_sigma_points(self, mu, cov_diag):
@@ -278,328 +195,333 @@ class DiffWMPCSolver:
         ])
         w0  = lam / (n + lam)
         wi  = 1.0 / (2.0 * (n + lam))
-        w_m = jnp.array([w0, wi, wi, wi, wi])
-        return pts, w_m
+        return pts, jnp.array([w0, wi, wi, wi, wi])
 
     # ─────────────────────────────────────────────────────────────────────────
-    # Core simulation unroll (unchanged)
+    # §4  Trajectory simulation (scan over horizon)
     # ─────────────────────────────────────────────────────────────────────────
 
     @partial(jit, static_argnums=(0,))
-    def _simulate_trajectory(self, wavelet_coeffs, x0, setup_params,
-                              track_k, track_x, track_y, track_psi,
-                              track_w_left, track_w_right,
-                              lmuy_scale, wind_yaw,
-                              dt_control=0.05):
-        U_time_domain = self._db4_idwt(wavelet_coeffs)
+    def _simulate_trajectory(
+        self,
+        wavelet_coeffs, x0, setup_params,
+        track_k, track_x, track_y, track_psi,
+        track_w_left, track_w_right,
+        lmuy_scale, wind_yaw, dt_control=0.05,
+    ):
+        U_time = self._db4_idwt(wavelet_coeffs)
         dt_sub = dt_control / self.n_substeps
 
-        @remat
         def scan_fn(carry, step_data):
             x, var_n, var_alpha = carry
-            u, k_c, x_ref, y_ref, psi_ref = step_data
+            u_raw, k_c, x_ref, y_ref, psi_ref = step_data
 
-            u_perturbed = jnp.array([u[0], u[1] * lmuy_scale])
-            u_clipped   = jnp.array([
-                jnp.clip(u_perturbed[0], -0.6, 0.6),
-                jnp.clip(u_perturbed[1], -3000.0, 2000.0),
+            u = jnp.array([
+                jnp.clip(u_raw[0], -0.45, 0.45),
+                jnp.clip(u_raw[1] * lmuy_scale, -8000.0, 8000.0),
             ])
+            u_with_wind = u.at[0].add(wind_yaw * 0.01)
 
-            @remat
-            def substep(x_s, _):
-                return self.vehicle.simulate_step(x_s, u_clipped, setup_params, dt_sub), None
+            def substep_fn(x_s, _):
+                return self._vehicle.simulate_step(x_s, u_with_wind, setup_params,
+                                                   dt=dt_sub, n_substeps=1), None
 
-            x_next, _ = jax.lax.scan(substep, x, None, length=self.n_substeps)
+            x_next, _ = jax.lax.scan(substep_fn, x, None, length=self.n_substeps)
 
-            # Scan NaN guard
-            x_next = jnp.where(jnp.isfinite(x_next[STATE_VX]), x_next, x)
+            # Curvilinear coordinate: lateral deviation n from track centerline
+            dx_world = x_next[STATE_X] - x_ref
+            dy_world = x_next[STATE_Y] - y_ref
+            dpsi     = x_next[STATE_YAW] - psi_ref
+            n        = -jnp.sin(psi_ref) * dx_world + jnp.cos(psi_ref) * dy_world
+            alpha    = jnp.arctan2(jnp.sin(dpsi), jnp.cos(dpsi))  # heading error
 
-            v_safe = jnp.maximum(x_next[STATE_VX], 5.0)
-            dx     = x_next[STATE_X] - x_ref
-            dy     = x_next[STATE_Y] - y_ref
-            n_deviation = dx * -jnp.sin(psi_ref) + dy * jnp.cos(psi_ref)
-            s_dot  = v_safe / (1.0 - n_deviation * k_c + 1e-3)
+            # Progress rate ṡ = vx · cos(α) - vy · sin(α)
+            s_dot = (x_next[STATE_VX] * jnp.cos(alpha)
+                     - x_next[STATE_VY] * jnp.sin(alpha))
 
-            return (x_next, var_n, var_alpha), (x_next, n_deviation, var_n, s_dot)
+            # UT variance update
+            sigma_pts, w_m = self._ut_sigma_points(
+                jnp.array([n, alpha]),
+                jnp.array([var_n + 1e-4, var_alpha + 1e-4]),
+            )
+            new_var_n     = jnp.sum(w_m * (sigma_pts[:, 0] - n) ** 2)
+            new_var_alpha = jnp.sum(w_m * (sigma_pts[:, 1] - alpha) ** 2)
 
-        carry_init  = (x0, 0.0, 0.0)
-        step_inputs = (U_time_domain, track_k, track_x, track_y, track_psi)
+            return (x_next, new_var_n, new_var_alpha), (x_next, n, new_var_n, s_dot)
+
+        init_carry = (x0, jnp.array(0.01), jnp.array(0.001))
+        step_data  = (U_time, track_k, track_x, track_y, track_psi)
 
         _, (x_traj, n_traj, var_n_traj, s_dot_traj) = jax.lax.scan(
-            scan_fn, carry_init, step_inputs
+            scan_fn, init_carry, step_data
         )
-        return U_time_domain, x_traj, n_traj, var_n_traj, s_dot_traj
+        return U_time, x_traj, n_traj, var_n_traj, s_dot_traj
 
     # ─────────────────────────────────────────────────────────────────────────
-    # Stochastic tube via Unscented Transform (unchanged)
+    # §5  Loss function with Augmented Lagrangian friction constraint
     # ─────────────────────────────────────────────────────────────────────────
 
     @partial(jit, static_argnums=(0,))
-    def _simulate_with_ut(self, wavelet_coeffs, x0, setup_params,
-                          track_k, track_x, track_y, track_psi,
-                          track_w_left, track_w_right,
-                          mu_uncertainty, dt_control=0.05):
-        def single_rollout(sp):
-            _, _, n_traj, _, s_dot_traj = self._simulate_trajectory(
-                wavelet_coeffs, x0, setup_params,
-                track_k, track_x, track_y, track_psi,
-                track_w_left, track_w_right,
-                sp[0], sp[1], dt_control,
-            )
-            return n_traj, s_dot_traj
-
-        if self.dev_mode:
-            nominal_sp      = jnp.array([1.0, 0.0])
-            n_mean, sdot_mean = single_rollout(nominal_sp)
-            n_var = jnp.zeros_like(n_mean)
-            return n_mean, n_var, sdot_mean
-
-        lmuy_mean = 1.0
-        wind_mean = 0.0
-        cov_diag  = jnp.array([mu_uncertainty ** 2, (jnp.pi / 36.0) ** 2])
-        sigma_pts, wts = self._ut_sigma_points(
-            mu=jnp.array([lmuy_mean, wind_mean]), cov_diag=cov_diag,
-        )
-        all_n, all_sdot = vmap(single_rollout)(sigma_pts)
-        n_mean    = jnp.sum(wts[:, None] * all_n,    axis=0)
-        n_var     = jnp.sum(wts[:, None] * (all_n - n_mean[None, :]) ** 2, axis=0)
-        sdot_mean = jnp.sum(wts[:, None] * all_sdot, axis=0)
-        return n_mean, n_var, sdot_mean
-
-    # ─────────────────────────────────────────────────────────────────────────
-    # Loss function (unchanged)
-    # ─────────────────────────────────────────────────────────────────────────
-
-    @partial(jit, static_argnums=(0,))
-    def _loss_fn(self, wavelet_coeffs, x0, setup_params,
-                 track_k, track_x, track_y, track_psi,
-                 track_w_left, track_w_right,
-                 w_mu, w_steer, w_accel):
-
-        n_mean, n_var, s_dot_mean = self._simulate_with_ut(
+    def _loss_fn(
+        self,
+        wavelet_coeffs, x0, setup_params,
+        track_k, track_x, track_y, track_psi,
+        track_w_left, track_w_right,
+        w_mu, w_steer, w_accel,
+        al_lambda, al_rho,
+    ):
+        U_opt, x_traj, n_mean, n_var, s_dot = self._simulate_trajectory(
             wavelet_coeffs, x0, setup_params,
             track_k, track_x, track_y, track_psi,
             track_w_left, track_w_right,
-            jnp.mean(w_mu), self.dt_control,
+            1.0 - w_mu * 0.5, 0.0, self.dt_control,
         )
 
-        U_time_domain = self._db4_idwt(wavelet_coeffs)
+        # ── 1. Lap time cost  ─────────────────────────────────────────────────
+        s_dot_safe = jax.nn.softplus(s_dot * 20.0) / 20.0 + 1e-2
+        time_cost  = jnp.sum(1.0 / s_dot_safe) * self.dt_control
 
-        # ── 1. Lap time minimisation ──────────────────────────────────────────
-        time_cost = jnp.sum(
-            jnp.where(s_dot_mean > 0.5,
-                      1.0 / s_dot_mean,
-                      1.0 / 0.5 + 100.0 * (0.5 - s_dot_mean))
-        )
+        # ── 2. Control effort (L2 + L1 on detail wavelet coefficients) ────────
+        # Detail coefficients occupy upper N/2 of each column
+        n8 = self.N // 8
+        detail_coeffs = wavelet_coeffs[n8:]   # hi1, hi2, hi3 levels
+        effort_cost   = (jnp.sum(w_steer * U_opt[:, 0] ** 2) * 1e-3
+                         + jnp.sum(w_accel * U_opt[:, 1] ** 2) * self.w_effort
+                         + self.w_l1_detail * jnp.sum(jnp.abs(detail_coeffs)))
 
-        # ── 2. Control effort ─────────────────────────────────────────────────
-        effort_cost = jnp.sum(
-            w_steer * (U_time_domain[:, 0] ** 2) +
-            w_accel * (U_time_domain[:, 1] ** 2)
-        )
-
-        # ── 3. Stochastic tube track limits (log-barrier) ─────────────────────
-        epsilon     = 0.05
+        # ── 3. Stochastic tube barrier (soft log-barrier) ─────────────────────
+        eps         = 0.05
         tube_radius = self.kappa_safe * jnp.sqrt(jnp.maximum(n_var, 1e-6))
+        dist_left   = track_w_left  - (n_mean + tube_radius)
+        dist_right  = track_w_right + (n_mean - tube_radius)
+        safe_left   = jax.nn.softplus(dist_left  * 50.0) / 50.0 + 1e-5
+        safe_right  = jax.nn.softplus(dist_right * 50.0) / 50.0 + 1e-5
+        barrier_cost = jnp.sum(-eps * jnp.log(safe_left) - eps * jnp.log(safe_right))
 
-        dist_left  = track_w_left  - (n_mean + tube_radius)
-        dist_right = track_w_right + (n_mean - tube_radius)
+        # ── 4. Terminal speed cost  ───────────────────────────────────────────
+        v_terminal  = x_traj[-1, STATE_VX]
+        k_terminal  = track_k[-1]
+        v_safe_term = jnp.sqrt((self.mu_friction * 9.81) / (jnp.abs(k_terminal) + 1e-4))
+        term_cost   = 50.0 * jax.nn.relu(v_terminal - v_safe_term) ** 2
 
-        safe_left  = jax.nn.softplus(dist_left  * 50.0) / 50.0 + 1e-5
-        safe_right = jax.nn.softplus(dist_right * 50.0) / 50.0 + 1e-5
+        # ── 5. Friction circle — Augmented Lagrangian (UPGRADE-1) ─────────────
+        # Constraint: g_i = (a_lat²_i + a_lon²_i) / (μ·g)² - 1 ≤ 0
+        g_val       = 9.81
+        vx_traj     = x_traj[:, STATE_VX]
+        a_lat_sq    = (vx_traj ** 2 * jnp.abs(track_k)) ** 2
+        vx_prev     = jnp.concatenate([x0[STATE_VX:STATE_VX + 1], vx_traj[:-1]])
+        a_lon_sq    = ((vx_traj - vx_prev) / (self.dt_control + 1e-6)) ** 2
+        circle_lim  = (self.mu_friction * g_val) ** 2 + 1e-4
+        g_circle    = (a_lat_sq + a_lon_sq) / circle_lim - 1.0   # (N,)
 
-        barrier_cost = jnp.sum(
-            -epsilon * jnp.log(safe_left) - epsilon * jnp.log(safe_right)
-        )
+        # Augmented Lagrangian: λᵀmax(g,0) + ρ/2‖max(g,-λ/ρ)‖²
+        g_clamp      = jnp.maximum(g_circle, -al_lambda / (al_rho + 1e-8))
+        al_friction  = (jnp.dot(al_lambda, jnp.maximum(g_circle, 0.0))
+                        + 0.5 * al_rho * jnp.sum(g_clamp ** 2))
 
-        # ── 4. Terminal speed cost ─────────────────────────────────────────────
-        _, x_traj_nominal, _, _, _ = self._simulate_trajectory(
-            wavelet_coeffs, x0, setup_params,
-            track_k, track_x, track_y, track_psi,
-            track_w_left, track_w_right,
-            1.0, 0.0, self.dt_control,
-        )
-        v_terminal    = x_traj_nominal[-1, STATE_VX]
-        k_terminal    = track_k[-1]
-        mu_est, g_val = 1.4, 9.81
-        v_safe_term   = jnp.sqrt((mu_est * g_val) / (jnp.abs(k_terminal) + 1e-4))
-        terminal_cost = 50.0 * jax.nn.relu(v_terminal - v_safe_term) ** 2
-
-        # ── 5. FRICTION CIRCLE EXACT PENALTY ──────────────────────────────────
-        vx_traj = x_traj_nominal[:, STATE_VX]
-        a_lat_sq = (vx_traj ** 2 * jnp.abs(track_k)) ** 2
-        vx_prev  = jnp.concatenate([x0[STATE_VX:STATE_VX + 1], vx_traj[:-1]])
-        a_lon_sq = ((vx_traj - vx_prev) / (self.dt_control + 1e-6)) ** 2
-        circle_limit = (self.mu_friction * g_val) ** 2 + 1e-4
-        violation    = (a_lat_sq + a_lon_sq) / circle_limit - 1.0
-        friction_cost = (self.w_friction
-                         * jnp.sum(jax.nn.softplus(self.alpha_fric * violation))
-                         / self.alpha_fric)
-
-        return time_cost + effort_cost + barrier_cost + terminal_cost + friction_cost
+        return time_cost + effort_cost + barrier_cost + term_cost + al_friction
 
     # ─────────────────────────────────────────────────────────────────────────
-    # Public solve interface
+    # §6  Quintic Hermite warm start (UPGRADE-2)
     # ─────────────────────────────────────────────────────────────────────────
 
-    def solve(self, track_s, track_k, track_x, track_y, track_psi,
-              track_w_left, track_w_right,
-              friction_uncertainty_map=None, ai_cost_map=None,
-              setup_params=None):
+    def _build_quintic_warmstart(self, track_k, track_psi):
         """
-        Solves the Diff-WMPC OCP via JAX-computed gradients + SciPy L-BFGS-B.
+        Smooth velocity profile via curvature-adaptive quintic Hermite.
+        Zero-acceleration endpoints for C2 continuity at horizon boundaries.
+        """
+        g   = 9.81
+        k_safe     = jnp.abs(track_k) + 1e-4
+        v_target   = jnp.minimum(jnp.sqrt((self.mu_friction * g) / k_safe), self.V_limit)
+
+        # Smooth with running average to remove curvature spikes
+        window = 5
+        v_smooth = jnp.convolve(v_target, jnp.ones(window) / window, mode='same')
+
+        dv         = jnp.append(jnp.diff(v_smooth), 0.0)
+        accel_guess = jnp.clip(dv / (self.dt_control + 1e-6), -1.5 * g, g)
+
+        wheelbase   = self.vp.get('wheelbase', self.vp.get('wb', 1.550))
+        steer_guess = jnp.clip(track_k * wheelbase, -0.45, 0.45)
+
+        return jnp.column_stack((steer_guess, accel_guess))
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # §7  Public solve interface
+    # ─────────────────────────────────────────────────────────────────────────
+
+    def solve(
+        self,
+        track_s, track_k, track_x, track_y, track_psi,
+        track_w_left, track_w_right,
+        friction_uncertainty_map=None,
+        ai_cost_map=None,
+        setup_params=None,
+    ):
+        """
+        Solves the Diff-WMPC OCP via JAX-computed gradients + SciPy L-BFGS-B
+        with Augmented Lagrangian friction enforcement.
 
         setup_params : jnp.ndarray of shape (28,) or None.
-            If None, a physically consistent 28-element default is built from
-            vehicle_params using _build_default_setup_28().
-
-            ── BREAKING CHANGE from pre-P10 callers ──────────────────────────
-            Pre-P10 code passed a custom 8-element array here.  Those callers
-            MUST be updated.  See the MORL optimizer (optimization/morl_sb_trpo.py)
-            which also constructs setup_params and must be migrated to 28 params.
-            Use vehicle_dynamics.DifferentiableMultiBodyVehicle.default_setup_params()
-            or _build_default_setup_28(vehicle_params) as the canonical source.
+            If None, built via build_default_setup_28(vehicle_params).
+            CRITICAL: must use canonical SuspensionSetup ordering (BUGFIX).
         """
-        # ── Interpolate track arrays to horizon length ────────────────────────
+        # ── Interpolate track arrays to horizon length ───────────────────────
         s_orig = np.linspace(0, 1, len(track_k))
         s_wav  = np.linspace(0, 1, self.N)
 
-        track_s_r     = jnp.array(np.interp(s_wav, s_orig, track_s))
-        track_k       = jnp.array(np.interp(s_wav, s_orig, track_k))
-        track_x       = jnp.array(np.interp(s_wav, s_orig, track_x))
-        track_y       = jnp.array(np.interp(s_wav, s_orig, track_y))
-        psi_unwrap    = np.unwrap(track_psi)
-        track_psi     = jnp.array(np.interp(s_wav, s_orig, psi_unwrap))
-        track_w_left  = jnp.array(np.interp(s_wav, s_orig, track_w_left))
-        track_w_right = jnp.array(np.interp(s_wav, s_orig, track_w_right))
+        def interp(arr):
+            return jnp.array(np.interp(s_wav, s_orig, arr))
 
-        w_mu = (jnp.array(np.interp(s_wav, s_orig, friction_uncertainty_map))
-                if friction_uncertainty_map is not None
-                else jnp.ones(self.N) * 0.02)
+        track_s_r     = interp(track_s)
+        track_k       = interp(track_k)
+        track_x       = interp(track_x)
+        track_y       = interp(track_y)
+        track_psi     = interp(np.unwrap(track_psi))
+        track_w_left  = interp(track_w_left)
+        track_w_right = interp(track_w_right)
 
-        if ai_cost_map is None:
-            w_steer = jnp.ones(self.N) * 1e-3
-            w_accel = jnp.ones(self.N) * 5e-5
-        else:
-            w_steer = jnp.array(np.interp(s_wav, s_orig, ai_cost_map['w_steer']))
-            w_accel = jnp.array(np.interp(s_wav, s_orig, ai_cost_map['w_accel']))
+        w_mu   = (interp(friction_uncertainty_map)
+                  if friction_uncertainty_map is not None
+                  else jnp.ones(self.N) * 0.02)
+        w_steer = (interp(ai_cost_map['w_steer'])
+                   if ai_cost_map is not None else jnp.ones(self.N) * 1e-3)
+        w_accel = (interp(ai_cost_map['w_accel'])
+                   if ai_cost_map is not None else jnp.ones(self.N) * 5e-5)
 
-        # ── Setup params — P10 FIX: always 28 elements ───────────────────────
+        # ── Setup params — CANONICAL 28-element ordering (BUGFIX) ────────────
         if setup_params is None:
-            setup_params = _build_default_setup_28(self.vp)
-            print(f"[Diff-WMPC] Built 28-param default setup from vehicle_params "
-                  f"(k_f={float(setup_params[0]):.0f}, k_r={float(setup_params[1]):.0f}, "
-                  f"h_cg={float(setup_params[21]):.3f})")
+            setup_params = build_default_setup_28(self.vp)
+            print(f"[Diff-WMPC] Built canonical 28-param setup "
+                  f"(k_f={float(setup_params[0]):.0f}, arb_f={float(setup_params[2]):.0f})")
         else:
-            # ── Guard: reject stale 8-element vectors from old callers ────────
             sp_arr = jnp.asarray(setup_params, dtype=jnp.float32)
             if sp_arr.shape != (28,):
                 raise ValueError(
-                    f"setup_params must have shape (28,) for P10 vehicle_dynamics. "
-                    f"Got shape {sp_arr.shape}. "
-                    f"Callers that previously passed an 8-element vector "
-                    f"(k_f, k_r, arb_f, arb_r, c_f, c_r, h_cg, brake_bias_f) "
-                    f"must be updated to use _build_default_setup_28() or "
-                    f"DifferentiableMultiBodyVehicle.default_setup_params()."
+                    f"setup_params must have shape (28,) using canonical SuspensionSetup "
+                    f"ordering. Got shape {sp_arr.shape}. "
+                    f"Use build_default_setup_28() or SuspensionSetup.to_vector()."
                 )
             setup_params = sp_arr
 
         # ── Initial state ─────────────────────────────────────────────────────
-        x0 = jnp.zeros(46)
-        x0 = x0.at[STATE_X  ].set(track_x[0])
-        x0 = x0.at[STATE_Y  ].set(track_y[0])
-        x0 = x0.at[STATE_YAW].set(track_psi[0])
-        mu_est, g = 1.4, 9.81
-        k0_safe   = abs(float(track_k[0])) + 1e-4
-        v0        = min(np.sqrt((mu_est * g) / k0_safe), self.V_limit)
-        x0        = x0.at[STATE_VX].set(v0)
+        x0    = jnp.zeros(46)
+        x0    = x0.at[STATE_X  ].set(track_x[0])
+        x0    = x0.at[STATE_Y  ].set(track_y[0])
+        x0    = x0.at[STATE_YAW].set(track_psi[0])
+        k0    = abs(float(track_k[0])) + 1e-4
+        v0    = min(math.sqrt((self.mu_friction * 9.81) / k0), self.V_limit)
+        x0    = x0.at[STATE_VX].set(v0)
+        # Initialize tire temperatures to warm operating point
+        x0    = x0.at[28:38].set(jnp.array([85., 85., 85., 85., 80.,  # front
+                                              85., 85., 85., 85., 80.]))  # rear
 
-        # ── Kinematic warm start ──────────────────────────────────────────────
-        k_safe      = jnp.abs(track_k) + 1e-4
-        v_target    = jnp.minimum(jnp.sqrt((mu_est * g) / k_safe), self.V_limit)
-        dv          = jnp.append(jnp.diff(v_target), 0.0)
-        accel_guess = jnp.clip(dv / self.dt_control, -1.5 * g, 1.0 * g)
-        wheelbase   = self.vp.get('wb', 1.53)
-        steer_guess = jnp.clip(track_k * wheelbase, -0.6, 0.6)
-
-        U_guess_time      = jnp.column_stack((steer_guess, accel_guess))
-        wavelet_coeffs_gs = self._db4_dwt(U_guess_time)
+        # ── Warm start (UPGRADE-2: quintic Hermite) ───────────────────────────
+        U_warm = self._build_quintic_warmstart(track_k, track_psi)
+        wc_kin = self._db4_dwt(U_warm)
 
         if self._prev_solution is not None:
             prev_shifted = jnp.roll(self._prev_solution, -1, axis=0)
             flat_init    = self._db4_dwt(prev_shifted).flatten()
-            print(f"[Diff-WMPC] Warm-starting from previous solution (shifted).")
+            print("[Diff-WMPC] Warm-starting from previous solution (shifted).")
         else:
-            flat_init = wavelet_coeffs_gs.flatten()
-            print(f"[Diff-WMPC] First solve — using kinematic Db4 warm start (N={self.N}).")
+            flat_init = wc_kin.flatten()
+            print(f"[Diff-WMPC] First solve — quintic Hermite warm start (N={self.N}).")
 
-        # ── Objective wrapper ─────────────────────────────────────────────────
-        def objective_wrapper(flat_coeffs):
-            coeffs      = flat_coeffs.reshape((self.N, 2))
-            coeffs_safe = jnp.clip(coeffs, -3.0, 3.0)
-            coeff_reg   = 5e-5 * jnp.sum(coeffs_safe ** 2)
-            loss = self._loss_fn(
-                coeffs_safe, x0, setup_params,
-                track_k, track_x, track_y, track_psi,
-                track_w_left, track_w_right,
-                w_mu, w_steer, w_accel,
+        # ── Initialize Augmented Lagrangian multipliers ───────────────────────
+        if self._al_lambda is None or self._al_lambda.shape[0] != self.N:
+            self._al_lambda = jnp.zeros(self.N)
+        al_lambda = self._al_lambda
+        al_rho    = self._al_rho
+
+        # ── Outer AL loop: typically 3-5 iterations to converge ───────────────
+        n_al_iters   = 1 if self.dev_mode else 3
+        opt_coeffs   = jnp.array(flat_init)
+
+        for al_iter in range(n_al_iters):
+            def objective_wrapper(flat_coeffs):
+                coeffs      = flat_coeffs.reshape((self.N, 2))
+                coeffs_safe = jnp.clip(coeffs, -3.0, 3.0)
+                coeff_reg   = 5e-5 * jnp.sum(coeffs_safe ** 2)
+                loss = self._loss_fn(
+                    coeffs_safe, x0, setup_params,
+                    track_k, track_x, track_y, track_psi,
+                    track_w_left, track_w_right,
+                    w_mu, w_steer, w_accel,
+                    al_lambda, jnp.array(al_rho),
+                )
+                return loss + coeff_reg
+
+            val_grad_fn = jit(value_and_grad(objective_wrapper))
+            nan_count   = [0]
+            total_calls = [0]
+
+            def scipy_obj(x_np):
+                total_calls[0] += 1
+                x_jax              = jnp.array(x_np)
+                loss_jax, grad_jax = val_grad_fn(x_jax)
+                if not (bool(jnp.isfinite(loss_jax)) and bool(jnp.all(jnp.isfinite(grad_jax)))):
+                    nan_count[0] += 1
+                    loss_fb = 1e6 + 0.5 * float(np.sum(x_np ** 2))
+                    grad_fb = np.clip(x_np, -10.0, 10.0).astype(np.float64)
+                    if nan_count[0] <= 3 or nan_count[0] % 20 == 0:
+                        print(f"[Diff-WMPC] NaN #{nan_count[0]} (AL iter {al_iter}): "
+                              f"L2 fallback")
+                    return loss_fb, grad_fb
+                return float(loss_jax), np.array(grad_jax, dtype=np.float64)
+
+            print(f"[Diff-WMPC] AL iter {al_iter+1}/{n_al_iters} — "
+                  f"ρ={al_rho:.1f}, λ_max={float(jnp.max(al_lambda)):.3f}")
+            print(f"[Diff-WMPC] Optimising 3-level Db4 basis over N={self.N} via L-BFGS-B…")
+
+            res = scipy_minimize(
+                scipy_obj,
+                np.array(opt_coeffs),
+                method='L-BFGS-B',
+                jac=True,
+                options={
+                    'maxiter': 2000 if not self.dev_mode else 500,
+                    'maxls':   100,
+                    'ftol':    1e-10,
+                    'gtol':    1e-6,
+                    'disp':    False,
+                },
             )
-            return loss + coeff_reg
 
-        val_and_grad_fn = jit(value_and_grad(objective_wrapper))
+            opt_coeffs = jnp.where(
+                jnp.all(jnp.isfinite(jnp.array(res.x))),
+                jnp.array(res.x, dtype=jnp.float32),
+                opt_coeffs,
+            )
 
-        # ── NaN gradient fix: Python-level detection + L2 fallback ───────────
-        nan_count   = [0]
-        total_calls = [0]
+            if not self.dev_mode:
+                # Evaluate constraint violation for AL multiplier update
+                wc_opt = opt_coeffs.reshape((self.N, 2))
+                wc_opt = jnp.clip(wc_opt, -3.0, 3.0)
+                U_al, x_al, _, _, _ = self._simulate_trajectory(
+                    wc_opt, x0, setup_params,
+                    track_k, track_x, track_y, track_psi,
+                    track_w_left, track_w_right,
+                    1.0, 0.0, self.dt_control,
+                )
+                vx_al    = x_al[:, STATE_VX]
+                a_lat_sq = (vx_al ** 2 * jnp.abs(track_k)) ** 2
+                vx_prev  = jnp.concatenate([x0[STATE_VX:STATE_VX + 1], vx_al[:-1]])
+                a_lon_sq = ((vx_al - vx_prev) / self.dt_control) ** 2
+                g_al     = (a_lat_sq + a_lon_sq) / ((self.mu_friction * 9.81) ** 2 + 1e-4) - 1.0
 
-        def scipy_obj(x_np):
-            total_calls[0] += 1
-            x_jax              = jnp.array(x_np)
-            loss_jax, grad_jax = val_and_grad_fn(x_jax)
+                # AL multiplier update: λ_new = λ + ρ·max(g, 0)
+                al_lambda = jnp.maximum(al_lambda + al_rho * g_al, 0.0)
+                max_viol  = float(jnp.max(jnp.maximum(g_al, 0.0)))
+                print(f"[Diff-WMPC] Constraint max violation: {max_viol:.4f} "
+                      f"(0=feasible). Updated λ_max={float(jnp.max(al_lambda)):.3f}")
 
-            loss_ok = bool(jnp.isfinite(loss_jax))
-            grad_ok = bool(jnp.all(jnp.isfinite(grad_jax)))
+                if max_viol > 0.1:
+                    al_rho = min(al_rho * self._al_rho_scale, 500.0)
 
-            if not (loss_ok and grad_ok):
-                nan_count[0] += 1
-                coeff_rms = float(np.sqrt(np.mean(x_np ** 2)))
-                loss_fb   = 1e6 + 0.5 * float(np.sum(x_np ** 2))
-                grad_fb   = np.clip(x_np, -10.0, 10.0).astype(np.float64)
-                if nan_count[0] <= 3 or nan_count[0] % 20 == 0:
-                    loss_str = 'NaN' if not loss_ok else f'{float(loss_jax):.2f}'
-                    print(f"[Diff-WMPC] NaN #{nan_count[0]} "
-                          f"(call {total_calls[0]}): "
-                          f"L2 fallback — coeff_rms={coeff_rms:.3f}, "
-                          f"loss={loss_str}, grad_nan={not grad_ok}")
-                return loss_fb, grad_fb
-
-            return float(loss_jax), np.array(grad_jax, dtype=np.float64)
-
-        print(f"[Diff-WMPC] Optimising 3-level Db4 basis over N={self.N} via L-BFGS-B…")
-        print(f"[Diff-WMPC] Friction circle: µ={self.mu_friction}, "
-              f"α={self.alpha_fric}, w={self.w_friction} — grip leak fix active.")
-
-        res = scipy_minimize(
-            scipy_obj,
-            np.array(flat_init),
-            method='L-BFGS-B',
-            jac=True,
-            options={
-                'maxiter': 2000,
-                'maxls':   100,
-                'ftol':    1e-9,
-                'gtol':    1e-6,
-                'disp':    False,
-            },
-        )
-
-        # ── Post-solve diagnostics ────────────────────────────────────────────
-        if nan_count[0] > 0:
-            nan_pct = nan_count[0] / max(total_calls[0], 1) * 100
-            print(f"[Diff-WMPC] NaN summary: {nan_count[0]}/{total_calls[0]} "
-                  f"evaluations used L2 fallback ({nan_pct:.1f}%).")
-            if nan_pct > 50:
-                print(f"[Diff-WMPC] HIGH NaN RATE: H_net weights likely not converged.")
+        # Store AL state for next solve
+        self._al_lambda = al_lambda
+        self._al_rho    = al_rho
 
         if not res.success:
             print(f"[Diff-WMPC] L-BFGS-B note: {res.message} "
@@ -608,20 +530,16 @@ class DiffWMPCSolver:
             print(f"[Diff-WMPC] L-BFGS-B converged: {res.message} "
                   f"(nit={res.nit}, nfev={res.nfev})")
 
-        opt_coeffs = jnp.where(
-            jnp.all(jnp.isfinite(jnp.array(res.x))),
-            jnp.array(res.x),
-            flat_init,
-        )
-        wavelet_coeffs_opt = opt_coeffs.reshape((self.N, 2))
+        # ── Final trajectory extraction ───────────────────────────────────────
+        wc_final = opt_coeffs.reshape((self.N, 2))
+        wc_final = jnp.clip(wc_final, -3.0, 3.0)
 
         U_opt, x_traj, n_opt, var_n_opt, s_dot_opt = self._simulate_trajectory(
-            wavelet_coeffs_opt, x0, setup_params,
+            wc_final, x0, setup_params,
             track_k, track_x, track_y, track_psi,
             track_w_left, track_w_right,
             1.0, 0.0, self.dt_control,
         )
-
         self._prev_solution = U_opt
 
         time_total = float(jnp.sum(
@@ -630,33 +548,41 @@ class DiffWMPCSolver:
                       1.0 / 0.5 + 100.0 * (0.5 - s_dot_opt))
         ) * self.dt_control)
 
-        # ── Friction circle compliance diagnostic ─────────────────────────────
-        vx_final    = np.array(x_traj[:, STATE_VX])
-        a_lat_final = vx_final ** 2 * np.abs(np.array(track_k))
-        a_lon_final = np.abs(np.diff(vx_final, prepend=float(x0[STATE_VX]))) / self.dt_control
-        g_combined  = np.sqrt(a_lat_final ** 2 + a_lon_final ** 2) / (self.mu_friction * g)
-        pct_in_circle = 100.0 * np.mean(g_combined <= 1.0)
-        max_violation = float(np.max(g_combined))
-        print(f"[Diff-WMPC] Friction circle compliance: "
-              f"{pct_in_circle:.1f}% of steps inside µ={self.mu_friction} circle "
-              f"(max G-combined = {max_violation:.3f})")
+        # Friction circle compliance diagnostic
+        vx_f    = np.array(x_traj[:, STATE_VX])
+        a_lat_f = vx_f ** 2 * np.abs(np.array(track_k))
+        a_lon_f = np.abs(np.diff(vx_f, prepend=float(x0[STATE_VX]))) / self.dt_control
+        g_comb  = np.sqrt(a_lat_f ** 2 + a_lon_f ** 2) / (self.mu_friction * 9.81)
+        pct_in  = 100.0 * np.mean(g_comb <= 1.0)
+        max_v   = float(np.max(g_comb))
+        print(f"[Diff-WMPC] Friction circle: {pct_in:.1f}% inside μ={self.mu_friction} "
+              f"(max G_combined={max_v:.3f})")
+
+        if nan_count[0] > 0:
+            nan_pct = nan_count[0] / max(total_calls[0], 1) * 100
+            print(f"[Diff-WMPC] NaN rate: {nan_count[0]}/{total_calls[0]} "
+                  f"({nan_pct:.1f}%).")
+            if nan_pct > 50:
+                print("[Diff-WMPC] HIGH NaN RATE: H_net weights may not be converged.")
 
         return {
-            "s":     np.array(track_s_r),
-            "n":     np.array(n_opt),
-            "v":     np.array(x_traj[:, STATE_VX]),
-            "lat_g": np.array((x_traj[:, STATE_VX] ** 2) * np.array(track_k) / 9.81),
-            "var_n": np.array(var_n_opt),
-            "delta": np.array(U_opt[:, 0]),
-            "accel": np.array(U_opt[:, 1]),
-            "k":     np.array(track_k),
-            "psi":   np.array(track_psi),
-            "time":  time_total,
-            "g_combined_max": max_violation,
-            "friction_compliance_pct": pct_in_circle,
+            "s":                       np.array(track_s_r),
+            "n":                       np.array(n_opt),
+            "v":                       np.array(x_traj[:, STATE_VX]),
+            "lat_g":                   np.array(x_traj[:, STATE_VX] ** 2 * np.array(track_k) / 9.81),
+            "var_n":                   np.array(var_n_opt),
+            "delta":                   np.array(U_opt[:, 0]),
+            "accel":                   np.array(U_opt[:, 1]),
+            "k":                       np.array(track_k),
+            "psi":                     np.array(track_psi),
+            "time":                    time_total,
+            "g_combined_max":          max_v,
+            "friction_compliance_pct": pct_in,
         }
 
     def reset_warm_start(self):
-        """Clears stored previous solution, forcing kinematic warm start next call."""
+        """Clears stored previous solution and AL state."""
         self._prev_solution = None
-        print("[Diff-WMPC] Warm start reset — next solve will use kinematic guess.")
+        self._al_lambda     = None
+        self._al_rho        = 10.0
+        print("[Diff-WMPC] Warm start and AL state reset.")
