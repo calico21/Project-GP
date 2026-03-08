@@ -279,6 +279,25 @@ def test_aero_increases_with_speed():
 
 
 def test_differential_yaw_moment():
+    # ═══════════════════════════════════════════════════════════════════════
+    # FIX 3 — sanity_checks.py  (TEST 8)
+    #
+    # ROOT CAUSE: compute_differential_forces signature expanded to 12 args:
+    #   (self, T_drive_wheel, vx, wz,
+    #    Fz_rl, Fz_rr, alpha_t_rl, alpha_t_rr,
+    #    gamma_rl, gamma_rr,          ← gamma_rr was MISSING in the call
+    #    T_ribs_r, T_gas_r, diff_lock ← T_gas_r and diff_lock were MISSING)
+    #
+    # The old call passed only 10 positional args, so the mapping was:
+    #   gamma_rl  = 0.0          ← correct
+    #   gamma_rr  = T_r          ← WRONG (jnp.array([90,90,90]) → float expected)
+    #   T_ribs_r  = 90.0         ← WRONG (scalar → array expected)
+    #   T_gas_r   = <MISSING>
+    #   diff_lock = <MISSING>
+    # → TypeError: missing 2 required positional arguments: 'T_gas_r' and 'diff_lock'
+    #
+    # FIX: Add gamma_rr=0.0 and diff_lock=1.0 (spool = fully locked).
+    # ═══════════════════════════════════════════════════════════════════════
     print("\n" + "=" * 60)
     print("TEST 8: SPOOL DIFFERENTIAL YAW MOMENT")
     print("=" * 60)
@@ -293,8 +312,24 @@ def test_differential_yaw_moment():
     a_rr    = 0.05
     T_r     = jnp.array([90., 90., 90.])
 
+    # ── BEFORE (broken) ───────────────────────────────────────────────────
+    # Fx_rl, Fx_rr, _, _, k_rl, k_rr = veh.compute_differential_forces(
+    #     T_drive, vx, wz, Fz_rl, Fz_rr, a_rl, a_rr, 0.0, T_r, 90.0)
+    #                                                  ^^^  ^^^  ^^^^
+    #                              gamma_rl=0.0 (ok)  |    |    missing T_gas_r
+    #                              gamma_rr = T_r ← WRONG  missing diff_lock
+    #
+    # ── AFTER (fixed) ────────────────────────────────────────────────────
     Fx_rl, Fx_rr, _, _, k_rl, k_rr = veh.compute_differential_forces(
-        T_drive, vx, wz, Fz_rl, Fz_rr, a_rl, a_rr, 0.0, T_r, 90.0)
+        T_drive, vx, wz,
+        Fz_rl, Fz_rr,
+        a_rl, a_rr,
+        0.0,          # gamma_rl  (rad)
+        0.0,          # gamma_rr  (rad)  ← was missing
+        T_r,          # T_ribs_r  (3-node surface temps)
+        90.0,         # T_gas_r   (°C)   ← was missing
+        1.0,          # diff_lock (0=open, 1=fully locked spool) ← was missing
+    )
 
     M_diff = (Fx_rr - Fx_rl) * (veh.track_w / 2.0)
     print(f"  > Inner (RL) Force: {float(Fx_rl):.1f} N | Slip: {float(k_rl):.3f}")
@@ -306,7 +341,6 @@ def test_differential_yaw_moment():
               "track-realistic asymmetric yaw moment.")
     else:
         print("[FAIL] Differential produced zero yaw moment.")
-
 
 def test_spring_rate_not_pinned():
     print("\n" + "=" * 60)

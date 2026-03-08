@@ -325,26 +325,80 @@ class DiffWMPCSolver:
     # §6  Quintic Hermite warm start (UPGRADE-2)
     # ─────────────────────────────────────────────────────────────────────────
 
+    # ─────────────────────────────────────────────────────────────────────────
+    # §6  Quintic Hermite warm start (UPGRADE-2)
+    # ─────────────────────────────────────────────────────────────────────────
+    #
+    # FIX 4  —  optimization/ocp_solver.py
+    #
+    # ROOT CAUSE: shape ambiguity producing (1,) vs (1, 64) concatenate crash.
+    #
+    # Two sub-issues:
+    #
+    #   A)  jnp.convolve(..., mode='same') is not guaranteed to return a 1-D
+    #       array with the exact input length across all JAX versions.
+    #       Internally JAX may return shape (1, N) after an internal unsqueeze
+    #       that isn't squeezed back, which propagates into v_smooth and then
+    #       into accel_guess.  When accel_guess has shape (1, N), jnp.column_stack
+    #       produces shape (N, 1+1) = (N, 2) only if JAX column_stack handles it
+    #       the same way NumPy does — it doesn't always.
+    #
+    #   B)  jnp.append(jnp.diff(v_smooth), 0.0) — jnp.append is a thin shim
+    #       around concatenate and can produce shape (N+1, 1) when v_smooth has
+    #       a trailing unit dimension.
+    #
+    # FIX:
+    #   1. Replace jnp.convolve mode='same' with mode='full' + manual crop
+    #      (always returns exactly (N,) because the output length is
+    #       len(a)+len(b)-1 and we slice to exactly N elements).
+    #   2. Replace jnp.append with jnp.concatenate on explicit 1-D arrays.
+    #   3. Replace jnp.column_stack with jnp.stack(..., axis=1) after
+    #      explicit .ravel() — this is the only unambiguous (N, 2) constructor.
+    #
+    # ─────────────────────────────────────────────────────────────────────────
+
     def _build_quintic_warmstart(self, track_k, track_psi):
         """
-        Smooth velocity profile via curvature-adaptive quintic Hermite.
-        Zero-acceleration endpoints for C2 continuity at horizon boundaries.
+        Smooth velocity profile via curvature-adaptive kinematic warm start.
+        Returns U_warm of shape (N, 2) = [steer_guess, accel_guess] per step.
         """
-        g   = 9.81
-        k_safe     = jnp.abs(track_k) + 1e-4
-        v_target   = jnp.minimum(jnp.sqrt((self.mu_friction * g) / k_safe), self.V_limit)
+        g        = 9.81
+        k_safe   = jnp.abs(track_k) + 1e-4
+        v_target = jnp.minimum(
+            jnp.sqrt((self.mu_friction * g) / k_safe),
+            self.V_limit,
+        )                                              # shape (N,)
 
-        # Smooth with running average to remove curvature spikes
-        window = 5
-        v_smooth = jnp.convolve(v_target, jnp.ones(window) / window, mode='same')
+        # ── Running-average smoothing ─────────────────────────────────────────
+        # mode='full' gives length (N + window - 1); we crop to exactly N.
+        # This is strictly safer than mode='same' whose output length depends
+        # on which of {a, b} is longer — not guaranteed consistent across JAX
+        # versions when one operand is dynamically shaped under vmap/jit.
+        window   = 5
+        kernel   = jnp.ones(window, dtype=v_target.dtype) / window
+        v_full   = jnp.convolve(v_target.ravel(), kernel, mode='full')
+        pad      = window // 2
+        v_smooth = v_full[pad : pad + self.N]          # shape exactly (N,)
 
-        dv         = jnp.append(jnp.diff(v_smooth), 0.0)
+        # ── Acceleration profile ──────────────────────────────────────────────
+        # jnp.append can silently produce (N+1, 1) when v_smooth has a unit
+        # trailing dim after the convolve crop.  Use explicit concatenate on
+        # guaranteed 1-D slices instead.
+        dv_inner    = v_smooth[1:] - v_smooth[:-1]    # shape (N-1,)
+        dv          = jnp.concatenate([dv_inner, jnp.zeros(1, dtype=dv_inner.dtype)])  # (N,)
         accel_guess = jnp.clip(dv / (self.dt_control + 1e-6), -1.5 * g, g)
 
+        # ── Steering profile ──────────────────────────────────────────────────
         wheelbase   = self.vp.get('wheelbase', self.vp.get('wb', 1.550))
         steer_guess = jnp.clip(track_k * wheelbase, -0.45, 0.45)
 
-        return jnp.column_stack((steer_guess, accel_guess))
+        # ── Assemble (N, 2) output ─────────────────────────────────────────────
+        # jnp.column_stack has implementation drift across JAX versions for
+        # 1-D inputs — use jnp.stack(axis=1) after explicit ravel() to
+        # guarantee exactly (N, 2) regardless of upstream shape ambiguity.
+        steer_1d = steer_guess.ravel()[:self.N]        # strict (N,)
+        accel_1d = accel_guess.ravel()[:self.N]        # strict (N,)
+        return jnp.stack([steer_1d, accel_1d], axis=1) # (N, 2)  ← unambiguous
 
     # ─────────────────────────────────────────────────────────────────────────
     # §7  Public solve interface

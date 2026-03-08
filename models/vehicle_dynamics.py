@@ -668,15 +668,15 @@ class DifferentiableMultiBodyVehicle:
         self.R_params    = self.R_net.init(rng_r, jnp.zeros(14), jnp.zeros(14))
         self.Aero_params = self.aero_map.init(rng_a, 0.0, 0.0, 0.0, 0.0, 0.0)
 
-        for attr, fname in [('H_params',    'h_net.msgpack'),
-                             ('R_params',    'r_net.msgpack'),
-                             ('Aero_params', 'aero_net.msgpack')]:
-            ckpt = os.path.join(current_dir, fname)
-            if os.path.exists(ckpt):
-                with open(ckpt, 'rb') as f:
-                    setattr(self, attr,
-                            flax.serialization.from_bytes(getattr(self, attr), f.read()))
-                print(f"[VehicleDynamics] Loaded {fname}")
+        for attr, fname in [('H_params',    'h_net.bytes'),
+                              ('R_params',    'r_net.bytes'),
+                              ('Aero_params', 'aero_net.bytes')]:
+                ckpt = os.path.join(current_dir, fname)
+                if os.path.exists(ckpt):
+                    with open(ckpt, 'rb') as f:
+                        setattr(self, attr,
+                             flax.serialization.from_bytes(getattr(self, attr), f.read()))
+                    print(f"[VehicleDynamics] Loaded {fname}")
 
     # ─────────────────────────────────────────────────────────────────────────
     # §5.1  Powertrain

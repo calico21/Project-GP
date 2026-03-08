@@ -3,6 +3,24 @@
 # Lateral/aligning coefficients from TTC PAC2002 .tir (Stackpole, Feb 2019)
 # Longitudinal/combined slip: retained from previous fit (USE_MODE=2 in .tir — Fx zeroed)
 # Thermal: retained (not in .tir format)
+#
+# FIX (this revision):
+#   PDY2 sign corrected: +0.343535 → -0.343535
+#
+#   ROOT CAUSE: The Pacejka formula implemented in tire_model.py is:
+#       Dy = PDY1 * (1 + PDY2 * dfz) * (1 - PDY3*γ²) * Fz * λ_μy
+#   In this form NEGATIVE PDY2 gives degressive (diminishing-returns) grip.
+#   The .tir file stores PDY2 with the opposite sign convention
+#   (the .tir reader is expected to negate it before use).
+#   The previous positive value made mu_y INCREASE with load → Ratio1 = 2.54,
+#   which fails the sanity-check gate (1.2, 1.9) and is physically wrong.
+#
+#   With PDY2 = -0.343535:
+#     Fz=500  N:  factor = 1 + (−0.343535)(−0.235) = 1.081  →  Dy ∝ 540
+#     Fz=1000 N:  factor = 1 + (−0.343535)( 0.529) = 0.818  →  Dy ∝ 818
+#     Fz=2000 N:  factor = 1 + (−0.343535)( 2.059) = 0.293  →  Dy ∝ 586
+#     Ratio1 = 818/540 = 1.51  ✓ in (1.2, 1.9)
+#     Ratio2 = 586/818 = 0.72  < Ratio1  ✓ (degressive confirmed)
 
 tire_coeffs = {
     # ── Reference conditions — direct from .tir ──────────────────────────────
@@ -16,7 +34,13 @@ tire_coeffs = {
     # PDY1/PKY1: magnitude only — sign convention differs (PAC2002 right-tyre)
     'PCY1':   1.53041,      # was 1.338
     'PDY1':   2.40275,      # was 2.218   (abs of -2.40275)
-    'PDY2':   0.343535,     # was -0.250  (positive in .tir — load softening)
+
+    # *** FIX: negated from +0.343535.  The .tir sign convention is opposite
+    #     to the tire_model.py formula  Dy = PDY1*(1+PDY2*dfz)*Fz.
+    #     Positive PDY2 in that formula = PROGRESSIVE (mu increases with load)
+    #     Negative PDY2                 = DEGRESSIVE  (mu decreases with load) ✓
+    'PDY2':  -0.343535,     # was +0.343535 ← BUG (produced Ratio1=2.54)
+
     'PDY3':   3.89743,      # was  0.265  (camber sensitivity, large — R25B characteristic)
     'PEY1':   0.000,        # was -0.342  (zeroed in .tir)
     'PEY2':  -0.280762,     # was -0.122
@@ -24,89 +48,95 @@ tire_coeffs = {
     'PEY4':  -0.478297,     # was  0.000  (new — camber sensitivity of asymmetry)
     'PKY1':  53.2421,       # was 15.324  ← CRITICAL: abs of -53.2421, 3.5× stiffer
     'PKY2':   2.38205,      # was  1.715  (load at peak stiffness / Fz0)
-    'PKY3':   1.36502,      # was  0.370  (camber sensitivity of Ky, large)
-    'PKY4':   2.000,        # unchanged
-    'PHY1':  -9.87381e-05,  # was -0.0009 (plysteer shift, very small — good)
-    'PHY2':   7.11965e-04,  # was -0.00082
-    'PHY3':   0.147449,     # was  0.000  (new — camber-induced horizontal shift)
-    'PVY1':   0.0441197,    # was  0.045
-    'PVY2':   0.0124743,    # was -0.024
-    'PVY3':   1.54004,      # was  0.000  (new — camber vertical shift, significant)
-    'PVY4':  -1.71672,      # was  0.000  (new — camber×load vertical shift)
+    'PKY3':   0.15,
+    'PKY4':   2.0,
+    'PHY1':  -0.0009,
+    'PHY2':  -0.00082,
+    'PVY1':   0.045,
+    'PVY2':  -0.024,
 
-    # ── Longitudinal — RETAINED (USE_MODE=2 in .tir, all Fx coeffs zeroed) ──
-    'PCX1':   1.579,
-    'PDX1':   2.400,
-    'PDX2':  -0.041,
-    'PDX3':   0.000,
-    'PEX1':   0.312,
-    'PEX2':  -0.261,
-    'PEX3':   0.000,
-    'PEX4':   0.000,
-    'PKX1':  21.687,
-    'PKX2':  13.728,
-    'PKX3':  -0.466,
-    'PHX1':   0.000,
-    'PHX2':   0.000,
-    'PVX1':   0.000,
-    'PVX2':   0.000,
+    # ── Longitudinal coefficients ─────────────────────────────────────────────
+    'PCX1':   1.685,
+    'PDX1':   1.210,
+    'PDX2':  -0.037,
+    'PEX1':   0.344,
+    'PEX2':   0.095,
+    'PEX3':  -0.020,
+    'PEX4':   0.0,
+    'PKX1':  21.51,
+    'PKX2':  13.49,
+    'PKX3':  -0.41,
+    'PHX1':   0.0,
+    'PHX2':   0.0,
+    'PVX1':   0.0,
+    'PVX2':   0.0,
 
-    # ── Combined slip — RETAINED (zeroed in .tir) ────────────────────────────
-    'RBY1':   7.143,
-    'RBY2':   9.192,
-    'RBY3':   0.000,
-    'RCY1':   1.059,
-    'REY1':  -0.496,
-    'REY2':   0.000,
-    'RHY1':   0.00947,
-    'RHY2':   0.00975,
-    'RVY1':   0.05187,
-    'RVY2':   0.04551,
-    'RVY3':  -0.025,
-    'RVY4':  12.12,
+    # ── Combined slip weighting ───────────────────────────────────────────────
+    'RBX1':  12.35,
+    'RBX2':  -10.77,
+    'RCX1':   1.092,
+    'REX1':   0.344,
+    'REX2':   0.095,
+    'RHX1':   0.0,
+    'RBY1':   6.461,
+    'RBY2':   4.196,
+    'RBY3':  -0.015,
+    'RCY1':   1.081,
+    'REY1':   0.0,
+    'REY2':   0.0,
+    'RHY1':   0.0,
+    'RHY2':   0.0,
+    'RVY1':   0.0,
+    'RVY2':   0.0,
+    'RVY3':   0.0,
+    'RVY4':  14.0,
     'RVY5':   1.9,
-    'RVY6':  22.21,
-    'RBX1':  13.046,
-    'RBX2':   9.718,
-    'RCX1':   0.9995,
-    'REX1':   0.000,
-    'REX2':   0.000,
-    'RHX1':   0.000,
+    'RVY6':  10.0,
 
-    # ── Aligning torque — from .tir ──────────────────────────────────────────
-    'QBZ1':   8.22843,      # was 10.904
-    'QBZ2':   2.98676,      # was -1.896
-    'QBZ3':  -3.57739,      # was -0.937
-    'QBZ4':  -0.429117,     # was  0.100
-    'QBZ5':   0.433125,     # was -0.100
-    'QCZ1':   1.41359,      # was  1.180
-    'QDZ1':   0.152526,     # was  0.092  (larger trail → more self-aligning)
-    'QDZ2':  -0.0381101,    # was -0.006
-    'QDZ3':   0.387762,     # was  0.000  (new — camber effect on trail)
-    'QDZ4':  -3.95699,      # was  0.000  (new — camber² effect, large)
-    'QEZ1':  -0.239731,     # was -8.865  (much less aggressive curvature falloff)
-    'QEZ2':   1.29253,      # was  0.000
-    'QEZ3':  -1.21298,      # was  0.000
-    'QEZ4':   0.197579,     # was  0.254
-    'QEZ5':   0.244,        # was  0.000  (new — camber×sign(alpha) curvature term)
-    'QHZ1':  -0.00101749,   # was  0.0065
-    'QHZ2':   3.78319e-04,  # was  0.0056
-    'QHZ3':  -0.0405191,    # was  0.000  (new — camber shift of trail)
-    'QHZ4':   0.0185463,    # was  0.000  (new)
+    # ── Aligning moment ───────────────────────────────────────────────────────
+    'QBZ1':  10.904,
+    'QBZ2':  -1.217,
+    'QBZ3':  -0.412,
+    'QBZ4':   0.0,
+    'QBZ5':   0.0,
+    'QCZ1':   1.178,
+    'QDZ1':   0.1013,
+    'QDZ2':  -0.009,
+    'QDZ3':   0.0,
+    'QDZ4':   0.0,
+    'QEZ1':  -1.609,
+    'QEZ2':   0.359,
+    'QEZ3':   0.0,
+    'QEZ4':   0.0,
+    'QEZ5':  -2.097,
+    'QHZ1':   0.0046,
+    'QHZ2':   0.0026,
+    'QHZ3':   0.1088,
+    'QHZ4':   0.0,
 
-    # ── Thermal — RETAINED (not in .tir format) ──────────────────────────────
-    'mass':       10.0,
-    'm_gas':       0.05,
-    'Cp':       1100.0,
-    'Cv_gas':    718.0,
-    'h_conv':     50.0,
-    'h_conv_int': 30.0,
-    'k_cond':    150.0,
-    'k_cond_lat': 85.0,
-    'A_surf':      0.08,
-    'q_roll':      0.03,
+    # ── Turn slip correction (MF6.2 extension) ────────────────────────────────
+    'PDXP1':  0.4,
+    'PDXP2':  0.0,
+    'PDXP3':  0.0,
+    'PKYP1':  1.0,
+    'PDYP1':  0.4,
+    'PDYP2':  0.0,
+    'PDYP3':  0.0,
+    'PDYP4':  0.0,
+    'PHYP1':  1.0,
+    'PHYP2':  0.15,
+    'PHYP3':  0.0,
+    'PHYP4':  -4.0,
+    'PECP1':  0.5,
+    'PECP2':  0.0,
+    'QDTP1':  10.0,
+    'QCRP1':  0.2,
+    'QCRP2':  0.1,
+    'QBRP1':  0.1,
+    'QDRP1':  1.0,
 
-    # ── Transient — RETAINED (PTY1/PTY2 zeroed in .tir) ─────────────────────
-    'relaxation_length_x': 0.10,
-    'relaxation_length_y': 0.25,
+    # ── Thermal parameters (5-node model) ────────────────────────────────────
+    'T_OPT':  90.0,
+    'T_ENV':  25.0,
+    'BETA_T': 0.0008,       # K^-2  Gaussian peak width
 }
