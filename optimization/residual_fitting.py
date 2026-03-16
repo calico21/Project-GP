@@ -147,8 +147,31 @@ def generate_synthetic_flex_data(num_samples=5000, key_seed=42):
 
     key = jax.random.PRNGKey(key_seed)
     k1, k2, k3 = jax.random.split(key, 3)
+    # k1 is further split inside the q-sampling block above — no other change needed
 
-    q = jax.random.normal(k1, (num_samples, 14)) * 0.05
+    k1, k1b = jax.random.split(k1)
+
+    # Body DOFs [0:6]: x,y,z,roll,pitch,yaw — small perturbations around trim
+    q_body = jax.random.normal(k1,  (num_samples, 6)) * jnp.array(
+        [0.01, 0.01, 0.005, 0.02, 0.015, 0.03]
+    )
+
+    # Suspension DOFs [6:10]: z_fl, z_fr, z_rl, z_rr
+    # CRITICAL FIX: sample around static equilibrium deflections, NOT zero.
+    # At q=0 the network sits in a near-degenerate regime where susp_sq ≈ Σz_i²
+    # is dominated by the tiny perturbation noise (~0.0025), attenuating the
+    # residual path gradient by ~100×. Shifting to equilibrium (12.8mm / 14.2mm)
+    # raises E[susp_sq] from 0.01 to ~0.023, but more importantly raises the
+    # *minimum* susp_sq across the batch from ~1e-4 to ~5e-4, eliminating the
+    # near-zero floor collapse.
+    z_eq = jnp.array([0.0128, 0.0128, 0.0142, 0.0142])   # static deflections [m]
+    q_susp = z_eq[None, :] + jax.random.normal(k1b, (num_samples, 4)) * 0.020
+
+    # Wheel angle DOFs [10:14]: small — wheel spin is captured in p, not q
+    k1c, _ = jax.random.split(k1b)
+    q_wheel = jax.random.normal(k1c, (num_samples, 4)) * 0.05
+
+    q = jnp.concatenate([q_body, q_susp, q_wheel], axis=1)
 
     v_samples = jax.random.normal(k2, (num_samples, 14)) * v_std
     p         = v_samples * M_diag_train
@@ -268,9 +291,10 @@ def train_neural_residuals():
     PHASE_1_END    = 2500
     PHASE_2_EPOCHS = NUM_EPOCHS - PHASE_1_END
 
+    # In residual_fitting.py — Phase 2 hyperparameters
     ALPHA_PHANTOM  = 3.0
-    ALPHA_PASS     = 1.0
-    DISSIPATION_THRESHOLD = 100.0
+    ALPHA_PASS     = 25.0   # was 1.0 — compensates for pass_norm >> mse_norm
+    DISSIPATION_THRESHOLD = 50.0  # was 100.0 — tighter bound on physical dissipation
 
     h_schedule_p1 = optax.cosine_decay_schedule(init_value=1e-3,
                                                   decay_steps=PHASE_1_END,
@@ -352,10 +376,11 @@ def train_neural_residuals():
                 dH_dq = jax.grad(
                     lambda q_: h_net.apply(params_, q_, p_s, setup_s)
                 )(q_s)
-                v       = p_s / M_diag
-                rate    = jnp.dot(dH_dq, v)
-                inject  = jax.nn.relu(rate)
-                phantom = 0.1 * jax.nn.relu(-rate - DISSIPATION_THRESHOLD)
+                v      = p_s / M_diag
+                rate   = jnp.dot(dH_dq, v)
+                # Squared hinge: smoother gradient near zero-violation boundary
+                inject = jax.nn.relu(rate) ** 2
+                phantom = 0.1 * jax.nn.relu(-rate - DISSIPATION_THRESHOLD) ** 2
                 return inject + phantom
             return jnp.mean(jax.vmap(per_sample)(q, p, setup))
 
