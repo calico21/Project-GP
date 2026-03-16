@@ -142,27 +142,38 @@ class DiffWMPCSolver:
     # ─────────────────────────────────────────────────────────────────────────
 
     def _dwt_1d_single_level(self, sig):
-        # mode='full' gives exactly len(sig)+len(filter)-1 — deterministic under
-        # jit+grad. .ravel() collapses any spurious unit dim from lax internals.
-        n  = sig.shape[0]
-        lo = jnp.convolve(sig, _DB4_LO, mode='full').ravel()[3::2][:n // 2]
-        hi = jnp.convolve(sig, _DB4_HI, mode='full').ravel()[3::2][:n // 2]
+        sig = sig.reshape(-1)     # absorb any spurious unit batch dim
+        n   = sig.shape[0]
+        lo  = jnp.convolve(sig, _DB4_LO, mode='full').reshape(-1)[3::2][:n // 2]
+        hi  = jnp.convolve(sig, _DB4_HI, mode='full').reshape(-1)[3::2][:n // 2]
         return lo, hi
 
     def _idwt_1d_single_level(self, lo, hi):
-        n     = lo.shape[0]
+        # Enforce 1D explicitly — convolve lowering inside doubly-JIT contexts
+        # can emit (1, 2n+3) under some XLA backends; reshape(-1) is safer than
+        # .ravel() because it works correctly on abstract tracers with unit dims.
+        lo = lo.reshape(-1)
+        hi = hi.reshape(-1)
+        n  = lo.shape[0]
+
         lo_up = jnp.zeros(2 * n).at[::2].set(lo)
         hi_up = jnp.zeros(2 * n).at[::2].set(hi)
-        sig   = (jnp.convolve(lo_up, _DB4_LO_R, mode='full').ravel()[2:2 * n + 2]
-                 + jnp.convolve(hi_up, _DB4_HI_R, mode='full').ravel()[2:2 * n + 2])
+
+        sig_lo = jnp.convolve(lo_up, _DB4_LO_R, mode='full').reshape(-1)
+        sig_hi = jnp.convolve(hi_up, _DB4_HI_R, mode='full').reshape(-1)
+        sig    = sig_lo[2 : 2 * n + 2] + sig_hi[2 : 2 * n + 2]
         return sig[:2 * n]
 
     def _dwt_1d_3level(self, sig_1d):
-        """Single-channel 3-level Db4 DWT. sig_1d: (N,) → (N,)"""
         lo1, hi1 = self._dwt_1d_single_level(sig_1d)
         lo2, hi2 = self._dwt_1d_single_level(lo1)
         lo3, hi3 = self._dwt_1d_single_level(lo2)
-        return jnp.concatenate([lo3, hi3, hi2, hi1])
+        # Explicit reshape(-1) on all inputs — if any prior step emitted a unit
+        # batch dim, concatenate would fail with "different numbers of dimensions"
+        return jnp.concatenate([
+            lo3.reshape(-1), hi3.reshape(-1),
+            hi2.reshape(-1), hi1.reshape(-1),
+        ])
 
     def _idwt_1d_3level(self, c):
         """Single-channel 3-level Db4 IDWT. c: (N,) → (N,)"""
@@ -302,8 +313,14 @@ class DiffWMPCSolver:
 
         # ── 2. Control effort (L2 + L1 on detail wavelet coefficients) ────────
         # Detail coefficients occupy upper N/2 of each column
-        n8 = self.N // 8
-        detail_coeffs = wavelet_coeffs[n8:]   # hi1, hi2, hi3 levels
+        # wavelet_coeffs is (N, 2). detail_coeffs must be the per-channel 1D
+        # high-frequency portion. Slicing rows gives (N-N//8, 2) — wrong.
+        # Correct: slice each channel separately and concatenate.
+        n8          = self.N // 8
+        detail_ch0  = wavelet_coeffs[n8:, 0]   # steer detail coeffs (N - N//8,)
+        detail_ch1  = wavelet_coeffs[n8:, 1]   # accel detail coeffs (N - N//8,)
+        detail_coeffs = jnp.concatenate([detail_ch0, detail_ch1])   # (2*(N-N//8),)
+
         effort_cost   = (jnp.sum(w_steer * U_opt[:, 0] ** 2) * 1e-3
                          + jnp.sum(w_accel * U_opt[:, 1] ** 2) * self.w_effort
                          + self.w_l1_detail * jnp.sum(jnp.abs(detail_coeffs)))
@@ -326,7 +343,7 @@ class DiffWMPCSolver:
         # ── 5. Friction circle — Augmented Lagrangian (UPGRADE-1) ─────────────
         # Constraint: g_i = (a_lat²_i + a_lon²_i) / (μ·g)² - 1 ≤ 0
         g_val       = 9.81
-        vx_traj = x_traj[:, STATE_VX].ravel()                      # guaranteed (N,)
+        vx_traj = x_traj[:, STATE_VX].reshape(-1)                       # guaranteed (N,)
         a_lat_sq    = (vx_traj ** 2 * jnp.abs(track_k)) ** 2
         vx_prev = jnp.concatenate([x0[STATE_VX:STATE_VX + 1].ravel(), vx_traj[:-1]])  # (N,)
         a_lon_sq    = ((vx_traj - vx_prev) / (self.dt_control + 1e-6)) ** 2
@@ -577,11 +594,13 @@ class DiffWMPCSolver:
                     track_w_left, track_w_right,
                     1.0, 0.0, self.dt_control,
                 )
-                vx_al    = x_al[:, STATE_VX].ravel()                              # strict (N,)
-                a_lat_sq = (vx_al ** 2 * jnp.abs(track_k)) ** 2
+                vx_al    = x_al[:, STATE_VX].reshape(-1)                          # strict (N,)
+                track_k_1d = track_k.reshape(-1)                                   # guard against (1,N)
+                a_lat_sq = (vx_al ** 2 * jnp.abs(track_k_1d)) ** 2
                 vx_prev  = jnp.concatenate([
-                    x0[STATE_VX:STATE_VX + 1].ravel(), vx_al[:-1]
-                ])                                                                 # (N,) guaranteed
+                    x0[STATE_VX : STATE_VX + 1].reshape(-1),                      # (1,)
+                    vx_al[:-1],                                                    # (N-1,)
+                ])                                                                   # (N,) guaranteed
                 a_lon_sq = ((vx_al - vx_prev) / self.dt_control) ** 2
                 g_al     = (a_lat_sq + a_lon_sq) / ((self.mu_friction * 9.81) ** 2 + 1e-4) - 1.0
 

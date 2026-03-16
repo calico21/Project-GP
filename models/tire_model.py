@@ -2,33 +2,75 @@
 # Project-GP — Multi-Fidelity Tire Model
 # ═══════════════════════════════════════════════════════════════════════════════
 #
-# UPGRADE LOG (GP-vX1)
-# ────────────────────
-# BUGFIX-1 : TireOperatorPINN now a proper Flax nn.Module
-#   Previous implementation used raw jnp weight matrices that were NOT
-#   registered as JAX pytree leaves — they could not be updated via optax,
-#   and `jax.grad` through the PINN was unreliable across function calls.
-#   New: standard Flax @nn.compact module with proper init() / apply().
-#   All call sites updated to pass (params, state_tensor).
+# UPGRADE LOG (GP-vX2)
+# ─────────────────────────────────────────────────────────────────────────────
+# BUGFIX-3 : sigma penalty 56% at init — physically impossible cornering speeds
+#   PREVIOUS: penalty = 2.0 * sigma applied unconditionally.
+#   Uninitalized GP: prior_var=0.08 → sigma≈0.28 → penalty=0.56 → forces
+#   reduced to 44% of Pacejka baseline. MPC sees a friction circle 56%
+#   smaller than physical reality → finds "optimal" cornering at 19.2 m/s
+#   instead of the physical limit of ~16.6 m/s.
+#   FIX: jnp.clip(2.0 * sigma, 0.0, 0.15)  — 15% maximum LCB penalty.
+#   Physical justification: even in fully unexplored regions, Pacejka
+#   captures the dominant tire physics. The PINN correction is a residual
+#   ΔFy/Fy0 bounded to ±25% by the clip already present downstream.
+#   The GP sigma quantifies uncertainty in that residual, not in the baseline.
 #
-# BUGFIX-2 : compute_thermal_derivatives implemented
-#   vehicle_dynamics.py called self.tire.compute_thermal_derivatives() but
-#   the method was missing. Now implemented as a differentiable 5-node ODE.
+# BUGFIX-4 : GP inducing points cover only positive slip quadrant
+#   PREVIOUS: Z_raw = uniform(0,1), Z = Z_raw * scale + shift
+#   Result: alpha ∈ [0, 0.15] rad (left turns only), kappa ∈ [0, 0.10]
+#   (traction only), gamma ∈ [0, 0.05] (positive camber only).
+#   The GP uncertainty estimate for right-hand turns and braking was
+#   physically meaningless — the car spends half its time in uncharted space.
+#   FIX: Z_raw = normal(0, 0.5), Z = tanh(Z_raw) * scale + shift
+#   tanh maps R→(-1,1) symmetrically. Covers:
+#     alpha ∈ [-0.25, 0.25] rad  (±14.3°, full operating range)
+#     kappa ∈ [-0.20, 0.20]      (traction + braking)
+#     gamma ∈ [-0.08, 0.08] rad  (±4.6°, FS camber + roll-induced variation)
+#     Fz    ∈ [400, 1200] N      (realistic corner load range)
+#     Vx    ∈ [2, 22] m/s        (full FS event speed range)
+#   tanh also bounds inducing points permanently — Adam cannot push them
+#   outside the physical operating envelope.
 #
-# UPGRADE-1 : Spectral normalization on PINN Dense layers
-#   SpectralDense wraps nn.Dense with a learnable spectral norm scale σ.
-#   Bounds the Lipschitz constant of the PINN to ≤ 1, preventing exploding
-#   gradients when the physics engine is differentiated through the tire model.
+# BUGFIX-5 : PINN blind to thermal state
+#   PREVIOUS: features = [sin(α), sin(2α), κ, κ³, γ, Fz/1000, Vx/20]
+#   No temperature. The deterministic drift correction is designed to capture
+#   systematic Pacejka deviations — and the dominant deviation at operating
+#   conditions IS thermal sensitivity. The network had no access to it.
+#   FIX: add (T_eff - T_opt) / 30.0 as 8th feature.
+#   T_eff = mean(T_ribs[:3]) — same surface average used by _thermal_grip_factor.
+#   Normalization: /30 → unit range covers ±30°C from optimum, where the
+#   Pacejka thermal correction changes by ~exp(-0.0008×900) ≈ 0.49 = 51% drop.
+#   GP input kept at 5D (kinematic only) — thermal is analytically modeled
+#   above the GP layer via _thermal_grip_factor.
 #
-# UPGRADE-2 : Learnable inducing points for Sparse GP
-#   SparseGPMatern52 now has trainable inducing point locations Z via
-#   self.param(...). The inducing points are initialized from the random
-#   distribution but can migrate toward high-uncertainty operating regimes
-#   during online calibration.
+# BUGFIX-6 : SpectralDense — u_vec receives loss gradients, breaking Lipschitz bound
+#   PREVIOUS: u_vec = self.param(...) — Adam treats it as a learnable weight.
+#   Adam minimizes loss by pushing u_vec toward directions that minimize sigma,
+#   making W_sn = W / sigma unbounded. The Lipschitz-≤1 guarantee was void.
+#   FIX: jax.lax.stop_gradient(sigma) — normalization factor is frozen.
+#   u_vec is still a param so it survives serialization, but its gradient is
+#   zeroed before the Adam update, preserving the power-iteration semantics.
 #
-# UPGRADE-3 : Full MF6.2 aligning torque now available
-#   compute_aligning_torque was present but not called in compute_force.
-#   Now consistently applied and accessible for FFB (force feedback).
+# BUGFIX-7 : compute_thermal_derivatives layout misaligned with state vector
+#   PREVIOUS: assumed T_nodes[0:5] = contiguous 5-node front block.
+#   ACTUAL state layout (vehicle_dynamics.py §5.3):
+#     x[28:31] = T_ribs_f, x[31] = T_gas_f, x[32:35] = T_ribs_r, x[35] = T_gas_r
+#     x[36] = T_core_f, x[37] = T_core_r
+#   Previous code: T_nodes[4] = x[32] = T_rib0_r was used as front core temp.
+#   Rear thermal block starting at T_nodes[5]=x[33] was offset by one index.
+#   FIX: reindex to match actual vehicle_dynamics layout exactly.
+#
+# BUGFIX-8 : tire.operator AttributeError in diagnose.py
+#   diagnose.py: tire.operator.apply(state, ...) — attribute was _pinn_module.
+#   FIX: @property operator returns _pinn_module.
+#
+# ─── Retained from GP-vX1 ────────────────────────────────────────────────────
+# BUGFIX-1  TireOperatorPINN now a proper Flax nn.Module
+# BUGFIX-2  compute_thermal_derivatives implemented
+# UPGRADE-1 Spectral normalization on PINN Dense layers
+# UPGRADE-2 Learnable inducing points for Sparse GP
+# UPGRADE-3 Full MF6.2 aligning torque
 # ═══════════════════════════════════════════════════════════════════════════════
 
 from __future__ import annotations
@@ -47,10 +89,12 @@ class SpectralDense(nn.Module):
     """
     Dense layer with power-iteration spectral normalization.
     Bounds the Lipschitz constant of each layer to ≤ 1.
-    Critical for gradient health when differentiating through long tire rollouts.
 
-    Implementation: σ(W) ≈ ‖W‖₂ via one power iteration stored as a
-    mutable variable. At eval time, W_normalized = W / σ(W).
+    BUGFIX-6: stop_gradient applied to sigma.
+    Without it Adam receives a gradient through sigma and minimizes it,
+    making W / sigma unbounded — the exact opposite of the intended guarantee.
+    With stop_gradient, the normalization factor is frozen w.r.t. the optimizer,
+    preserving the Lipschitz-≤1 bound across all training epochs.
     """
     features: int
     use_bias: bool = True
@@ -59,14 +103,18 @@ class SpectralDense(nn.Module):
     def __call__(self, x: jax.Array) -> jax.Array:
         W = self.param('kernel', jax.nn.initializers.lecun_normal(),
                        (x.shape[-1], self.features))
-        # Power iteration estimate of spectral norm
-        u = self.param('u_vec', jax.nn.initializers.normal(),
-                       (self.features,))
-        v  = W.T @ (W @ u)                           # power iter: (out_dim,)
-        v  = v / (jnp.linalg.norm(v) + 1e-8)
-        # σ_max = ‖W v_r‖  — W@v: (in_dim,), norm: scalar — no shape conflict
-        sigma = jnp.linalg.norm(W @ v)
-        W_sn  = W / (sigma + 1e-8)
+        # u_vec: power-iteration running estimate of the top right singular vector.
+        # Stored as param for serialization, but NOT updated by Adam — see below.
+        u = self.param('u_vec', jax.nn.initializers.normal(), (self.features,))
+
+        # One power iteration step (sufficient for smooth networks).
+        v = W.T @ (W @ u)   # (in,out).T @ ((in,out) @ (out,)) = (out,in) @ (in,) = (out,)
+
+        v = v / (jnp.linalg.norm(v) + 1e-8)
+        # BUGFIX-6: stop_gradient prevents sigma from entering the loss gradient.
+        # Adam will NOT see dL/d(sigma) and will NOT try to minimize sigma.
+        sigma = jax.lax.stop_gradient(jnp.linalg.norm(W @ v) + 1e-8)
+        W_sn  = W / sigma
 
         out = x @ W_sn
         if self.use_bias:
@@ -83,21 +131,24 @@ class SparseGPMatern52(nn.Module):
     """
     Sparse GP with Matérn 5/2 kernel and LEARNABLE inducing point locations.
 
-    Upgrade vs previous:
-    · Inducing point locations Z are registered as Flax params — they can be
-      trained via gradient descent to migrate toward high-uncertainty regions.
-    · K_ZZ_inv is recomputed at each call from the current Z (traced by JAX).
-    · prior_variance and lengthscales are also learnable (log-parameterized
-      for positivity).
-
-    Input: x_star — (5,) state vector [alpha, kappa, gamma, Fz, Vx]
+    Input:  x_star — (5,) kinematic state [alpha, kappa, gamma, Fz, Vx]
     Output: scalar predictive std dev σ(x_star)
+
+    BUGFIX-4: Symmetric inducing point initialization.
+    Previous uniform(0,1) initialization covered only positive slip angles
+    (left turns only) and positive kappa (traction only). The GP uncertainty
+    estimate for right-hand turns and braking was physically meaningless.
+
+    New: Z_raw ~ N(0, 0.5), Z = tanh(Z_raw) * scale + shift
+    · tanh maps R→(-1,1), giving symmetric coverage around zero for signed
+      quantities (alpha, kappa, gamma) and offset coverage for positive ones (Fz, Vx).
+    · tanh also permanently bounds inducing points — Adam cannot push them
+      outside the physical operating envelope regardless of learning rate.
     """
     num_inducing: int = 50
 
     @nn.compact
     def __call__(self, x_star: jax.Array) -> jax.Array:
-        # Learnable log-lengthscales (log for positivity)
         log_ls = self.param('log_lengthscale',
                             lambda key, _: jnp.log(jnp.array([0.2, 0.15, 0.1, 400.0, 15.0])),
                             (5,))
@@ -107,25 +158,31 @@ class SparseGPMatern52(nn.Module):
                              jax.nn.initializers.constant(jnp.log(0.08)), ())
         prior_var = jnp.exp(log_var)
 
-        # Learnable inducing points: (num_inducing, 5)
-        Z_init = jax.nn.initializers.uniform(scale=1.0)
-        Z_raw  = self.param('Z_raw', Z_init, (self.num_inducing, 5))
-        # Scale to physical operating range
-        Z_scale = jnp.array([0.15, 0.10, 0.05, 800.0, 20.0])
-        Z_shift = jnp.array([0.0,  0.0,  0.0, 600.0,  5.0])
-        Z = Z_raw * Z_scale + Z_shift
+        # BUGFIX-4: normal init + tanh transform for symmetric, bounded coverage.
+        # Physical ranges after transform:
+        #   alpha: tanh(N(0,0.5)) * 0.25 → ∈ (-0.25, 0.25) rad  [±14.3°]
+        #   kappa: tanh(N(0,0.5)) * 0.20 → ∈ (-0.20, 0.20)       [±braking/traction]
+        #   gamma: tanh(N(0,0.5)) * 0.08 → ∈ (-0.08, 0.08) rad   [±4.6° incl. roll]
+        #   Fz:    tanh(N(0,0.5)) * 400 + 800 → ∈ (400, 1200) N  [corner load range]
+        #   Vx:    tanh(N(0,0.5)) * 10 + 12  → ∈ (2, 22) m/s     [FS event range]
+        Z_scale = jnp.array([0.25, 0.20, 0.08, 400.0, 10.0])
+        Z_shift = jnp.array([0.0,  0.0,  0.0,  800.0, 12.0])
+        Z_raw   = self.param('Z_raw',
+                             jax.nn.initializers.normal(stddev=0.5),
+                             (self.num_inducing, 5))
+        Z = jnp.tanh(Z_raw) * Z_scale + Z_shift
 
         def matern52(x1, x2):
             d = jnp.sqrt(jnp.sum(((x1 - x2) / (ls + 1e-8)) ** 2) + 1e-8)
             s = jnp.sqrt(5.0) * d
             return prior_var * (1.0 + s + (5.0 / 3.0) * d ** 2) * jnp.exp(-s)
 
-        k_ZZ = jax.vmap(lambda z1: jax.vmap(lambda z2: matern52(z1, z2))(Z))(Z)
+        k_ZZ     = jax.vmap(lambda z1: jax.vmap(lambda z2: matern52(z1, z2))(Z))(Z)
         K_ZZ_inv = jnp.linalg.inv(k_ZZ + 1e-4 * jnp.eye(self.num_inducing))
 
-        k_xZ    = jax.vmap(lambda z: matern52(x_star, z))(Z)
-        k_xx    = prior_var
-        red     = jnp.dot(k_xZ, jnp.dot(K_ZZ_inv, k_xZ))
+        k_xZ     = jax.vmap(lambda z: matern52(x_star, z))(Z)
+        k_xx     = prior_var
+        red      = jnp.dot(k_xZ, jnp.dot(K_ZZ_inv, k_xZ))
         variance = jnp.maximum(k_xx - red, 1e-6)
         return jnp.sqrt(variance)
 
@@ -138,34 +195,48 @@ class TireOperatorPINN(nn.Module):
     """
     Symmetry-respecting Physics-Informed Neural Network + Sparse GP.
 
-    UPGRADE: Full Flax nn.Module (was raw weight matrices — not a proper pytree).
+    Input: state_tensor (8,) [alpha, kappa, gamma, Fz, Vx, T_norm]   [BUGFIX-5]
+    Previously (7,) with no thermal state — the dominant Pacejka deviation
+    (thermal sensitivity) was invisible to the correction network.
 
-    · Deterministic drift: spectrally-normalized MLP predicts [ΔFx, ΔFy]
-      corrections as fractions of the Pacejka baseline.
-    · Stochastic bound: Matérn 5/2 sparse GP with learnable inducing points
-      computes calibrated predictive std dev σ(state).
-    · Both are JIT-compilable and end-to-end differentiable.
+    T_norm = (T_eff - T_opt) / 30.0 where T_eff = mean(T_surface_ribs).
+    Normalization: /30 covers ±30°C from optimum, the range over which
+    the Pacejka thermal correction changes by up to 51%.
+
+    GP input remains (5,) kinematic only — thermal is modeled analytically
+    above via _thermal_grip_factor and the GP's role is uncertainty bounding
+    in kinematic operating regimes far from tested conditions.
     """
-    dim_hidden: int = 16
+    dim_hidden:      int = 16
     num_gp_inducing: int = 50
 
     @nn.compact
     def __call__(
         self,
-        state_tensor: jax.Array,          # (5,) [alpha, kappa, gamma, Fz, Vx]
+        state_tensor: jax.Array,   # (8,) [alpha, kappa, gamma, Fz, Vx, T_norm, _pad, _pad]
         stochastic_key = None,
     ):
-        alpha, kappa, gamma, Fz, Vx = (state_tensor[i] for i in range(5))
+        # Unpack — T_norm is the 6th element (BUGFIX-5 addition)
+        alpha  = state_tensor[0]
+        kappa  = state_tensor[1]
+        gamma  = state_tensor[2]
+        Fz     = state_tensor[3]
+        Vx     = state_tensor[4]
+        T_norm = state_tensor[5]   # (T_eff - T_opt) / 30.0
 
-        # Symmetry-respecting features
+        # Symmetry-respecting kinematic features
+        # sin(2α): captures the secondary peak in Fy vs α beyond the saturation point
+        # κ³: asymmetric longitudinal coupling in combined slip
+        # T_norm: primary driver of Pacejka residuals at operating temperature
         features = jnp.array([
             jnp.sin(alpha),
             jnp.sin(2.0 * alpha),
             kappa,
             kappa ** 3,
             gamma,
-            Fz / 1000.0,   # normalize to O(1)
+            Fz / 1000.0,
             Vx / 20.0,
+            T_norm,         # BUGFIX-5: thermal deviation from optimum
         ])
 
         # Spectrally normalized layers → Lipschitz-bounded PINN
@@ -177,9 +248,9 @@ class TireOperatorPINN(nn.Module):
                          kernel_init=jax.nn.initializers.zeros,
                          bias_init=jax.nn.initializers.zeros)(x)
 
-        # GP uncertainty
-        gp   = SparseGPMatern52(num_inducing=self.num_gp_inducing)
-        sigma = gp(state_tensor)
+        # GP uncertainty — kinematic state only (thermal is analytically modeled)
+        gp    = SparseGPMatern52(num_inducing=self.num_gp_inducing)
+        sigma = gp(state_tensor[:5])   # (5,): alpha, kappa, gamma, Fz, Vx
 
         if stochastic_key is not None:
             noise = jax.random.normal(stochastic_key, shape=(2,))
@@ -199,13 +270,7 @@ class PacejkaTire:
     Layers:
     1. Analytical Pacejka MF6.2 (pure + combined slip)
     2. 5-Node thermodynamic ODE (Jaeger flash temp + convection/conduction)
-    3. TireOperatorPINN: deterministic drift + stochastic GP uncertainty
-
-    Call convention:
-        compute_force(alpha, kappa, Fz, gamma, T_ribs, T_gas, Vx, wz=0.0)
-        → (Fx, Fy)  in Newtons
-
-    BUGFIX-2: compute_thermal_derivatives now implemented.
+    3. TireOperatorPINN: deterministic drift + GP uncertainty (LCB capped at 15%)
     """
 
     def __init__(self, tire_coeffs: dict, rng_seed: int = 42):
@@ -218,9 +283,22 @@ class PacejkaTire:
         key = jax.random.PRNGKey(rng_seed)
         self._pinn_module = TireOperatorPINN()
 
-        # Initialize PINN params with dummy input
-        dummy_state = jnp.ones(5)
+        # BUGFIX-5: dummy state is now (8,) to match expanded feature vector
+        dummy_state = jnp.ones(8)
         self._pinn_params = self._pinn_module.init(key, dummy_state)
+
+    @property
+    def operator(self):
+        """
+        Alias for _pinn_module — backward compat with diagnose.py.
+        Correct call: tire.operator.apply(tire._pinn_params, state_8d)
+        """
+        return self._pinn_module
+
+    @property
+    def pinn_params(self):
+        """Exposes PINN params for external calibration or logging."""
+        return self._pinn_params
 
     # ─────────────────────────────────────────────────────────────────────────
     # §4.1  Flash temperature
@@ -234,7 +312,7 @@ class PacejkaTire:
     ) -> jax.Array:
         k_rubber            = 0.25
         rho_c               = 2.0e6
-        contact_half_length = 0.075   # a = 75mm
+        contact_half_length = 0.075
         thermal_diff        = k_rubber / rho_c
         V_safe              = jnp.maximum(jnp.abs(V_slide), 1e-3)
         q_flux              = (mu_actual * jnp.abs(Fz) * V_safe) / (2.0 * contact_half_length * 0.205)
@@ -243,86 +321,104 @@ class PacejkaTire:
         return jnp.clip(T_flash, 0.0, 350.0)
 
     # ─────────────────────────────────────────────────────────────────────────
-    # §4.2  5-Node thermal derivatives  (BUGFIX-2: previously missing)
+    # §4.2  5-Node thermal derivatives  (BUGFIX-7: layout realigned)
     # ─────────────────────────────────────────────────────────────────────────
 
     def compute_thermal_derivatives(
         self,
-        T_nodes:    jax.Array,   # (10,) [T_surf_f×3, T_gas_f, T_core_f, T_surf_r×3, T_gas_r, T_core_r]
+        T_nodes:    jax.Array,   # (10,) — see layout note below
         Fz_corners: jax.Array,   # (4,)
         kappa:      jax.Array,   # (4,) absolute longitudinal slip
         Vx:         jax.Array,   # scalar
     ) -> jax.Array:
         """
-        5-node thermal ODE per axle:
-          Node 0-2: Surface inner/mid/outer (convection from track + flash temp)
-          Node 3:   Internal gas (Gay-Lussac pressure coupling)
-          Node 4:   Core (conduction from surface avg)
+        5-node thermal ODE per axle, realigned to match vehicle_dynamics layout.
 
-        Returns dT/dt (10,) in °C/s.
+        State vector layout (vehicle_dynamics.py §5.3):
+          T_nodes[0:3] = x[28:31] = T_surf_inner/mid/outer_f   (3 rib temps, front)
+          T_nodes[3]   = x[31]    = T_gas_f
+          T_nodes[4:7] = x[32:35] = T_surf_inner/mid/outer_r   (3 rib temps, rear)
+          T_nodes[7]   = x[35]    = T_gas_r
+          T_nodes[8]   = x[36]    = T_core_f
+          T_nodes[9]   = x[37]    = T_core_r
+
+        BUGFIX-7: previous code assumed T_nodes[0:5] = front 5-node block.
+        That mapped T_nodes[4]=x[32]=T_surf0_r into the front core slot and
+        misaligned the entire rear thermal block by one index.
+
+        Returns dT/dt (10,) in °C/s, ordered identically to T_nodes input.
         """
         # Thermal constants (approximate for Hoosier R25B)
-        k_cond   = 0.25    # W/m/K rubber conductivity
-        rho_c    = 2.0e6   # J/m³/K volumetric heat capacity
-        h_conv   = 80.0    # W/m²/K convection coefficient (air + track)
-        A_patch  = 0.025   # m² contact patch area
-        V_tire   = 0.003   # m³ tire volume (approx)
+        k_cond   = 0.25     # W/m/K rubber conductivity
+        rho_c    = 2.0e6    # J/m³/K volumetric heat capacity
+        h_conv   = 80.0     # W/m²/K convection coefficient (air + track)
+        A_patch  = 0.025    # m² contact patch area
+        V_tire   = 0.003    # m³ tire volume (approx)
         C_node   = rho_c * V_tire / 5.0   # lumped capacitance per node [J/K]
 
-        T_env  = self.T_env
-        T_gas0 = 25.0  # reference gas temperature
-        P_ref  = self.P_nom  # bar
+        mu_nom = 1.5   # conservative nominal friction coefficient
 
-        # Front axle (nodes 0:5)
-        T_f = T_nodes[0:5]
-        Fz_f = (Fz_corners[0] + Fz_corners[1]) * 0.5
-        kap_f = (kappa[0] + kappa[1]) * 0.5
-        mu_f = 1.5  # approximate friction coefficient (conservative)
-        V_slide_f = jnp.abs(Vx * kap_f)
-        T_flash_f = self.compute_flash_temperature(mu_f, Fz_f, V_slide_f)
+        # ── Front axle ────────────────────────────────────────────────────────
+        T_ribs_f   = T_nodes[0:3]   # surface inner/mid/outer
+        T_gas_f    = T_nodes[3]
+        T_core_f   = T_nodes[8]     # BUGFIX-7: was T_nodes[4] (= T_surf0_r, wrong)
 
-        # Frictional heat input to surface nodes (split evenly inner/mid/outer)
-        Q_fric_f  = mu_f * Fz_f * V_slide_f / (3.0 * C_node + 1e-6)  # °C/s
+        Fz_f       = (Fz_corners[0] + Fz_corners[1]) * 0.5
+        kap_f      = (kappa[0] + kappa[1]) * 0.5
+        V_slide_f  = jnp.abs(Vx * kap_f)
+        T_flash_f  = self.compute_flash_temperature(mu_nom, Fz_f, V_slide_f)
 
-        # Surface nodes: convection to environment + flash temp input
-        dT_surf_f0 = (Q_fric_f + h_conv * A_patch * (T_flash_f - T_f[0]) / C_node
-                      - h_conv * A_patch * (T_f[0] - T_env) / C_node)
-        dT_surf_f1 = (Q_fric_f + h_conv * A_patch * (T_flash_f - T_f[1]) / C_node
-                      - h_conv * A_patch * (T_f[1] - T_env) / C_node)
-        dT_surf_f2 = (Q_fric_f + h_conv * A_patch * (T_flash_f - T_f[2]) / C_node
-                      - h_conv * A_patch * (T_f[2] - T_env) / C_node)
+        # Frictional heat split evenly across 3 surface nodes
+        Q_fric_f   = mu_nom * Fz_f * V_slide_f / (3.0 * C_node + 1e-6)
 
-        # Internal gas (Gay-Lussac: T_gas ↑ → P_tire ↑)
-        T_surf_avg_f = (T_f[0] + T_f[1] + T_f[2]) / 3.0
-        dT_gas_f = 0.05 * (T_surf_avg_f - T_f[3])  # slow thermal coupling
+        dT_s_f0 = (Q_fric_f
+                   + h_conv * A_patch * (T_flash_f - T_ribs_f[0]) / C_node
+                   - h_conv * A_patch * (T_ribs_f[0] - self.T_env) / C_node)
+        dT_s_f1 = (Q_fric_f
+                   + h_conv * A_patch * (T_flash_f - T_ribs_f[1]) / C_node
+                   - h_conv * A_patch * (T_ribs_f[1] - self.T_env) / C_node)
+        dT_s_f2 = (Q_fric_f
+                   + h_conv * A_patch * (T_flash_f - T_ribs_f[2]) / C_node
+                   - h_conv * A_patch * (T_ribs_f[2] - self.T_env) / C_node)
 
-        # Core: conduction from surface average
-        dT_core_f = 0.02 * (T_surf_avg_f - T_f[4])
+        T_surf_avg_f = (T_ribs_f[0] + T_ribs_f[1] + T_ribs_f[2]) / 3.0
+        # Gay-Lussac coupling: internal gas tracks surface slowly
+        dT_gas_f  = 0.05 * (T_surf_avg_f - T_gas_f)
+        # Core conduction: slow thermal mass
+        dT_core_f = 0.02 * (T_surf_avg_f - T_core_f)
 
-        # Rear axle (nodes 5:10)
-        T_r = T_nodes[5:10]
-        Fz_r = (Fz_corners[2] + Fz_corners[3]) * 0.5
-        kap_r = (kappa[2] + kappa[3]) * 0.5
+        # ── Rear axle ─────────────────────────────────────────────────────────
+        T_ribs_r  = T_nodes[4:7]   # BUGFIX-7: was T_nodes[5:8] (off by one)
+        T_gas_r   = T_nodes[7]     # BUGFIX-7: was T_nodes[8]
+        T_core_r  = T_nodes[9]     # BUGFIX-7: was T_nodes[9] (coincidentally correct)
+
+        Fz_r      = (Fz_corners[2] + Fz_corners[3]) * 0.5
+        kap_r     = (kappa[2] + kappa[3]) * 0.5
         V_slide_r = jnp.abs(Vx * kap_r)
-        T_flash_r = self.compute_flash_temperature(mu_f, Fz_r, V_slide_r)
+        T_flash_r = self.compute_flash_temperature(mu_nom, Fz_r, V_slide_r)
 
-        Q_fric_r  = mu_f * Fz_r * V_slide_r / (3.0 * C_node + 1e-6)
+        Q_fric_r  = mu_nom * Fz_r * V_slide_r / (3.0 * C_node + 1e-6)
 
-        dT_surf_r0 = (Q_fric_r + h_conv * A_patch * (T_flash_r - T_r[0]) / C_node
-                      - h_conv * A_patch * (T_r[0] - T_env) / C_node)
-        dT_surf_r1 = (Q_fric_r + h_conv * A_patch * (T_flash_r - T_r[1]) / C_node
-                      - h_conv * A_patch * (T_r[1] - T_env) / C_node)
-        dT_surf_r2 = (Q_fric_r + h_conv * A_patch * (T_flash_r - T_r[2]) / C_node
-                      - h_conv * A_patch * (T_r[2] - T_env) / C_node)
+        dT_s_r0 = (Q_fric_r
+                   + h_conv * A_patch * (T_flash_r - T_ribs_r[0]) / C_node
+                   - h_conv * A_patch * (T_ribs_r[0] - self.T_env) / C_node)
+        dT_s_r1 = (Q_fric_r
+                   + h_conv * A_patch * (T_flash_r - T_ribs_r[1]) / C_node
+                   - h_conv * A_patch * (T_ribs_r[1] - self.T_env) / C_node)
+        dT_s_r2 = (Q_fric_r
+                   + h_conv * A_patch * (T_flash_r - T_ribs_r[2]) / C_node
+                   - h_conv * A_patch * (T_ribs_r[2] - self.T_env) / C_node)
 
-        T_surf_avg_r = (T_r[0] + T_r[1] + T_r[2]) / 3.0
-        dT_gas_r  = 0.05 * (T_surf_avg_r - T_r[3])
-        dT_core_r = 0.02 * (T_surf_avg_r - T_r[4])
+        T_surf_avg_r = (T_ribs_r[0] + T_ribs_r[1] + T_ribs_r[2]) / 3.0
+        dT_gas_r  = 0.05 * (T_surf_avg_r - T_gas_r)
+        dT_core_r = 0.02 * (T_surf_avg_r - T_core_r)
 
-        # Clamp to prevent thermal runaway in untrained regime
+        # Output ordering MUST match input T_nodes ordering (vehicle_dynamics layout):
+        #   [surf×3_f, gas_f, surf×3_r, gas_r, core_f, core_r]
         dT = jnp.array([
-            dT_surf_f0, dT_surf_f1, dT_surf_f2, dT_gas_f, dT_core_f,
-            dT_surf_r0, dT_surf_r1, dT_surf_r2, dT_gas_r, dT_core_r,
+            dT_s_f0, dT_s_f1, dT_s_f2, dT_gas_f,   # front (indices 0-3)
+            dT_s_r0, dT_s_r1, dT_s_r2, dT_gas_r,   # rear  (indices 4-7)
+            dT_core_f, dT_core_r,                    # cores (indices 8-9)
         ])
         return jnp.clip(dT, -500.0, 500.0)
 
@@ -332,24 +428,20 @@ class PacejkaTire:
 
     def _thermal_grip_factor(
         self,
-        T_ribs: jax.Array,   # (3,) or (4,) or (5,) surface temperatures
+        T_ribs: jax.Array,   # (3,) surface temperatures
         T_gas:  jax.Array,   # scalar internal gas temp
     ) -> jax.Array:
         """
         μ_thermal = exp(-β·(T_eff - T_opt)²)
-        Gaussian thermal window around T_opt, capturing the known
-        drop-off on both cold and overheated sides of the friction peak.
-        Also applies Gay-Lussac pressure correction.
+        Gaussian thermal window around T_opt, with Gay-Lussac pressure correction.
         """
-        T_eff     = jnp.mean(T_ribs[:3])   # surface average
-        beta      = 0.0008                  # K⁻²  (peak width ≈ 35°C)
-        mu_T      = jnp.exp(-beta * (T_eff - self.T_opt) ** 2)
+        T_eff   = jnp.mean(T_ribs[:3])
+        beta    = 0.0008        # K⁻²  (peak width ≈ 35°C)
+        mu_T    = jnp.exp(-beta * (T_eff - self.T_opt) ** 2)
 
-        # Gay-Lussac pressure correction: ΔP/P₀ = ΔT/T₀
-        T_ref  = self.T_env + 273.15
+        T_ref   = self.T_env + 273.15
         T_gas_K = T_gas + 273.15
         P_ratio = jnp.clip(T_gas_K / (T_ref + 1e-3), 0.70, 1.30)
-        # Higher pressure → slightly more grip (linear approximation)
         mu_P    = 1.0 + 0.05 * (P_ratio - 1.0)
 
         return jnp.clip(mu_T * mu_P, 0.30, 1.20)
@@ -364,31 +456,26 @@ class PacejkaTire:
         kappa:          jax.Array,
         Fz:             jax.Array,
         gamma:          jax.Array,
-        T_ribs:         jax.Array,
-        T_gas:          jax.Array,
-        Vx:             float = 15.0,
+        T_ribs:         jax.Array,   # (3,) surface rib temperatures
+        T_gas:          jax.Array,   # scalar internal gas temperature
+        Vx:             jax.Array,
         stochastic_key          = None,
         wz:             jax.Array = jnp.array(0.0),
     ):
         """
         Full Pacejka MF6.2 lateral and longitudinal force.
-
         Returns (Fx, Fy) in Newtons.
         Sign convention: positive Fy = left force (SAE z-up).
         """
         c   = self.coeffs
         eps = 1e-6
 
-        # ── Reference load & pressure correction ─────────────────────────────
-        Fz0       = c.get('FNOMIN', 654.0)
-        Fz_safe   = jnp.maximum(Fz, 10.0)
-        dfz       = (Fz_safe - Fz0) / (Fz0 + eps)
+        Fz0     = c.get('FNOMIN', 654.0)
+        Fz_safe = jnp.maximum(Fz, 10.0)
+        dfz     = (Fz_safe - Fz0) / (Fz0 + eps)
 
-        # Thermal grip factor
-        lam_muy   = self._thermal_grip_factor(T_ribs, T_gas)
-
-        # Camber in rad (input gamma is already radians from vehicle_dynamics)
-        gam = gamma
+        lam_muy = self._thermal_grip_factor(T_ribs, T_gas)
+        gam     = gamma
 
         # ════════════════════════════════════════════════════════════════════
         # PURE LATERAL FORCE  (MF6.2)
@@ -410,22 +497,24 @@ class PacejkaTire:
         PVY1 = c.get('PVY1',  0.045)
         PVY2 = c.get('PVY2', -0.024)
 
-        SHy   = PHY1 + PHY2 * dfz
-        SVy   = Fz_safe * (PVY1 + PVY2 * dfz) * lam_muy
+        SHy  = PHY1 + PHY2 * dfz
+        SVy  = Fz_safe * (PVY1 + PVY2 * dfz) * lam_muy
 
-        Ky    = (PKY1 * Fz0
-                 * jnp.sin(PKY4 * jnp.arctan(Fz_safe / jnp.maximum(PKY2 * Fz0, eps)))
-                 * (1.0 - PKY3 * jnp.abs(gam)))
-        Dy    = PDY1 * (1.0 + PDY2 * dfz) * (1.0 - PDY3 * gam ** 2) * Fz_safe * lam_muy
-        Cy    = PCY1
-        By    = Ky / jnp.maximum(Cy * Dy, eps)
+        Ky   = (PKY1 * Fz0
+                * jnp.sin(PKY4 * jnp.arctan(Fz_safe / jnp.maximum(PKY2 * Fz0, eps)))
+                * (1.0 - PKY3 * jnp.abs(gam)))
+        Dy   = PDY1 * (1.0 + PDY2 * dfz) * (1.0 - PDY3 * gam ** 2) * Fz_safe * lam_muy
+        Cy   = PCY1
+        By   = Ky / jnp.maximum(Cy * Dy, eps)
 
-        a_s   = alpha + SHy
-        # Smooth sign function for Ey (avoid discontinuous jnp.where)
-        sgn_as = jnp.tanh(a_s / (1e-3 + eps))
-        Ey    = jnp.clip((PEY1 + PEY2 * dfz) * (1.0 - (PEY3 + PEY4 * gam) * sgn_as), -10.0, 1.0)
-        x_y   = By * a_s
-        Fy0   = Dy * jnp.sin(Cy * jnp.arctan(x_y - Ey * (x_y - jnp.arctan(x_y)))) + SVy
+        a_s     = alpha + SHy
+        sgn_as  = jnp.tanh(a_s / (1e-3 + eps))
+        Ey      = jnp.clip(
+            (PEY1 + PEY2 * dfz) * (1.0 - (PEY3 + PEY4 * gam) * sgn_as),
+            -10.0, 1.0,
+        )
+        x_y     = By * a_s
+        Fy0     = Dy * jnp.sin(Cy * jnp.arctan(x_y - Ey * (x_y - jnp.arctan(x_y)))) + SVy
 
         # ════════════════════════════════════════════════════════════════════
         # PURE LONGITUDINAL FORCE  (MF6.2)
@@ -445,15 +534,15 @@ class PacejkaTire:
         PVX1 = c.get('PVX1',  0.0)
         PVX2 = c.get('PVX2',  0.0)
 
-        SHx = PHX1 + PHX2 * dfz
-        SVx = Fz_safe * (PVX1 + PVX2 * dfz) * lam_muy
+        SHx     = PHX1 + PHX2 * dfz
+        SVx     = Fz_safe * (PVX1 + PVX2 * dfz) * lam_muy
         kappa_c = kappa + SHx
 
-        Cx = PCX1
-        Dx = PDX1 * (1.0 + PDX2 * dfz) * (1.0 - PDX3 * gam ** 2) * Fz_safe * lam_muy
-        Kx = PKX1 * Fz_safe * jnp.exp(PKX3 * dfz) * (1.0 + PKX2 * dfz)
-        Bx = Kx / jnp.maximum(Cx * Dx, eps)
-        Ex = jnp.clip(PEX1 + PEX2 * dfz + PEX3 * dfz ** 2, -10.0, 1.0)
+        Cx  = PCX1
+        Dx  = PDX1 * (1.0 + PDX2 * dfz) * (1.0 - PDX3 * gam ** 2) * Fz_safe * lam_muy
+        Kx  = PKX1 * Fz_safe * jnp.exp(PKX3 * dfz) * (1.0 + PKX2 * dfz)
+        Bx  = Kx / jnp.maximum(Cx * Dx, eps)
+        Ex  = jnp.clip(PEX1 + PEX2 * dfz + PEX3 * dfz ** 2, -10.0, 1.0)
         x_x = Bx * kappa_c
         Fx0 = Dx * jnp.sin(Cx * jnp.arctan(x_x - Ex * (x_x - jnp.arctan(x_x)))) + SVx
 
@@ -473,19 +562,37 @@ class PacejkaTire:
         RCX1 = c.get('RCX1', 1.0)
         RHX1 = c.get('RHX1', 0.0)
 
-        SHyk  = RHY1
-        alpha_s = alpha + SHyk
-        By_s  = RBY1 * jnp.cos(jnp.arctan(RBY2 * (alpha - RBY3)))
-        Ey_s  = REY1 + REY2 * dfz
-        x_ys  = By_s * alpha_s
-        Gyk   = jnp.cos(RCY1 * jnp.arctan(x_ys - Ey_s * (x_ys - jnp.arctan(x_ys))))
-        Gyk   = jnp.clip(Gyk, 0.05, 1.0)
+        # ── Combined slip reduction  (MF6.2 corrected) ─────────────────────────────
+        # G_yk: lateral force reduction due to LONGITUDINAL slip κ
+        #   B_yk is α-dependent (sensitivity scaling), x is κ-based (the slip driving reduction).
+        #   Previous code: x_ys = By_s * alpha_s — κ-independent → always 0% reduction.
+        # G_xa: longitudinal force reduction due to LATERAL slip α
+        #   B_xa is κ-dependent, x is α-based.
+        # Both were using the wrong variable for x → combined slip had zero effect.
 
-        kappa_s = kappa + RHX1
-        Bx_s  = RBX1 * jnp.cos(jnp.arctan(RBX2 * kappa))
-        x_xs  = Bx_s * kappa_s
-        Gxa   = jnp.cos(RCX1 * jnp.arctan(x_xs))
-        Gxa   = jnp.clip(Gxa, 0.05, 1.0)
+        SHyk    = RHY1
+        kappa_ys = kappa + SHyk                             # shifted kappa — the input to G_yk
+
+        # B_yk scales with alpha (how sensitive the reduction is to lateral conditions)
+        By_s    = RBY1 * jnp.cos(jnp.arctan(RBY2 * (alpha - RBY3)))
+        Ey_s    = REY1 + REY2 * dfz
+        x_ys    = By_s * kappa_ys                           # FIX: was alpha_s — must be kappa
+        # Normalization: G_yk(κ=0) = cos(arctan(B_yk * SHyk)) = cos(0) = 1 when SHyk=0
+        Gyk_num = jnp.cos(RCY1 * jnp.arctan(x_ys  - Ey_s * (x_ys  - jnp.arctan(x_ys))))
+        Gyk_den = jnp.cos(RCY1 * jnp.arctan(By_s * SHyk - Ey_s * (By_s * SHyk - jnp.arctan(By_s * SHyk))))
+        Gyk     = Gyk_num / (Gyk_den + 1e-6)
+        Gyk     = jnp.clip(Gyk, 0.05, 1.0)
+
+        SHxa    = RHX1
+        alpha_xs = alpha + SHxa                             # shifted alpha — input to G_xa
+
+        # B_xa scales with kappa (how sensitive the reduction is to longitudinal conditions)
+        Bx_s    = RBX1 * jnp.cos(jnp.arctan(RBX2 * kappa))
+        x_xs    = Bx_s * alpha_xs                           # FIX: was kappa_s — must be alpha
+        Gxa_num = jnp.cos(RCX1 * jnp.arctan(x_xs))
+        Gxa_den = jnp.cos(RCX1 * jnp.arctan(Bx_s * SHxa))
+        Gxa     = Gxa_num / (Gxa_den + 1e-6)
+        Gxa     = jnp.clip(Gxa, 0.05, 1.0)
 
         Fy = Fy0 * Gyk
         Fx = Fx0 * Gxa
@@ -497,12 +604,35 @@ class PacejkaTire:
         Fy        = Fy * (1.0 - 0.15 * jnp.abs(phi_t))
 
         # ── PINN/GP residual corrections ─────────────────────────────────────
-        state_in  = jnp.array([alpha, kappa_c, gam, Fz_safe, float(Vx) if not isinstance(Vx, jax.Array) else Vx])
-        mods, sigma = self._pinn_module.apply(self._pinn_params, state_in, stochastic_key)
-        mods        = jnp.clip(mods, -0.25, 0.25)
-        penalty     = 2.0 * sigma
-        Fy          = Fy * (1.0 + mods[1] - penalty)
-        Fx          = Fx * (1.0 + mods[0] - penalty)
+        # BUGFIX-5: include normalized thermal deviation as 6th PINN feature.
+        # T_eff = surface average; same value used by _thermal_grip_factor.
+        T_eff  = jnp.mean(T_ribs[:3])
+        T_norm = (T_eff - self.T_opt) / 30.0
+
+        # jnp.asarray handles both Python float and JAX array Vx without
+        # isinstance checks (which fail under abstract tracing in jit).
+        Vx_arr = jnp.asarray(Vx)
+
+        # State tensor: (8,) to match TireOperatorPINN expanded feature vector.
+        # Indices 6-7 unused by PINN (forward-compat padding), GP uses [:5].
+        state_in = jnp.array([
+            alpha, kappa_c, gam, Fz_safe, Vx_arr, T_norm,
+            0.0, 0.0,   # padding slots for future features
+        ])
+        mods, sigma = self._pinn_module.apply(self._pinn_params, state_in,
+                                               stochastic_key)
+        mods = jnp.clip(mods, -0.25, 0.25)
+
+        # BUGFIX-3: cap LCB penalty at 15%.
+        # Uncapped: uninit GP gives sigma≈0.28 → penalty=0.56 → forces at 44%
+        # of Pacejka → MPC finds physically impossible cornering speeds.
+        # Physical justification: the PINN corrects a RESIDUAL on top of
+        # Pacejka; the GP bounds uncertainty in that residual, not the baseline.
+        # 15% is the maximum physically credible Pacejka modeling error.
+        penalty = jnp.clip(2.0 * sigma, 0.0, 0.15)
+
+        Fy = Fy * (1.0 + mods[1] - penalty)
+        Fx = Fx * (1.0 + mods[0] - penalty)
 
         return Fx, Fy
 
@@ -525,10 +655,10 @@ class PacejkaTire:
         """
         c   = self.coeffs
         eps = 1e-6
-        Fz0 = c.get('FNOMIN', 654.0)
+        Fz0     = c.get('FNOMIN', 654.0)
         Fz_safe = jnp.maximum(Fz, 10.0)
-        dfz = (Fz_safe - Fz0) / (Fz0 + eps)
-        gam = gamma
+        dfz     = (Fz_safe - Fz0) / (Fz0 + eps)
+        gam     = gamma
 
         QBZ1 = c.get('QBZ1',  6.5)
         QBZ2 = c.get('QBZ2', -0.50)
@@ -541,6 +671,7 @@ class PacejkaTire:
         QDZ4 = c.get('QDZ4',  0.0)
         QEZ1 = c.get('QEZ1', -1.50)
         QEZ2 = c.get('QEZ2',  0.60)
+        QEZ3 = c.get('QEZ3',  0.0)   # sign-term coefficient (unused at default=0)
         QHZ1 = c.get('QHZ1',  0.0)
         QHZ2 = c.get('QHZ2',  0.0)
 
@@ -549,19 +680,42 @@ class PacejkaTire:
         SHt = QHZ1 + QHZ2 * dfz
         a_t = alpha + SHt
 
-        Bt  = (QBZ1 + QBZ2 * dfz + QBZ3 * dfz ** 2) * (1.0 + QBZ9 * jnp.abs(gam))
-        Ct  = QCZ1
-        Dt  = Fz_safe * R0 * (QDZ1 + QDZ2 * dfz) * (1.0 + QDZ3 * gam + QDZ4 * gam ** 2)
-        sgn_at = jnp.tanh(a_t / (1e-3 + eps))
-        Et  = jnp.clip(QEZ1 + QEZ2 * dfz, -10.0, 1.0)
-        x_t = Bt * a_t
-        t   = Dt * jnp.cos(Ct * jnp.arctan(x_t - Et * (x_t - jnp.arctan(x_t))))
-        Mz0 = -t * Fy
+        Bt      = (QBZ1 + QBZ2 * dfz + QBZ3 * dfz ** 2) * (1.0 + QBZ9 * jnp.abs(gam))
+        Ct      = QCZ1
+        Dt      = Fz_safe * R0 * (QDZ1 + QDZ2 * dfz) * (1.0 + QDZ3 * gam + QDZ4 * gam ** 2)
+        # MF6.2 full Et: includes sign-dependent asymmetry term (QEZ3)
+        sgn_at  = jnp.tanh(a_t / (1e-3 + eps))
+        Et      = jnp.clip((QEZ1 + QEZ2 * dfz) * (1.0 - QEZ3 * sgn_at), -10.0, 1.0)
+        x_t     = Bt * a_t
+        t       = Dt * jnp.cos(Ct * jnp.arctan(x_t - Et * (x_t - jnp.arctan(x_t))))
+        Mz0     = -t * Fy
 
-        # Residual moment from longitudinal force (pneumatic trail)
         SSZ1 = c.get('SSZ1', 0.0)
         SSZ2 = c.get('SSZ2', 0.0)
         s    = R0 * (SSZ1 + SSZ2 * (Fy / (Fz0 + eps)))
         Mz_r = s * Fx
 
         return Mz0 + Mz_r
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # §4.6  Transient slip derivatives
+    # ─────────────────────────────────────────────────────────────────────────
+
+    def compute_transient_slip_derivatives(
+        self,
+        alpha_kin:   jax.Array,
+        kappa_kin:   jax.Array,
+        alpha_t:     jax.Array,
+        kappa_t:     jax.Array,
+        Fz:          jax.Array,
+        Vx:          jax.Array,
+    ) -> tuple:
+        """
+        First-order carcass lag for transient slip states.
+        rl = relaxation length [m]; τ = rl / |Vx| [s]
+        """
+        rl  = self.coeffs.get('relaxation_length', 0.35)
+        tau = rl / (jnp.maximum(jnp.abs(Vx), 1.0))
+        d_alpha = (alpha_kin - alpha_t) / tau
+        d_kappa = (kappa_kin - kappa_t) / tau
+        return d_alpha, d_kappa

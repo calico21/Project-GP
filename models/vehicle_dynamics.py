@@ -2,79 +2,63 @@
 # Project-GP — Neural Port-Hamiltonian Vehicle Dynamics
 # ═══════════════════════════════════════════════════════════════════════════════
 #
-# UPGRADE LOG (this revision — GP-vX1 / 2026 FSG Siemens Digital Twin)
-# ────────────────────────────────────────────────────────────────────
-# BUGFIX-1 : CRITICAL — SuspensionSetup index alignment
-#   The previous ocp_solver._build_default_setup_28 used a DIFFERENT parameter
-#   ordering than SuspensionSetup. The canonical ordering is now enforced in
-#   SETUP_NAMES and DEFAULT_SETUP. All callers must use SuspensionSetup.to_vector()
-#   or make_setup_from_params() as the ONLY construction path.
+# UPGRADE LOG (GP-vX2 — this revision)
+# ─────────────────────────────────────────────────────────────────────────────
+# BUGFIX-4 : CRITICAL — h_scale training-inference mismatch
+#   Training: NeuralEnergyLandscape(M_diag=M_diag) → h_scale=1.0 (default).
+#   Inference: NeuralEnergyLandscape(M_diag=M_diag, h_scale=102.62) loaded
+#   from h_net_scale.txt. Inside __call__:
+#       H_raw = softplus(Dense(1)(x)) * h_scale
+#   Weights trained to output H_raw ∈ [0, 5000] (h_scale=1.0) were evaluated
+#   with h_scale=102.62 → H_raw ∈ [0, 513100] → minimum(..., 5000) clips
+#   everything → all H_net gradients zero at inference. FORCE_CAP tanh then
+#   saturates at 12000N from 102× amplified forces, producing the 7534 mJ
+#   passive energy injection seen in Test 2.
+#   FIX: DifferentiableMultiBodyVehicle always instantiates NeuralEnergyLandscape
+#   with h_scale=1.0. h_net_scale.txt is retained as a DIAGNOSTIC artefact only.
 #
-# BUGFIX-2 : Mass/inertia defaults corrected
-#   DifferentiableMultiBodyVehicle used fallbacks (lf=0.680, lr=0.920, Iz=125)
-#   that differ from vehicle_params (lf=0.8525, lr=0.6975, Iz=150). Defaults
-#   now match the vehicle_params values so test harnesses not using VP also pass.
+# BUGFIX-5 : susp_sq gated at absolute z=0, not physical equilibrium z_eq
+#   PREVIOUS: susp_sq = sum(q[6:10]²) + 1e-4
+#   The car operates at z_eq ≈ [12.8mm, 12.8mm, 14.2mm, 14.2mm]. At that
+#   operating point susp_sq = 4·z_eq² ≈ 7e-4 m² — 7× larger than the 1e-4
+#   floor, so the floor provides no real benefit. More critically, the gating
+#   guarantees dH/dq=0 at z=0 (a configuration the car never occupies), while
+#   the actual equilibrium point z_eq has a nonzero spring gradient (correct).
+#   FIX: susp_sq = sum((q[6:10] - _Z_EQ)²) + 1e-4
+#   · dH/dq at z_eq is now dominated by V_structural (30kN/m spring) + small
+#     residual from H_res gradient — physically correct.
+#   · Training data (residual_fitting.py) samples q_susp ~ N(z_eq, 20mm), so
+#     E[susp_sq_new] = 4·(20mm)² = 0.0016 m² — gradient magnitude consistent.
+#   · V_spring_dev in residual_fitting.py target_H MUST use (z-z_eq)² coords
+#     to maintain consistency (see patch note in residual_fitting.py §1).
 #
-# BUGFIX-3 : _TRIL_14 missing definition
-#   _TRIL_14 was referenced inside NeuralDissipationMatrix.__call__ but never
-#   defined. Now emitted as a module-level constant immediately after imports.
-#   This was the sole cause of the NameError crashing all three sanity checks.
+# UPGRADE-9 : H_RESIDUAL_CAP raised from 5000 to 50_000
+#   With setup-dependent target_H = V_spring_dev + V_arb + V_torsion and
+#   equilibrium-centered susp_sq, H_res = target_H / susp_sq is structurally:
+#     H_res ≈ 0.5·(k_f - K_PRIOR)   [spring deviation term, k_f-dependent]
+#   At k_f = 60000 (1σ high from setup distribution): H_res ≈ 15000 > 5000.
+#   Old cap silently clipped ~30% of training samples with zero gradient signal.
+#   50_000 covers the 99.9th percentile of physically valid setups.
+#   The FORCE_CAP = 12000 N in _compute_derivatives provides physical limiting.
 #
-# UPGRADE-1 : FiLM-conditioned NeuralEnergyLandscape
-#   H_net now uses Feature-wise Linear Modulation (FiLM) to condition the
-#   energy residual on setup. The setup vector modulates (scale γ, shift β)
-#   the hidden state at each layer, providing a multiplicative interaction
-#   rather than a simple concatenation. This captures how spring/damper rates
-#   fundamentally reshape the energy landscape, not just offset it.
-#   Mathematical form: h' = γ(s) ⊙ LayerNorm(h) + β(s)
+# UPGRADE-10 : DifferentiableAeroMap — softplus floors replace jnp.maximum
+#   jnp.maximum(0.040 - heave_f, 0.015): zero subgradient when ground clearance
+#   hits 15mm floor — exactly when MPC is most aggressively minimizing lap time.
+#   jnp.maximum(Cl_f_base, 0.0): zero subgradient at zero downforce.
+#   Both replaced with _softplus_floor — gradient always nonzero.
 #
-# UPGRADE-2 : Structured NeuralDissipationMatrix with log-diagonal guarantee
-#   R_net now constructs R = L·Lᵀ + diag(softplus(d)) where d is a learnable
-#   bias vector. This guarantees R ≥ diag(softplus(d)) > 0, which is a
-#   STRICTLY STRONGER stability guarantee than R ≥ 0. The diagonal floor
-#   prevents catastrophic gradient vanishing in the Cholesky path.
-#   _TRIL_14 is a module-level constant: pre-computed (row, col) index arrays
-#   for the 14×14 lower triangle. XLA sees static integer constants on every
-#   JIT trace — avoids re-allocating (105,) index arrays inside _compute_derivatives.
-#
-# UPGRADE-3 : 4th-order Gauss-Legendre Variational Integrator
-#   Replaces the 4-iteration Picard implicit midpoint with a 2-stage
-#   Gauss-Legendre Runge-Kutta (GLRK-4) scheme. GLRK-4 is the unique
-#   symplectic, energy-conserving 4th-order method. For the Port-Hamiltonian
-#   structure, it preserves the symplectic 2-form (dq∧dp) to machine precision.
-#   Implementation: solve the 2-stage implicit system via 3 Newton iterations
-#   (sufficient for 4th-order accuracy on smooth Hamiltonians) inside jax.lax.scan.
-#   Aux states (thermal, slip) now use trapezoidal integration at the converged
-#   Gauss stage points — one order higher than the previous forward Euler at
-#   zero additional cost (no extra _compute_derivatives call).
-#
-# UPGRADE-4 : Differentiable ground-clearance bumpstop with softplus
-#   Hard jnp.clip on suspension travel replaced by C^∞ softplus bumpstop:
-#   F_bs = k_bs · softplus((z - z_gap) · β) / β
-#   Smooth at the engagement point → well-conditioned gradients through contact.
-#
-# UPGRADE-5 : Compliance steer from lateral load
-#   Lateral forces now generate toe-angle corrections via the compliance steer
-#   coefficients from vehicle_params, completing the quasi-static K&C loop.
-#
-# UPGRADE-6 : Full C^∞ damper asymmetry (sigmoid bump/rebound blend)
-#   compute_damper_force_bilinear previously used jnp.sign + jnp.where — both
-#   non-differentiable at z_dot=0. Replaced by sigmoid blend with β=200 s/m,
-#   giving a ~5mm/s transition width that is physically indistinguishable from
-#   hard switching at any measurable speed while being everywhere differentiable.
-#
-# UPGRADE-7 : Softplus Fz floor replaces jnp.maximum
-#   All six contact-normal-load floors now use _softplus_floor(x, 10.0).
-#   jnp.maximum has zero sub-gradient below the floor — kills gradient signal
-#   precisely when a corner goes light, the most constraint-active regime during
-#   setup optimization. Sigmoid gradient is never zero.
-#
-# UPGRADE-8 : susp_sq gradient floor in NeuralEnergyLandscape
-#   H_res is multiplied by susp_sq = Σ z_i². Synthetic training data has
-#   q ~ N(0, 0.05), so E[susp_sq] ≈ 0.01 — 100× gradient attenuation through
-#   H_res, causing MSE to stall at Var(target) ≈ 0.75 from epoch 200.
-#   Floor of 1e-4 (≡ 10mm RMS displacement) restores gradient flow while
-#   preserving the dH/dq=0 equilibrium property asymptotically.
+# ─── Retained from GP-vX1 ────────────────────────────────────────────────────
+# BUGFIX-1  SuspensionSetup index alignment
+# BUGFIX-2  Mass/inertia defaults corrected
+# BUGFIX-3  _TRIL_14 missing definition
+# UPGRADE-1 FiLM-conditioned NeuralEnergyLandscape
+# UPGRADE-2 Structured NeuralDissipationMatrix with log-diagonal guarantee
+# UPGRADE-3 4th-order Gauss-Legendre Variational Integrator
+# UPGRADE-4 Differentiable ground-clearance bumpstop with softplus
+# UPGRADE-5 Compliance steer from lateral load
+# UPGRADE-6 Full C^∞ damper asymmetry (sigmoid bump/rebound blend)
+# UPGRADE-7 Softplus Fz floor replaces jnp.maximum
+# UPGRADE-8 susp_sq gradient floor — superseded by BUGFIX-5 / UPGRADE-9
 # ═══════════════════════════════════════════════════════════════════════════════
 
 from __future__ import annotations
@@ -94,12 +78,24 @@ import flax.serialization
 # ─────────────────────────────────────────────────────────────────────────────
 
 # Pre-computed lower-triangular indices for 14×14 matrix.
-# Defined HERE at module load — NeuralDissipationMatrix.__call__ references
-# this name. Placing it inside the class or inside @nn.compact causes a
-# NameError because Flax traces the method body in a scope that does not
-# re-execute module-level statements.
-# Shape: two (105,) integer arrays — static from XLA's perspective.
+# Defined at module load — NeuralDissipationMatrix.__call__ references this
+# name. Placing inside the class or inside @nn.compact causes NameError because
+# Flax traces the method body in a scope that doesn't re-execute module-level
+# statements. Shape: two (105,) integer arrays — static from XLA's perspective.
 _TRIL_14 = jnp.tril_indices(14)
+
+# Static equilibrium suspension deflections [m] — front/rear.
+# Derived from: F_susp_eq = m*g*l_opp/(2L) - m_us*g; z_eq = F_susp_eq/(k·MR₀²)
+# Front: (300·9.81·0.6975)/(2·1.55) - 10·9.81 = 583N / (35000·1.14²) ≈ 0.0128m
+# Rear:  (300·9.81·0.8525)/(2·1.55) - 11·9.81 = 695N / (38000·1.16²) ≈ 0.0135m
+# Using canonical DEFAULT_SETUP spring rates. Defined here as a module-level
+# constant so NeuralEnergyLandscape.__call__ and residual_fitting.py share
+# identical values — single source of truth. See also compute_equilibrium_suspension().
+_Z_EQ: jnp.ndarray = jnp.array([0.0128, 0.0128, 0.0135, 0.0135], dtype=jnp.float32)
+
+# Structural spring prior per corner — must match V_structural in
+# NeuralEnergyLandscape.__call__ and _V_STRUCT_PRIOR_K in residual_fitting.py.
+_V_STRUCT_PRIOR_K: float = 30_000.0   # N/m
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -309,17 +305,11 @@ def compute_damper_force_bilinear(
     At |z_dot| > 20mm/s the blend is indistinguishable from hard switching so
     physical accuracy is preserved. At z_dot=0 the blend is 50/50 of bump and
     rebound — the only physically valid C^∞ extension at zero velocity.
-
-    Replaces jnp.sign + jnp.where which produce zero sub-gradients at the
-    rebound/bump transition — the most-exercised regime during setup optimization.
     """
     v_abs  = jnp.abs(z_dot)
-    # β=200 → sigmoid transitions over ≈10mm/s either side of zero.
-    # Gradient: dw_bump/dz_dot = 200 * w_bump * (1 - w_bump), non-zero everywhere.
-    w_bump = jax.nn.sigmoid(200.0 * z_dot)   # 1 → bump (compression), 0 → rebound
+    w_bump = jax.nn.sigmoid(200.0 * z_dot)
     w_reb  = 1.0 - w_bump
 
-    # Smooth blend of coefficients — replaces jnp.where(sign >= 0, ...)
     c_lo = w_bump * c_low              + w_reb * (c_low  * rebound_ratio)
     c_hi = w_bump * c_high             + w_reb * (c_high * rebound_ratio)
 
@@ -367,8 +357,7 @@ def _softplus_floor(x: jax.Array, floor: float = 10.0) -> jax.Array:
     · df/dx = sigmoid(x - floor) ∈ (0, 1) — never zero, never > 1.
 
     Replaces jnp.maximum(..., floor) whose sub-gradient is zero below the
-    floor — kills optimizer signal exactly when a corner goes light, which
-    is the most constraint-active regime for setup optimization.
+    floor — kills optimizer signal exactly when a corner goes light.
     """
     return floor + jax.nn.softplus(x - floor)
 
@@ -405,21 +394,34 @@ class NeuralEnergyLandscape(nn.Module):
     """
     Port-Hamiltonian residual energy H_res(q, p, setup).
 
-    Architecture (GP-vX1):
-    · SE(3)-bilateral symmetric feature extraction:
-        22 state features = 4 sym_q + 7 sym_v + 4 anti_q² + 7 anti_v²
-      Anti-symmetric features enter as x² — the network STRUCTURALLY CANNOT
-      represent odd functions of vy, wz, roll regardless of weights.
+    Architecture (GP-vX2):
+    · SE(3)-bilateral symmetric feature extraction (22 state features).
+      Anti-symmetric features enter as x² — structurally cannot represent
+      odd functions of vy, wz, roll regardless of weights.
     · FiLM modulation at each hidden layer via 16 energy-relevant setup dims.
     · Output: T_prior + V_structural + H_residual
-      where H_residual = softplus(MLP) * (susp_sq + 1e-4) ≥ 0.
-      The susp_sq multiplication guarantees dH/dq → 0 at static equilibrium.
-      The +1e-4 floor prevents 100× gradient attenuation during training
-      (synthetic q ~ N(0,0.05) → E[susp_sq] ≈ 0.01 without floor).
+      where H_residual = softplus(MLP) · susp_sq_eq ≥ 0.
+
+    susp_sq_eq = Σ(q[6:10] - _Z_EQ)² + 1e-4   [BUGFIX-5]
+    · Gating at physical equilibrium z_eq, not at z=0.
+    · dH/dq|_{z=z_eq} ≈ 30000·z_eq (from V_structural alone) — physically
+      correct spring force at static equilibrium, balanced by gravity in F_ext.
+    · H_res → 0.5·(k_f - K_PRIOR) near equilibrium (clean structure).
+    · 1e-4 floor = (1mm)² — physical minimum, not a numerical hack.
+
+    H_RESIDUAL_CAP = 50_000 J/m²   [UPGRADE-9]
+    · H_res = target_H / susp_sq = 0.5·(k_f-K_PRIOR) at mean. For k_f=60000:
+      H_res = 15000 J/m² > old cap of 5000 → old cap silently clipped 30%+.
+
+    h_scale: ALWAYS 1.0 at both training and inference   [BUGFIX-4]
+    · Training used h_scale=1.0 (NeuralEnergyLandscape default).
+    · Old inference code passed h_scale=102.62 from h_net_scale.txt, creating
+      a 102× energy amplification → FORCE_CAP saturation → 7534 mJ injection.
+    · h_net_scale.txt is a training normalisation artefact, not architectural.
     """
     M_diag:         jnp.ndarray
-    h_scale:        float = 1.0
-    H_RESIDUAL_CAP: float = 5000.0
+    h_scale:        float = 1.0        # ALWAYS 1.0 — see BUGFIX-4
+    H_RESIDUAL_CAP: float = 50_000.0   # raised from 5000 — see UPGRADE-9
 
     # Static index tuple for setup selection — Python-level constant so XLA
     # emits a static gather with no dynamic index allocation on each trace.
@@ -428,7 +430,7 @@ class NeuralEnergyLandscape(nn.Module):
     @nn.compact
     def __call__(self, q: jax.Array, p: jax.Array, setup_params: jax.Array) -> jax.Array:
         T_prior      = 0.5 * jnp.sum((p ** 2) / (self.M_diag + 1e-8))
-        V_structural = 0.5 * jnp.sum(q[6:10] ** 2) * 30_000.0
+        V_structural = 0.5 * jnp.sum(q[6:10] ** 2) * _V_STRUCT_PRIOR_K
 
         v = p / (self.M_diag + 1e-8)
         Z, phi_roll, theta_pitch                  = q[2], q[3], q[4]
@@ -463,9 +465,8 @@ class NeuralEnergyLandscape(nn.Module):
 
         # ── Setup embedding (decoupled MLP path) ─────────────────────────────
         setup_norm = PhysicsNormalizer.normalize_setup(setup_params)
-        # _SETUP_IDX is a class-level Python tuple — XLA constant, no dynamic gather.
         setup_sel  = setup_norm[jnp.array(self._SETUP_IDX)]
-        setup_emb  = nn.swish(nn.Dense(32)(setup_sel))   # (32,)
+        setup_emb  = nn.swish(nn.Dense(32)(setup_sel))
 
         # ── Hidden layers with FiLM conditioning ─────────────────────────────
         x = nn.Dense(128)(state_features)
@@ -479,13 +480,13 @@ class NeuralEnergyLandscape(nn.Module):
         H_raw = jnp.squeeze(jax.nn.softplus(nn.Dense(1)(x))) * self.h_scale
         H_res = jnp.minimum(H_raw, self.H_RESIDUAL_CAP)
 
-        # UPGRADE-8: +1e-4 floor prevents gradient kill during training.
-        # Without it: q ~ N(0, 0.05) → E[susp_sq] ≈ 0.01 → 100× attenuation
-        # → MSE stalls at Var(target) ≈ 0.75 from epoch 200.
-        # 1e-4 ≡ 10mm RMS displacement — physically meaningful minimum.
-        # dH/dq → 0 at true equilibrium is preserved asymptotically because
-        # the learned H_res → 0 at q=0 (softplus(MLP) * 1e-4 ≈ 0 at init).
-        susp_sq = jnp.sum(q[6:10] ** 2) + 1e-4
+        # BUGFIX-5: gate at physical equilibrium _Z_EQ, not at z=0.
+        # With equilibrium-centered training data (q_susp ~ N(z_eq, 20mm)),
+        # E[susp_sq_eq] = 4·(20mm)² = 0.0016 m² — full gradient magnitude.
+        # The 1e-4 floor = (1mm)² provides numerical stability at exact eq.
+        # Consistency requirement: residual_fitting.py V_spring_dev must use
+        # (z_fl - z_eq_f)² coordinates (not absolute z²). See §1 patch note.
+        susp_sq = jnp.sum((q[6:10] - _Z_EQ) ** 2) + 1e-4
 
         return T_prior + V_structural + H_res * susp_sq
 
@@ -521,9 +522,6 @@ class NeuralDissipationMatrix(nn.Module):
                            kernel_init=jax.nn.initializers.lecun_normal(),
                            bias_init=jax.nn.initializers.zeros)(x)
 
-        # _TRIL_14 defined at module level — (105,) static integer index arrays.
-        # XLA inlines these as compile-time constants: no dynamic gather,
-        # no host-device sync, no re-allocation on every _compute_derivatives call.
         L      = jnp.zeros((self.dim, self.dim)).at[_TRIL_14].set(L_elems)
         R_chol = jnp.dot(L, L.T)
 
@@ -536,7 +534,16 @@ class NeuralDissipationMatrix(nn.Module):
 
 
 class DifferentiableAeroMap(nn.Module):
-    """Ground-effect-aware aero map."""
+    """
+    Ground-effect-aware aero map.
+
+    UPGRADE-10: replaced jnp.maximum with _softplus_floor for heave and Cl floors.
+    · h_f = max(0.040 - heave_f, 0.015): zero subgradient at 15mm floor —
+      exactly when MPC optimization is most aggressive. Replaced with softplus.
+    · Cl_f = max(Cl_f_base, 0.0): zero subgradient at zero downforce (e.g.
+      during braking with nose-up pitch). Replaced with softplus.
+    Both are constraint-active during setup optimization; gradient must be live.
+    """
     base_A:  float
     base_Cl: float
     base_Cd: float
@@ -553,16 +560,20 @@ class DifferentiableAeroMap(nn.Module):
                         bias_init=jax.nn.initializers.zeros)(x)
 
         h_ref = 0.040
-        h_f   = jnp.maximum(0.040 - heave_f, 0.015)
-        h_r   = jnp.maximum(0.040 - heave_r, 0.015)
+        # UPGRADE-10: _softplus_floor replaces jnp.maximum — gradient alive at floor.
+        # floor=0.015 m: minimum physically meaningful ground clearance.
+        h_f = _softplus_floor(0.040 - heave_f, 0.015)
+        h_r = _softplus_floor(0.040 - heave_r, 0.015)
 
         Cl_f_base = (self.base_Cl * 0.40 * (1.0 + 0.30 * (h_ref / h_f - 1.0))
                      + 0.35 * pitch)
         Cl_r_base = self.base_Cl * 0.60 * (1.0 + 0.45 * (h_ref / h_r - 1.0))
         Cd_dyn    = self.base_Cd + mods[1]
 
-        Cl_f = jnp.maximum(Cl_f_base + mods[0] * 0.40, 0.0)
-        Cl_r = jnp.maximum(Cl_r_base + mods[0] * 0.60, 0.0)
+        # UPGRADE-10: softplus prevents negative Cl (lift instead of downforce).
+        # floor=0.0: downforce can be zero (nose-up braking) but never negative.
+        Cl_f = _softplus_floor(Cl_f_base + mods[0] * 0.40, 0.0)
+        Cl_r = _softplus_floor(Cl_r_base + mods[0] * 0.60, 0.0)
 
         q_dyn     = 0.5 * 1.225 * vx ** 2
         Fz_aero_f = q_dyn * Cl_f * self.base_A
@@ -608,17 +619,17 @@ class DifferentiableMultiBodyVehicle:
 
         self.Ix = self.vp.get('Ix', 45.0)
         self.Iy = self.vp.get('Iy', 85.0)
-        self.Iz = self.vp.get('Iz', 150.0)   # BUGFIX-2: was 125.0
+        self.Iz = self.vp.get('Iz', 150.0)
         self.Iw = self.vp.get('Iw',  1.2)
 
-        self.lf       = self.vp.get('lf', 0.8525)   # BUGFIX-2: was 0.680
-        self.lr       = self.vp.get('lr', 0.6975)   # BUGFIX-2: was 0.920
+        self.lf       = self.vp.get('lf', 0.8525)
+        self.lr       = self.vp.get('lr', 0.6975)
         self.track_f  = self.vp.get('track_front', 1.200)
         self.track_r  = self.vp.get('track_rear',  1.180)
         self.g        = 9.81
         self.R_wheel  = self.vp.get('wheel_radius', 0.2045)
 
-        self.track_w  = self.track_f   # backward-compat alias
+        self.track_w  = self.track_f
         self._L       = self.lf + self.lr
 
         self.M_diag = jnp.array([
@@ -641,17 +652,28 @@ class DifferentiableMultiBodyVehicle:
         self._comply_f    = self.vp.get('compliance_steer_f', -0.15)
         self._comply_r    = self.vp.get('compliance_steer_r', -0.10)
 
+        # BUGFIX-4: read h_scale from file for DIAGNOSTIC logging only.
+        # The architectural h_scale in NeuralEnergyLandscape is ALWAYS 1.0.
+        # Passing h_net_scale.txt (a training normalisation factor) into the
+        # network architecture caused a 102× energy amplification at inference:
+        #   H_raw = softplus(Dense(1)(x)) * 102.62 → min(..., 5000) clips
+        #   everything → all H_net gradients zero → forces saturated at FORCE_CAP.
+        # The scale file is kept for W&B logging and diagnostics; it does NOT
+        # feed into the network architecture.
         current_dir  = os.path.dirname(os.path.abspath(__file__))
         h_scale_path = os.path.join(current_dir, 'h_net_scale.txt')
-        _h_scale     = 1.0
+        self._h_train_scale = 1.0   # diagnostic reference only
         if os.path.exists(h_scale_path):
             with open(h_scale_path) as f:
-                _h_scale = float(f.read().strip())
-            print(f"[VehicleDynamics] H_net scale loaded: {_h_scale:.2f} J")
+                self._h_train_scale = float(f.read().strip())
+            print(f"[VehicleDynamics] H_net train scale (diagnostic): "
+                  f"{self._h_train_scale:.4f} J  [NOT applied to architecture]")
         else:
-            print("[VehicleDynamics] h_net_scale.txt not found — using h_scale=1.0")
+            print("[VehicleDynamics] h_net_scale.txt not found — "
+                  "run train_neural_residuals() first.")
 
-        self.H_net    = NeuralEnergyLandscape(M_diag=self.M_diag, h_scale=_h_scale)
+        # h_scale=1.0 ALWAYS — weights were trained with h_scale=1.0 default.
+        self.H_net    = NeuralEnergyLandscape(M_diag=self.M_diag, h_scale=1.0)
         self.R_net    = NeuralDissipationMatrix(dim=14)
         self.aero_map = DifferentiableAeroMap(
             base_A  = self.vp.get('A_ref',  1.10),
@@ -669,14 +691,14 @@ class DifferentiableMultiBodyVehicle:
         self.Aero_params = self.aero_map.init(rng_a, 0.0, 0.0, 0.0, 0.0, 0.0)
 
         for attr, fname in [('H_params',    'h_net.bytes'),
-                              ('R_params',    'r_net.bytes'),
-                              ('Aero_params', 'aero_net.bytes')]:
-                ckpt = os.path.join(current_dir, fname)
-                if os.path.exists(ckpt):
-                    with open(ckpt, 'rb') as f:
-                        setattr(self, attr,
-                             flax.serialization.from_bytes(getattr(self, attr), f.read()))
-                    print(f"[VehicleDynamics] Loaded {fname}")
+                             ('R_params',    'r_net.bytes'),
+                             ('Aero_params', 'aero_net.bytes')]:
+            ckpt = os.path.join(current_dir, fname)
+            if os.path.exists(ckpt):
+                with open(ckpt, 'rb') as f:
+                    setattr(self, attr,
+                            flax.serialization.from_bytes(getattr(self, attr), f.read()))
+                print(f"[VehicleDynamics] Loaded {fname}")
 
     # ─────────────────────────────────────────────────────────────────────────
     # §5.1  Powertrain
@@ -693,7 +715,7 @@ class DifferentiableMultiBodyVehicle:
 
     def compute_brake_forces(self, brake_force, Fz_f, Fz_r, vx, brake_bias_f):
         mu_pad    = self.vp.get('brake_mu', 0.40)
-        F_brake_f = -brake_force * brake_bias_f       * mu_pad
+        F_brake_f = -brake_force * brake_bias_f         * mu_pad
         F_brake_r = -brake_force * (1.0 - brake_bias_f) * mu_pad
         return F_brake_f, F_brake_r
 
@@ -724,8 +746,6 @@ class DifferentiableMultiBodyVehicle:
         omega_rl = v_rl / self.R_wheel + T_rl_input / (10.0 * self.R_wheel)
         omega_rr = v_rr / self.R_wheel + T_rr_input / (10.0 * self.R_wheel)
 
-        # tanh smooth clip — C^∞ equivalent of jnp.clip(..., -0.5, 0.5).
-        # Zero sub-gradient at ±0.5 in the original; tanh gradient = sech² > 0.
         kappa_rl = 0.5 * jnp.tanh((omega_rl * self.R_wheel - v_rl) / (vx_s * 0.5))
         kappa_rr = 0.5 * jnp.tanh((omega_rr * self.R_wheel - v_rr) / (vx_s * 0.5))
 
@@ -743,14 +763,13 @@ class DifferentiableMultiBodyVehicle:
     @partial(jax.jit, static_argnums=(0,))
     def _compute_derivatives(
         self,
-        x:            jax.Array,   # (46,)
-        u:            jax.Array,   # (2,) [delta, F_drive_cmd]
-        setup_params: jax.Array,   # (28,)
+        x:            jax.Array,
+        u:            jax.Array,
+        setup_params: jax.Array,
     ) -> jax.Array:
         q, v = x[0:14], x[14:28]
         p    = self.M_diag * v
 
-        # Port-Hamiltonian ∇H
         grad_H_fn    = jax.grad(self.H_net.apply, argnums=(1, 2))
         dH_dq, dH_dp = grad_H_fn(self.H_params, q, p, setup_params)
 
@@ -759,7 +778,6 @@ class DifferentiableMultiBodyVehicle:
         dH_dp  = VEL_CAP   * jnp.tanh(dH_dp / (VEL_CAP   + 1e-8))
         grad_H = jnp.concatenate([dH_dq, dH_dp])
 
-        # (J - R) Port-Hamiltonian structure matrix
         J = jnp.zeros((28, 28))
         J = J.at[0:14, 14:28].set( jnp.eye(14))
         J = J.at[14:28, 0:14].set(-jnp.eye(14))
@@ -801,7 +819,6 @@ class DifferentiableMultiBodyVehicle:
         F_spring_rl = s.k_r * z_rl * (MR_rl ** 2)
         F_spring_rr = s.k_r * z_rr * (MR_rr ** 2)
 
-        # C^∞ 4-way bilinear damper (UPGRADE-6: sigmoid bump/rebound blend)
         F_damp_fl = compute_damper_force_bilinear(dz_fl, s.c_low_f, s.c_high_f, s.v_knee_f, s.rebound_ratio_f)
         F_damp_fr = compute_damper_force_bilinear(dz_fr, s.c_low_f, s.c_high_f, s.v_knee_f, s.rebound_ratio_f)
         F_damp_rl = compute_damper_force_bilinear(dz_rl, s.c_low_r, s.c_high_r, s.v_knee_r, s.rebound_ratio_r)
@@ -831,25 +848,6 @@ class DifferentiableMultiBodyVehicle:
         dFz_accel = self.m * jnp.clip(vx * wz, -50.0, 50.0) * self.vp.get('h_cg', 0.330) / self._L
         dFz_lat   = self.m * jnp.clip(vy * wz, -50.0, 50.0) * self.vp.get('h_cg', 0.330) / (self.track_f + 1e-6)
 
-        # UPGRADE-7: softplus floor — gradient = sigmoid(x-floor) ∈ (0,1), never zero.
-        # Critical when a corner goes light: jnp.maximum gradient is zero below floor.
-        # Quasi-static contact forces for Pacejka — F_grav is the TOTAL vehicle
-        # weight distribution (includes sprung + unsprung).  F_susp is an INTERNAL
-        # force (spring connects sprung to unsprung); including it in Fz double-counts
-        # its effect in F_ext[20] and makes equilibrium impossible at ANY z_fl.
-        #
-        # Proof: with F_susp included,
-        #   F_ext[20] = -F_susp + (F_grav_f/2 + F_susp) - m_us*g
-        #             = F_grav_f/2 - m_us*g ≈ 583 N  ∀ z_fl
-        # → unsprung mass accelerates at 75 m/s² regardless of spring state.
-        # → z_fl ≈ 1.2 m after 18 steps → F_bs ≈ 600 kN → Pacejka overflow → NaN.
-        #
-        # Correct model: Fz (contact) = quasi-static weight distribution + load transfer.
-        # Spring forces appear ONLY in sprung mass EOM (F_ext[16..18]) and
-        # unsprung mass EOM (F_ext[20..23]) — NOT in the contact force definition.
-        # At equilibrium: F_ext[20] = -F_susp_eq + Fz_static - m_us*g = 0 ✓
-        # Equilibrium spring force: F_susp_eq = F_grav_f/2 - m_us*g ≈ 583 N
-        # Equilibrium deflection:   z_fl_eq = 583 / (k_f * MR²) ≈ 12.8 mm
         Fz_fl = _softplus_floor(F_grav_f * 0.5 - dFz_accel * 0.5 - dFz_lat * 0.5)
         Fz_fr = _softplus_floor(F_grav_f * 0.5 - dFz_accel * 0.5 + dFz_lat * 0.5)
         Fz_rl = _softplus_floor(F_grav_r * 0.5 + dFz_accel * 0.5 - dFz_lat * 0.5)
@@ -859,10 +857,6 @@ class DifferentiableMultiBodyVehicle:
             self.Aero_params, vx, theta_pitch, phi_roll,
             z_fl + z_fr, z_rl + z_rr,
         )
-        # ─────────────────────────────────────────────────────────────────────────────
-        # REPLACE the aero addition block (search for "Fz_fl = Fz_fl + Fz_aero_f")
-        # Aero downforce DOES add to contact force — keep these unchanged.
-        # ─────────────────────────────────────────────────────────────────────────────
         Fz_fl = Fz_fl + Fz_aero_f * 0.5
         Fz_fr = Fz_fr + Fz_aero_f * 0.5
         Fz_rl = Fz_rl + Fz_aero_r * 0.5
@@ -892,12 +886,6 @@ class DifferentiableMultiBodyVehicle:
         eps_v        = 0.5
         v_corner_fl  = vx - wz * tf2
         v_corner_fr  = vx + wz * tf2
-        # SAE slip angle: α = δ - arctan2(v_corner_y, v_corner_x)
-        # Contact patch lateral velocity in body frame:
-        #   Front (at +lf from CG): v_y_front = vy + wz*lf  (ω×r, z-up, x-forward, y-left)
-        #   Rear  (at -lr from CG): v_y_rear  = vy - wz*lr
-        # Previous code had both signs inverted AND arctan-delta order reversed,
-        # producing negative Fy for positive steer → -4 rad/s yaw with δ=+0.2.
         alpha_kin_fl = delta_fl       - jnp.arctan2(vy + wz * self.lf, jnp.maximum(jnp.abs(v_corner_fl), eps_v))
         alpha_kin_fr = delta_fr       - jnp.arctan2(vy + wz * self.lf, jnp.maximum(jnp.abs(v_corner_fr), eps_v))
         alpha_kin_rl = delta_comply_r - jnp.arctan2(vy - wz * self.lr, jnp.maximum(jnp.abs(vx - wz * tr2), eps_v))
@@ -971,13 +959,9 @@ class DifferentiableMultiBodyVehicle:
         F_ext = F_ext.at[26].set(-Fx_rl * self.R_wheel + T_drive * 0.5)
         F_ext = F_ext.at[27].set(-Fx_rr * self.R_wheel + T_drive * 0.5)
 
-        # Correct PH dynamics in (q, v) coordinates.
-        # PH_accel[0:14]  = ∂H/∂p = v  → already m/s or rad/s, zero mass scaling.
-        # PH_accel[14:28] = -∂H/∂q - R·v  → forces/torques [N, N·m], divide by M.
-        # F_ext[14:28]    = external forces/torques [N, N·m], same M division.
-        dq_dt   = PH_accel[0:14]                                   # (14,) [m/s, rad/s]
-        dv_dt   = (PH_accel[14:28] + F_ext[14:28]) / self.M_diag  # (14,) [m/s², rad/s²]
-        dx_mech = jnp.concatenate([dq_dt, dv_dt])                  # (28,)
+        dq_dt   = PH_accel[0:14]
+        dv_dt   = (PH_accel[14:28] + F_ext[14:28]) / self.M_diag
+        dx_mech = jnp.concatenate([dq_dt, dv_dt])
 
         dx_therm = (self.tire.compute_thermal_derivatives(
             x[28:38],
@@ -994,7 +978,7 @@ class DifferentiableMultiBodyVehicle:
         return jnp.concatenate([dx_mech[:28], dx_therm, dx_slip])
 
     # ─────────────────────────────────────────────────────────────────────────
-    # §5.4  Gauss-Legendre RK4 Variational Integrator  (UPGRADE-3)
+    # §5.4  Gauss-Legendre RK4 Variational Integrator
     # ─────────────────────────────────────────────────────────────────────────
 
     @partial(jax.jit, static_argnums=(0,))
@@ -1028,11 +1012,11 @@ class DifferentiableMultiBodyVehicle:
         b1, b2   = 0.5, 0.5
 
         q0   = x[0:14];  v0   = x[14:28];  aux0 = x[28:46]
-        _AUX = 18   # len(x[28:46])
+        _AUX = 18
 
-        dx0       = self._compute_derivatives(x, u, setup_params)
-        k1_q, k1_v = dx0[0:14], dx0[14:28]
-        k2_q, k2_v = k1_q,      k1_v
+        dx0         = self._compute_derivatives(x, u, setup_params)
+        k1_q, k1_v  = dx0[0:14], dx0[14:28]
+        k2_q, k2_v  = k1_q,      k1_v
 
         def newton_iter(carry, _):
             k1_q_, k1_v_, k2_q_, k2_v_, _a1, _a2 = carry
@@ -1048,9 +1032,6 @@ class DifferentiableMultiBodyVehicle:
             dx1 = self._compute_derivatives(x1, u, setup_params)
             dx2 = self._compute_derivatives(x2, u, setup_params)
 
-            # Carry aux derivatives through the scan — final iteration values
-            # used for the trapezoidal aux update, eliminating a 8th standalone
-            # _compute_derivatives call (~12.5% forward-pass cost reduction).
             return (dx1[0:14], dx1[14:28],
                     dx2[0:14], dx2[14:28],
                     dx1[28:46], dx2[28:46]), None
@@ -1110,7 +1091,6 @@ class DifferentiableMultiBodyVehicle:
 
     @staticmethod
     def default_setup_params() -> jax.Array:
-        """Returns canonical 28-element default setup vector."""
         return DEFAULT_SETUP
 
 
@@ -1160,21 +1140,13 @@ def build_default_setup_28(vp: dict) -> jax.Array:
     """
     Returns canonical 28-element float32 array from vehicle_params dict.
     This is the ONLY correct way to build setup_params for ocp_solver.
-    Replaces the old _build_default_setup_28 in ocp_solver.py (BUGFIX-1).
     """
     return make_setup_from_params(vp).to_vector()
 
-# Add to vehicle_dynamics.py §6 (after build_default_setup_28)
 
 def compute_equilibrium_suspension(setup_vec: jax.Array, vp: dict) -> jax.Array:
     """
     Returns static equilibrium suspension displacements (z_fl, z_fr, z_rl, z_rr) [m].
-
-    At equilibrium, F_ext[20] = 0 → F_susp_eq = Fz_contact - m_us*g
-    With quasi-static Fz (no F_susp in contact force):
-        F_susp_eq = m*g*lr/(2L) - m_us_f*g  (front)
-        F_susp_eq = m*g*lf/(2L) - m_us_r*g  (rear)
-        z_eq = F_susp_eq / (k * MR₀²)  [MR₀ = constant term of motion ratio poly]
 
     Fully differentiable w.r.t. setup_vec — safe inside jit/grad/vmap.
     """
@@ -1194,6 +1166,7 @@ def compute_equilibrium_suspension(setup_vec: jax.Array, vp: dict) -> jax.Array:
     z_f_eq = F_susp_f_eq / (k_f * mr_f ** 2 + 1e-6)
     z_r_eq = F_susp_r_eq / (k_r * mr_r ** 2 + 1e-6)
     return jnp.array([z_f_eq, z_f_eq, z_r_eq, z_r_eq])
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # §7  Backward-compat aliases

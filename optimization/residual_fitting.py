@@ -1,3 +1,56 @@
+# optimization/residual_fitting.py
+# Project-GP — Neural Port-Hamiltonian Residual Training
+# ═══════════════════════════════════════════════════════════════════════════════
+#
+# UPGRADE LOG (GP-vX2)
+# ─────────────────────────────────────────────────────────────────────────────
+# FIX-1 : Setup-dependent target_H — FiLM layers now receive real gradients
+#   PREVIOUS: target_H = 0.5 * k_torsion * torsion² (SETUP-INDEPENDENT)
+#   The network was being asked "how does k_f reshape the energy landscape?"
+#   while the training target was identical regardless of k_f, k_r, arb_f, arb_r.
+#   FiLM γ/β parameters received exactly zero gradient from the MSE signal.
+#
+#   FIX: target_H = relu(V_spring_dev) + V_arb + V_torsion
+#     V_spring_dev = 0.5·relu(k_f - K_PRIOR)·(z_fl²+z_fr²)
+#                  + 0.5·relu(k_r - K_PRIOR)·(z_rl²+z_rr²)
+#     V_arb        = 0.5·arb_f·(z_fl-z_fr)² + 0.5·arb_r·(z_rl-z_rr)²
+#     V_torsion    = 0.5·k_torsion·((z_fl-z_fr)-(z_rl-z_rr))²
+#
+#   K_PRIOR = 30_000.0 N/m matches NeuralEnergyLandscape V_structural exactly.
+#   relu() bounds target_H ≥ 0, consistent with the softplus H_res output.
+#   Softer-than-prior setups correctly produce near-zero H_res (conservative).
+#   ARB energy (V_arb) has no prior term at all — highest-value new signal.
+#
+# FIX-2 : Phantom rate evaluated at physical equilibrium, not zero
+#   PREVIOUS: q_eq = jnp.zeros(14)
+#   The car never operates at z=0. With equilibrium-centered training data
+#   and Bug-2 in vehicle_dynamics.py (susp_sq gated at z_eq), the ghost
+#   forces being suppressed were at the wrong operating point entirely.
+#   FIX: q_eq = zeros(14).at[6:10].set(_Z_EQ)  where _Z_EQ = [0.0128, 0.0128, 0.0142, 0.0142]
+#
+# FIX-3 : target_R_mag includes suspension velocity dissipation
+#   PREVIOUS: target_R_mag = |torsion|·500 — position-only, no velocity signal.
+#   Damper power dissipation is P = c·ż² — quadratic in velocity, not in position.
+#   R_net was trained on a target that contains no information about operating speed.
+#   FIX: target_R_mag = |torsion|·200 + v_susp_rms·300 + |v_torsion_rate|·100
+#
+# FIX-4 : k_torsion reduced to prevent H_RESIDUAL_CAP saturation
+#   PREVIOUS: k_torsion = 15_000 with q ~ N(0, 0.05) → E[H_target] ≈ 75 J.
+#   With equilibrium-centered q (σ=20mm), same k_torsion → E[target_H] ≈ 12 J,
+#   but susp_sq ≈ 0.0016 m² → H_res_needed ≈ 7500 J/m² > H_RESIDUAL_CAP=5000.
+#   Cap silently clips ~30% of training samples with no error signal.
+#   FIX: k_torsion = 5_000 → E[V_torsion] ≈ 4 J, 99%+ of samples within cap.
+#   NOTE: H_RESIDUAL_CAP in vehicle_dynamics.py should be raised to 50_000 for
+#   maximum fidelity once real telemetry data is available for calibration.
+#
+# RETAINED from GP-vX1:
+#   · Equilibrium-centered suspension q DOFs (z_eq offset in generate_synthetic_flex_data)
+#   · ALPHA_PASS = 25.0, DISSIPATION_THRESHOLD = 50.0, squared hinge passivity
+#   · Gradient-normalised multi-term Phase-2 update
+# ═══════════════════════════════════════════════════════════════════════════════
+
+from __future__ import annotations
+
 import jax
 import jax.numpy as jnp
 import optax
@@ -10,126 +63,83 @@ from data.configs.vehicle_params import vehicle_params as VP_DICT
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Module-level scalars set by train_neural_residuals().
+# Module-level constants — single source of truth shared by data generation
+# and training losses. Any change here must be mirrored in vehicle_dynamics.py.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Must match NeuralEnergyLandscape.__call__:  V_structural = 0.5 * sum(q[6:10]²) * _V_STRUCT_PRIOR_K
+_V_STRUCT_PRIOR_K: float = 30_000.0   # N/m per corner
+
+# Static equilibrium suspension deflections [m].
+# Must match the _Z_EQ constant introduced in vehicle_dynamics.py Bug-2 fix,
+# where susp_sq = sum((q[6:10] - _Z_EQ)²) + 1e-4.
+_Z_EQ: jnp.ndarray = jnp.array([0.0128, 0.0128, 0.0142, 0.0142])
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Module-level scalars written by train_neural_residuals() — accessible from
+# main.py / W&B logging without re-importing the training artefacts.
 # ─────────────────────────────────────────────────────────────────────────────
 TRAINED_H_SCALE: float = 1.0
 TRAINED_R_SCALE: float = 1.0
-
-# P27: exposed for W&B logging in main.py
-LAST_TRAIN_MSE: float = float('nan')   # final Phase-2 MSE loss
-LAST_PHRATE:    float = float('nan')   # final phantom-rate-at-eq loss
+LAST_TRAIN_MSE:  float = float('nan')
+LAST_PHRATE:     float = float('nan')
 
 
-# =============================================================================
-# P5 — SE(3)-Bilateral-Symmetric Architecture: training compatibility notes
-# =============================================================================
-#
-# NeuralEnergyLandscape now uses 29 SE(3)-invariant features internally instead
-# of the previous 36 masked raw features.  The calling interface (q, p, setup)
-# is UNCHANGED, so all training code below works without modification.
-#
-# What changed inside the network (vehicle_dynamics.py):
-#   Old: Dense(36→128) — input = cat(q_norm_masked, v_norm_masked, setup_norm)
-#   New: Dense(29→128) — input = cat(sym_q, sym_v, antisym_q², antisym_v², setup)
-#
-# Consequence: previously saved h_net.bytes is INCOMPATIBLE — the first Dense
-# layer weight matrix shape changed from (36,128) to (29,128).  The load in
-# DifferentiableMultiBodyVehicle.__init__ will raise a shape mismatch and fall
-# through to random weights with a clear warning message.  Running this script
-# once produces a compatible h_net.bytes.
-#
-# Why the training logic below is unchanged:
-#   The phantom-rate-at-eq loss evaluates dH/dq at q=0 with physical momenta.
-#   This remains the correct target regardless of the internal feature encoding,
-#   because SE(3)-invariant features are a STRICTLY TIGHTER constraint:
-#   · Old mask: zeroed X, Y, yaw, wheel-spin raw coordinates — still allowed
-#     p-dependent phantom gradients via the unmasked v features.
-#   · New SE(3) architecture: anti-symmetric features enter as x² — the network
-#     CANNOT represent odd functions of vy, wz, roll at ANY (q, p) value.
-#     The phantom-rate-at-eq loss therefore converges in fewer epochs.
-#
-# Expected training improvement (P5):
-#   Phase 2 MSE target: unchanged (0.020)
-#   PhRate convergence: ~800 epochs (was ~1000) — bilateral symmetry removes
-#   the largest off-diagonal spurious coupling.
-#
-# =============================================================================
-# P10 SETUP FIX — setup_params expanded from 8 → 28 scalars
-# =============================================================================
-#
-# vehicle_dynamics.py P10 expanded setup_params from 8 → 28 scalars.
-# NeuralEnergyLandscape.__call__ now expects a 28-element setup vector, which
-# is passed through PhysicsNormalizer.normalize_setup(setup_params).
-#
-# Impact on this file:
-#
-#   1. generate_synthetic_flex_data:
-#      OLD: setup_mean_train / setup_scale_train were hardcoded 8-element
-#           arrays.  h_net.init(key1, q[0], p[0], setup[0]) crashed because
-#           setup[0].shape=(8,) but normalize_setup expected shape (28,).
-#      FIX: use PhysicsNormalizer.setup_mean (shape 28) and
-#           PhysicsNormalizer.setup_scale (shape 28) directly, so training
-#           data spans the physical operating envelope of all 28 parameters.
-#
-#   2. Post-training diagnostic simulate_step call:
-#      OLD: _sp = jnp.array([35000., 38000., 400., 450., 2500., 2800., 0.28, 0.60])
-#           — 8-element vector, crashed simulate_step which unpacks 28 params.
-#      FIX: build _sp with _build_default_setup_28(VP_DICT) — 28 elements
-#           derived from vehicle_params.py, identical to the ocp_solver default.
-#
-# =============================================================================
+# ═══════════════════════════════════════════════════════════════════════════════
+# §1  Synthetic data generation
+# ═══════════════════════════════════════════════════════════════════════════════
 
-
-def generate_synthetic_flex_data(num_samples=5000, key_seed=42):
+def generate_synthetic_flex_data(num_samples: int = 5000, key_seed: int = 42):
     """
-    Generates synthetic training data for chassis torsional flex.
-    Torsional stiffness at 15 000 Nm/rad (synthetic approximation).
+    Synthetic training corpus for the Port-Hamiltonian residuals H_net and R_net.
 
-    FIX (v6) — physical momenta and setup parameters.
-    ─────────────────────────────────────────────────
-    Previous: p ~ N(0, 0.1), setup_params ~ N(0, 1).
+    State-space coverage (GP-vX2)
+    ─────────────────────────────
+    q:  Body DOFs  ~ trim perturbations (small angles, realistic heave).
+        Suspension ~ N(z_eq, 20mm) — CRITICAL: centred at physical equilibrium,
+        NOT at zero. At z=0 the susp_sq gate collapses to its 1e-4 floor,
+        attenuating H_res gradients by 100×.
+        Wheel angle DOFs ~ N(0, 0.05) rad (small).
+    p:  Physical momenta p = M_diag × v where v covers the operating envelope
+        (vx ~ N(15, 5) m/s, wheel ω ~ N(75, 5) rad/s, etc.).
+    setup: 28-element SuspensionSetup, sampled ±1σ around PhysicsNormalizer means
+           for spring/ARB rates (tighter bound to stay within H_RESIDUAL_CAP),
+           ±2σ for non-energy-coupled parameters.
 
-    At p ~ N(0, 0.1) with M_diag[0] = 188 kg:
-        v[0] = p[0] / 188 = 0.0005 m/s  (operating speed: 15 m/s)
+    Target signal (GP-vX2) — SETUP-DEPENDENT
+    ─────────────────────────────────────────
+    target_H = relu(V_spring_dev) + V_arb + V_torsion
 
-    The phantom rate penalty at this training velocity:
-        phantom rate = dH/dq[0] × 0.0005 = negligible gradient
+    V_spring_dev captures the spring energy DEVIATION from the structural prior
+    already embedded in NeuralEnergyLandscape.V_structural (30 kN/m per corner).
+    The relu ensures target_H ≥ 0, consistent with the softplus-gated H_res.
 
-    Fix: sample p from physical momenta p = M × v where v covers the
-    operating envelope.  At v[0] ~ N(15, 5) m/s:
-        phantom rate = dH/dq[0] × 15 m/s → strong gradient
+    V_arb is the ONLY energy term for anti-roll bars — absent from every prior.
+    This is the single most important new FiLM signal: as arb_f spans 200-700 Nm/m,
+    V_arb varies by 3× across the training batch, giving FiLM a strong gradient.
 
-    Fix also: setup_params in raw physical units (PhysicsNormalizer handles
-    scaling internally). N(0,1) was sampling k_f ≈ 0 N/m.
-
-    P5 NOTE: q is sampled from N(0, 0.05) including all 14 DOFs.
-    The SE(3) feature extractor in NeuralEnergyLandscape handles all
-    symmetry enforcement internally — training data format is unchanged.
-
-    P10 NOTE: setup_params expanded from 8 → 28 elements.
-    PhysicsNormalizer.setup_mean/scale (shape 28) replace the previous
-    hardcoded 8-element arrays.  The training distribution now covers all
-    28 physical setup parameters in the P10 model, including the 4-way
-    damper, heave springs, alignment, bumpstop gap, and ARB preload.
-    NeuralEnergyLandscape.__call__ passes setup through
-    PhysicsNormalizer.normalize_setup(setup_params) — requires shape (28,).
+    V_torsion is the chassis torsional flex residual (k_torsion = 5_000 Nm/rad).
+    Note: k_torsion intentionally reduced from 15_000 to keep H_res_needed =
+    target_H / susp_sq within H_RESIDUAL_CAP = 5000 J/m² for 99%+ of samples.
     """
+    # ── Mass diagonal (must exactly match NeuralEnergyLandscape M_diag) ──────
     _m_s   = VP_DICT.get('total_mass', 230.0) - (
-                2 * VP_DICT.get('unsprung_mass_f', 10.0) +
-                2 * VP_DICT.get('unsprung_mass_r', 11.0))
-    _Ix    = VP_DICT.get('Ix', 45.0)
-    _Iy    = VP_DICT.get('Iy', 85.0)
-    _Iz    = VP_DICT.get('Iz', 125.0)
+                 2 * VP_DICT.get('unsprung_mass_f', 10.0) +
+                 2 * VP_DICT.get('unsprung_mass_r', 11.0))
     _m_usf = VP_DICT.get('unsprung_mass_f', 10.0)
     _m_usr = VP_DICT.get('unsprung_mass_r', 11.0)
-    _Iw    = VP_DICT.get('Iw', 1.2)
+    _Ix    = VP_DICT.get('Ix',  45.0)
+    _Iy    = VP_DICT.get('Iy',  85.0)
+    _Iz    = VP_DICT.get('Iz', 125.0)
+    _Iw    = VP_DICT.get('Iw',   1.2)
 
     M_diag_train = jnp.array([_m_s, _m_s, _m_s, _Ix, _Iy, _Iz,
-                                _m_usf, _m_usf, _m_usr, _m_usr,
-                                _Iw, _Iw, _Iw, _Iw])
+                               _m_usf, _m_usf, _m_usr, _m_usr,
+                               _Iw, _Iw, _Iw, _Iw])
 
+    # Operating envelope for velocity sampling — covers FSG event speeds
     v_std = jnp.array([
-        15.0,   # vx  longitudinal
+        15.0,   # vx  longitudinal         (skidpad / autocross range)
          2.0,   # vy  lateral
          0.3,   # vz  heave
          0.4,   # wx  roll rate
@@ -139,117 +149,175 @@ def generate_synthetic_flex_data(num_samples=5000, key_seed=42):
          0.4,   # unsprung vz FR
          0.4,   # unsprung vz RL
          0.4,   # unsprung vz RR
-        75.0,   # wheel omega FL
+        75.0,   # wheel omega FL           (≈ 15 m/s / 0.2045 m)
         75.0,   # wheel omega FR
         75.0,   # wheel omega RL
         75.0,   # wheel omega RR
     ])
 
     key = jax.random.PRNGKey(key_seed)
-    k1, k2, k3 = jax.random.split(key, 3)
-    # k1 is further split inside the q-sampling block above — no other change needed
+    k1, k2, k3, k4 = jax.random.split(key, 4)
+    k1a, k1b, k1c  = jax.random.split(k1, 3)
 
-    k1, k1b = jax.random.split(k1)
-
-    # Body DOFs [0:6]: x,y,z,roll,pitch,yaw — small perturbations around trim
-    q_body = jax.random.normal(k1,  (num_samples, 6)) * jnp.array(
+    # ── q: position DOFs ──────────────────────────────────────────────────────
+    # Body DOFs [0:6]: x, y, z, roll, pitch, yaw
+    q_body = jax.random.normal(k1a, (num_samples, 6)) * jnp.array(
         [0.01, 0.01, 0.005, 0.02, 0.015, 0.03]
     )
 
-    # Suspension DOFs [6:10]: z_fl, z_fr, z_rl, z_rr
-    # CRITICAL FIX: sample around static equilibrium deflections, NOT zero.
-    # At q=0 the network sits in a near-degenerate regime where susp_sq ≈ Σz_i²
-    # is dominated by the tiny perturbation noise (~0.0025), attenuating the
-    # residual path gradient by ~100×. Shifting to equilibrium (12.8mm / 14.2mm)
-    # raises E[susp_sq] from 0.01 to ~0.023, but more importantly raises the
-    # *minimum* susp_sq across the batch from ~1e-4 to ~5e-4, eliminating the
-    # near-zero floor collapse.
-    z_eq = jnp.array([0.0128, 0.0128, 0.0142, 0.0142])   # static deflections [m]
-    q_susp = z_eq[None, :] + jax.random.normal(k1b, (num_samples, 4)) * 0.020
+    # Suspension DOFs [6:10]: centred at static equilibrium (FIX: was N(0, 0.05))
+    # E[susp_sq] ≈ 4·(20mm²) = 0.0016 m² — 15× larger than the near-zero floor,
+    # restoring full gradient magnitude through the H_res * susp_sq path.
+    q_susp = (_Z_EQ[None, :]
+              + jax.random.normal(k1b, (num_samples, 4)) * 0.020)
 
-    # Wheel angle DOFs [10:14]: small — wheel spin is captured in p, not q
-    k1c, _ = jax.random.split(k1b)
+    # Wheel angle DOFs [10:14]: small rotational perturbations
     q_wheel = jax.random.normal(k1c, (num_samples, 4)) * 0.05
 
-    q = jnp.concatenate([q_body, q_susp, q_wheel], axis=1)
+    q = jnp.concatenate([q_body, q_susp, q_wheel], axis=1)   # (N, 14)
 
-    v_samples = jax.random.normal(k2, (num_samples, 14)) * v_std
-    p         = v_samples * M_diag_train
+    # ── p: physical momenta p = M_diag × v ───────────────────────────────────
+    p = jax.random.normal(k2, (num_samples, 14)) * v_std * M_diag_train
 
-    # ── P10 FIX: 28-parameter setup training distribution ─────────────────────
-    # OLD (8-param, now crashes NeuralEnergyLandscape which expects 28):
-    #   setup_mean_train  = jnp.array([40000., 40000.,  500.,  500., 3000., 3000., 0.30, 0.60])
-    #   setup_scale_train = jnp.array([15000., 15000.,  300.,  300., 1500., 1500., 0.03, 0.08])
-    #   setup_params = setup_mean_train + jax.random.normal(k3, (num_samples, 8)) * setup_scale_train
-    #
-    # NEW: use PhysicsNormalizer.setup_mean/scale directly.
-    # These are the same statistics used by normalize_setup() inside the network,
-    # so training samples cover the full 28-parameter operating envelope uniformly
-    # in normalised space — ±1σ in each dimension.
-    #
-    # Note: we clip to ±2σ to avoid unphysical values (negative spring rates,
-    # bumpstop gap > suspension travel, etc.) during training.
-    setup_noise  = jax.random.normal(k3, (num_samples, 28))
-    setup_noise  = jnp.clip(setup_noise, -2.0, 2.0)
+    # ── setup: 28-parameter SuspensionSetup ──────────────────────────────────
+    # Spring/ARB rates clipped to ±1σ: wider sampling risks target_H exceeding
+    # H_RESIDUAL_CAP for the H_res = target_H / susp_sq ratio.
+    # All other parameters use ±2σ (non-energy-coupled, safe to be wider).
+    setup_noise_tight = jnp.clip(jax.random.normal(k3, (num_samples, 4)), -1.0, 1.0)
+    setup_noise_wide  = jnp.clip(jax.random.normal(k4, (num_samples, 28)), -2.0, 2.0)
+
     setup_params = (PhysicsNormalizer.setup_mean
-                    + setup_noise * PhysicsNormalizer.setup_scale)
+                    + setup_noise_wide * PhysicsNormalizer.setup_scale)
+    # Overwrite spring/ARB indices [0:4] with tighter clip
+    setup_params = setup_params.at[:, 0:4].set(
+        PhysicsNormalizer.setup_mean[0:4]
+        + setup_noise_tight * PhysicsNormalizer.setup_scale[0:4]
+    )
 
-    # Enforce hard physical lower bounds post-sampling (springs > 5 kN/m,
-    # dampers > 50 Ns/m, bumpstop gap > 5 mm) to avoid degenerate training pts
-    # that would generate NaN gradients inside H_net.
-    # Enforce hard physical lower bounds post-sampling (springs > 5 kN/m,
-    # dampers > 50 Ns/m) to avoid degenerate training pts
-    # that would generate NaN gradients inside H_net.
-    
-    # Enforce hard physical lower bounds post-sampling (springs > 5 kN/m,
-    # dampers > 50 Ns/m, bumpstop gap > 5 mm) to avoid degenerate training pts
-    # that would generate NaN gradients inside H_net.
-    
+    # Hard physical lower bounds — prevents NaN gradients inside H_net
     setup_params = setup_params.at[:, 0:2].set(
-        jnp.maximum(setup_params[:, 0:2], 5000.0))   # k_f, k_r only [N/m]
-
+        jnp.maximum(setup_params[:, 0:2], 5_000.0))    # k_f, k_r  [N/m]
+    setup_params = setup_params.at[:, 2:4].set(
+        jnp.maximum(setup_params[:, 2:4], 50.0))       # arb_f, arb_r [Nm/m]
     setup_params = setup_params.at[:, 4:8].set(
-        jnp.maximum(setup_params[:, 4:8], 50.0))     # c_low_f/r, c_high_f/r [N·s/m]
-        
+        jnp.maximum(setup_params[:, 4:8], 50.0))       # c_low_f/r, c_high_f/r [Ns/m]
     setup_params = setup_params.at[:, 26:28].set(
-        jnp.maximum(setup_params[:, 26:28], 0.005))    # Bumpstop gaps
+        jnp.maximum(setup_params[:, 26:28], 0.005))    # bumpstop gaps [m]
 
-    torsion      = (q[:, 6] - q[:, 7]) - (q[:, 8] - q[:, 9])
-    k_torsion    = 15000.0
-    target_H     = 0.5 * k_torsion * (torsion ** 2)
-    target_R_mag = jnp.abs(torsion) * 500.0
+    # ── target_H: setup-dependent residual energy (FIX-1) ─────────────────────
+    k_f   = setup_params[:, 0]    # front spring rate [N/m]
+    k_r   = setup_params[:, 1]    # rear  spring rate [N/m]
+    arb_f = setup_params[:, 2]    # front ARB rate    [N/m equivalent]
+    arb_r = setup_params[:, 3]    # rear  ARB rate    [N/m equivalent]
+
+    z_fl  = q[:, 6];  z_fr = q[:, 7]
+    z_rl  = q[:, 8];  z_rr = q[:, 9]
+
+    # Term 1 — Spring energy ABOVE the structural prior (always ≥ 0 via relu).
+    # The prior covers _V_STRUCT_PRIOR_K = 30_000 N/m per corner.
+    # For setups stiffer than the prior: positive residual that H_res must learn.
+    # For softer setups: H_res → 0 (conservative; prior marginally over-estimates).
+    V_spring_dev = (
+        0.5 * jax.nn.relu(k_f - _V_STRUCT_PRIOR_K) * ((z_fl - _Z_EQ[0]) ** 2
+                                                    + (z_fr - _Z_EQ[1]) ** 2)
+    + 0.5 * jax.nn.relu(k_r - _V_STRUCT_PRIOR_K) * ((z_rl - _Z_EQ[2]) ** 2
+                                                    + (z_rr - _Z_EQ[3]) ** 2)
+    )
+
+    # Term 2 — Anti-roll bar energy: COMPLETELY ABSENT from any prior term.
+    # ARBs resist differential suspension travel, not absolute travel.
+    # This is the highest-value new term for FiLM: arb varies 3× across training.
+    V_arb = (
+        0.5 * arb_f * (z_fl - z_fr) ** 2
+      + 0.5 * arb_r * (z_rl - z_rr) ** 2
+    )
+
+    # Term 3 — Chassis torsional compliance residual.
+    # k_torsion = 5_000 Nm/rad (conservative synthetic value).
+    # Reduced from 15_000 to keep H_res = target_H / susp_sq within
+    # H_RESIDUAL_CAP = 5000 J/m². At k=5_000: E[V_torsion] ≈ 4 J,
+    # H_res_needed ≈ 4 / 0.0016 = 2500 J/m² — comfortably within cap.
+    k_torsion = 5_000.0
+    torsion   = (z_fl - z_fr) - (z_rl - z_rr)   # torsional displacement [m]
+    V_torsion = 0.5 * k_torsion * torsion ** 2
+
+    target_H = V_spring_dev + V_arb + V_torsion   # always ≥ 0
+
+    # ── target_R_mag: velocity-enriched dissipation proxy (FIX-3) ─────────────
+    # R_net input is (q, p) only — no setup — so target must be a fn of q and p.
+    # Power dissipated by a damper: P = c·ż² → quadratic in velocity.
+    # Previous target (|torsion|·500) had zero velocity sensitivity.
+    v_fl = q[:, 6] * 0.0 + p[:, 6] / (_m_usf + 1e-8)   # unsprung vel FL [m/s]
+    v_fr = p[:, 7] / (_m_usf + 1e-8)
+    v_rl = p[:, 8] / (_m_usr + 1e-8)
+    v_rr = p[:, 9] / (_m_usr + 1e-8)
+
+    # RMS suspension velocity — primary driver of damper dissipation
+    v_susp_rms = jnp.sqrt(
+        (v_fl ** 2 + v_fr ** 2 + v_rl ** 2 + v_rr ** 2) * 0.25 + 1e-8
+    )
+    # Torsional velocity rate — driver of chassis flex dissipation
+    v_torsion_rate = (v_fl - v_fr) - (v_rl - v_rr)
+
+    target_R_mag = (
+        jnp.abs(torsion)        * 200.0    # position-based torsional damping
+      + v_susp_rms              * 300.0    # velocity-based damper dissipation
+      + jnp.abs(v_torsion_rate) * 100.0    # differential velocity (flex dissipation)
+    )
 
     return q, p, setup_params, target_H, target_R_mag
 
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# §2  Neural residual training
+# ═══════════════════════════════════════════════════════════════════════════════
 
 def train_neural_residuals():
     global TRAINED_H_SCALE, TRAINED_R_SCALE, LAST_TRAIN_MSE, LAST_PHRATE
 
     print("[Neural Physics] Generating Synthetic Chassis Flex Data...")
     print("[Neural Physics] P5 SE(3) architecture — 29 bilateral-invariant features.")
-    print("                 Previously saved h_net.bytes is incompatible (36→29 features).")
-    print("[Neural Physics] P10 setup fix — 28-param setup vector (was 8-param).")
-    print("                 New weights will be saved at end of training.")
+    print("[Neural Physics] P10 setup fix — 28-param setup vector.")
+    print("[Neural Physics] GP-vX2 — setup-dependent target_H (FiLM active).")
 
     q_data, p_data, setup_data, target_H, target_R_mag = generate_synthetic_flex_data()
 
-    # Verify shape at runtime — catches any future setup expansion mismatches early
     assert setup_data.shape[1] == 28, (
-        f"setup_data has shape {setup_data.shape} — expected (n, 28). "
-        f"generate_synthetic_flex_data must produce 28-element setup vectors for P10."
+        f"setup_data shape {setup_data.shape} — expected (N, 28)."
     )
     print(f"   [P10 check] setup_data shape: {setup_data.shape} ✓")
 
-    # ── M_diag identical to generate_synthetic_flex_data ─────────────────────
+    # Log target composition to verify setup-dependence is non-trivial
+    _z_fl = q_data[:, 6];  _z_fr = q_data[:, 7]
+    _z_rl = q_data[:, 8];  _z_rr = q_data[:, 9]
+    _tors = (_z_fl - _z_fr) - (_z_rl - _z_rr)
+    _k_f  = setup_data[:, 0];  _k_r = setup_data[:, 1]
+    _arb_f = setup_data[:, 2]; _arb_r = setup_data[:, 3]
+    _V_sd = (0.5 * jax.nn.relu(_k_f - _V_STRUCT_PRIOR_K) * ((_z_fl - _Z_EQ[0])**2 + (_z_fr - _Z_EQ[1])**2)
+           + 0.5 * jax.nn.relu(_k_r - _V_STRUCT_PRIOR_K) * ((_z_rl - _Z_EQ[2])**2 + (_z_rr - _Z_EQ[3])**2))
+    _V_arb = (0.5 * _arb_f * (_z_fl - _z_fr)**2
+            + 0.5 * _arb_r * (_z_rl - _z_rr)**2)
+    _V_tor = 0.5 * 5_000.0 * _tors**2
+    _H_tot = float(jnp.mean(target_H))
+    print(f"   [Target H] mean={_H_tot:.3f} J  "
+          f"| V_spring_dev={float(jnp.mean(_V_sd)):.3f} J  "
+          f"| V_arb={float(jnp.mean(_V_arb)):.3f} J  "
+          f"| V_torsion={float(jnp.mean(_V_tor)):.3f} J")
+    if float(jnp.std(_V_sd)) < 0.01:
+        print("   [WARN] V_spring_dev has near-zero variance — FiLM spring signal absent.")
+    if float(jnp.std(_V_arb)) < 0.01:
+        print("   [WARN] V_arb has near-zero variance — FiLM ARB signal absent.")
+
+    # ── M_diag (must exactly match generate_synthetic_flex_data) ─────────────
     m_s   = VP_DICT.get('total_mass', 230.0) - (
                 2 * VP_DICT.get('unsprung_mass_f', 10.0) +
                 2 * VP_DICT.get('unsprung_mass_r', 11.0))
     m_usf = VP_DICT.get('unsprung_mass_f', 10.0)
     m_usr = VP_DICT.get('unsprung_mass_r', 11.0)
-    Ix    = VP_DICT.get('Ix', 45.0)
-    Iy    = VP_DICT.get('Iy', 85.0)
+    Ix    = VP_DICT.get('Ix',  45.0)
+    Iy    = VP_DICT.get('Iy',  85.0)
     Iz    = VP_DICT.get('Iz', 125.0)
-    Iw    = VP_DICT.get('Iw', 1.2)
+    Iw    = VP_DICT.get('Iw',   1.2)
     M_diag = jnp.array([m_s, m_s, m_s, Ix, Iy, Iz,
                          m_usf, m_usf, m_usr, m_usr, Iw, Iw, Iw, Iw])
 
@@ -257,66 +325,53 @@ def train_neural_residuals():
     r_net = NeuralDissipationMatrix(dim=14)
 
     key1, key2 = jax.random.split(jax.random.PRNGKey(0))
-    # setup_data[0] now has shape (28,) — matches NeuralEnergyLandscape P10 input
     h_params = h_net.init(key1, q_data[0], p_data[0], setup_data[0])
     r_params = r_net.init(key2, q_data[0], p_data[0])
 
-    h_scale = float(jnp.std(target_H) + 1e-6)
+    h_scale = float(jnp.std(target_H)    + 1e-6)
     r_scale = float(jnp.std(target_R_mag) + 1e-6)
     target_H_norm     = target_H     / h_scale
     target_R_mag_norm = target_R_mag / r_scale
-    print(f"   [Neural Physics] H target scale: {h_scale:.2f} J  "
+    print(f"   [Neural Physics] H target scale: {h_scale:.4f} J  "
           f"| R target scale: {r_scale:.4f}")
 
-    # ─────────────────────────────────────────────────────────────────────────
-    # P5 architecture convergence advantage:
-    # ─────────────────────────────────────────────────────────────────────────
-    # Anti-symmetric features (vy, wz, roll, etc.) enter as x² into the
-    # SE(3) network.  This means the network STRUCTURALLY CANNOT represent
-    # odd functions of these quantities — dH/dvy = 0 always, regardless of
-    # training.  The phantom-rate-at-eq loss therefore only needs to suppress
-    # residual even-function artifacts from the symmetric features, which
-    # converge ~20% faster in practice.
-    #
-    # Two-phase training protocol (v9: phantom rate at equilibrium) — RETAINED
-    # ─────────────────────────────────────────────────────────────────────────
-    # Phase 1 (ep 1→2500): pure MSE — learn torsional energy landscape.
-    # Phase 2 (ep 2501→3500): MSE + phantom-rate-at-eq + bilateral passivity.
-    #   PhantomRate: (dH/dq·v)² at q=0 across physical p  [ALPHA=3.0]
-    #   Passivity:   injection guard at random (q,p)        [ALPHA=1.0]
-    # All terms gradient-normalised. Fresh Adam at Phase 2 start.
+    # ── Training protocol ─────────────────────────────────────────────────────
+    # Two-phase (GP-vX2):
+    #   Phase 1 (ep 1→2500): pure MSE — learn setup-dependent energy landscape.
+    #     With setup-dependent target, FiLM γ/β now receive real gradients from
+    #     the first epoch. Expected Phase-1 convergence to MSE < 0.10 vs
+    #     previous stall at 0.746.
+    #   Phase 2 (ep 2501→3500): MSE + PhantomRate@z_eq + squared-hinge passivity.
+    #     PhantomRate evaluated at PHYSICAL EQUILIBRIUM q_eq (FIX-2), not zeros.
+    #     ALPHA_PASS = 25.0 compensates for pass_norm >> mse_norm.
     # ─────────────────────────────────────────────────────────────────────────
 
-    NUM_EPOCHS     = 3500
-    PHASE_1_END    = 2500
-    PHASE_2_EPOCHS = NUM_EPOCHS - PHASE_1_END
+    NUM_EPOCHS      = 3500
+    PHASE_1_END     = 2500
+    PHASE_2_EPOCHS  = NUM_EPOCHS - PHASE_1_END
 
-    # In residual_fitting.py — Phase 2 hyperparameters
-    ALPHA_PHANTOM  = 3.0
-    ALPHA_PASS     = 25.0   # was 1.0 — compensates for pass_norm >> mse_norm
-    DISSIPATION_THRESHOLD = 50.0  # was 100.0 — tighter bound on physical dissipation
+    ALPHA_PHANTOM         = 3.0
+    ALPHA_PASS            = 25.0    # compensates pass_norm >> mse_norm (was 1.0)
+    DISSIPATION_THRESHOLD = 50.0    # tighter physical bound (was 100.0)
 
-    h_schedule_p1 = optax.cosine_decay_schedule(init_value=1e-3,
-                                                  decay_steps=PHASE_1_END,
-                                                  alpha=0.01)
+    h_schedule_p1 = optax.cosine_decay_schedule(
+        init_value=1e-3, decay_steps=PHASE_1_END, alpha=0.01)
     h_tx_p1 = optax.adamw(learning_rate=h_schedule_p1, weight_decay=1e-4)
 
-    h_schedule_p2 = optax.cosine_decay_schedule(init_value=5e-4,
-                                                  decay_steps=PHASE_2_EPOCHS,
-                                                  alpha=0.1)
+    h_schedule_p2 = optax.cosine_decay_schedule(
+        init_value=5e-4, decay_steps=PHASE_2_EPOCHS, alpha=0.1)
     h_tx_p2 = optax.adamw(learning_rate=h_schedule_p2, weight_decay=1e-4)
 
-    # ─────────────────────────────────────────────────────────────────────────
-    # Phase 1 update — pure MSE
-    # ─────────────────────────────────────────────────────────────────────────
+    # ── Phase 1: pure MSE ────────────────────────────────────────────────────
 
     @jax.jit
     def h_update_p1(params, opt_state, q, p, setup, target_norm):
         def mse_loss(params_):
             def per_sample(q_s, p_s, setup_s, t_s):
                 total    = h_net.apply(params_, q_s, p_s, setup_s)
-                T_prior  = 0.5 * jnp.sum((p_s ** 2) / M_diag)
-                V_struct = 0.5 * jnp.sum(q_s[6:10] ** 2) * 30000.0
+                T_prior  = 0.5 * jnp.sum((p_s ** 2) / (M_diag + 1e-8))
+                V_struct = 0.5 * jnp.sum(q_s[6:10] ** 2) * _V_STRUCT_PRIOR_K
+                # residual = H_res * susp_sq (both prior terms subtracted)
                 residual = (total - T_prior - V_struct) / h_scale
                 return (residual - t_s) ** 2
             return jnp.mean(jax.vmap(per_sample)(q, p, setup, target_norm))
@@ -325,61 +380,67 @@ def train_neural_residuals():
         updates, new_state = h_tx_p1.update(grads, opt_state, params)
         return optax.apply_updates(params, updates), new_state, loss
 
-    # ─────────────────────────────────────────────────────────────────────────
-    # Phase 2 update — MSE + phantom rate at eq + bilateral passivity
-    # ─────────────────────────────────────────────────────────────────────────
+    # ── Phase 2: MSE + PhantomRate@z_eq + squared-hinge passivity ────────────
 
     @jax.jit
     def h_update_p2(params, opt_state, q, p, setup, target_norm):
-        """
-        Three-term gradient-normalised update.
+        # Physical equilibrium: body at trim, suspension at static deflection
+        q_eq = jnp.zeros(14).at[6:10].set(_Z_EQ)
 
-        Term 1 — MSE: energy landscape on training (q, p, setup) samples.
+        # ── Neural residual isolator ───────────────────────────────────────────
+        # Returns H_res * susp_sq_eq(q) — the ONLY component that can inject
+        # phantom energy. T_prior is analytically conservative (kinetic energy).
+        # V_structural is analytically passive (elastic potential). Both are
+        # balanced in F_ext by gravity and spring forces respectively.
+        # Evaluating phantom rate / passivity on H_full = T + V + H_res*susp_sq
+        # penalises real physics:
+        #   dV_structural/dt = 30000 * z * ż — large positive during compression,
+        #   balanced by F_ext[16..23], not a passivity violation.
+        #   dT_prior/dt = 0 by construction (conservative).
+        # Only the neural residual is unconstrained and can hallucinate energy.
+        def _h_residual(params_, q_, p_s, setup_s):
+            total    = h_net.apply(params_, q_, p_s, setup_s)
+            T_prior  = 0.5 * jnp.sum((p_s ** 2) / (M_diag + 1e-8))
+            V_struct = 0.5 * jnp.sum(q_[6:10] ** 2) * _V_STRUCT_PRIOR_K
+            return total - T_prior - V_struct   # = H_res * susp_sq_eq(q)
 
-        Term 2 — Phantom rate at equilibrium:
-            L_phantom = E_{p,setup}[ (dH/dq(q=0, p, setup) · v)² ]
-            Evaluated at q=0 with physical p from the training batch.
-
-            P5 advantage: SE(3) network cannot represent odd functions of vy,
-            wz, roll — so dH/dq_vy, dH/dq_wz are structurally zero.  Only
-            even-function coupling through symmetric features remains, which
-            is smaller in magnitude and converges faster.
-
-        Term 3 — Bilateral passivity: secondary injection guard at random
-            (q, p) points.
-        """
-        # ── Term 1: MSE ───────────────────────────────────────────────────────
         def mse_loss(params_):
             def per_sample(q_s, p_s, setup_s, t_s):
                 total    = h_net.apply(params_, q_s, p_s, setup_s)
-                T_prior  = 0.5 * jnp.sum((p_s ** 2) / M_diag)
-                V_struct = 0.5 * jnp.sum(q_s[6:10] ** 2) * 30000.0
+                T_prior  = 0.5 * jnp.sum((p_s ** 2) / (M_diag + 1e-8))
+                V_struct = 0.5 * jnp.sum(q_s[6:10] ** 2) * _V_STRUCT_PRIOR_K
                 residual = (total - T_prior - V_struct) / h_scale
                 return (residual - t_s) ** 2
             return jnp.mean(jax.vmap(per_sample)(q, p, setup, target_norm))
 
-        # ── Term 2: Phantom rate at equilibrium ───────────────────────────────
         def phantom_rate_at_eq_loss(params_):
-            q_eq = jnp.zeros(14)
+            # Evaluates d(H_res)/dq at physical equilibrium.
+            # At z=z_eq: susp_sq = 1e-4 (floor) → d(H_res*susp_sq)/dq is small
+            # by construction — the neural residual cannot generate large forces
+            # at the operating point without violating the susp_sq gate.
+            # V_structural gradient at z_eq is real spring force — must NOT be
+            # penalized here; it is balanced by gravity in F_ext.
             def per_sample(p_s, setup_s):
-                dH_dq = jax.grad(
-                    lambda q_: h_net.apply(params_, q_, p_s, setup_s)
+                dHr_dq = jax.grad(
+                    lambda q_: _h_residual(params_, q_, p_s, setup_s)
                 )(q_eq)
-                v    = p_s / M_diag
-                rate = jnp.dot(dH_dq, v)
+                v    = p_s / (M_diag + 1e-8)
+                rate = jnp.dot(dHr_dq, v)
                 return rate ** 2
             return jnp.mean(jax.vmap(per_sample)(p, setup))
 
-        # ── Term 3: Bilateral passivity ───────────────────────────────────────
         def passivity_loss(params_):
+            # Evaluates d(H_res)/dt at random (q, p).
+            # dV_structural/dt = 30000 * z * ż — can be positive (spring compression).
+            # This is balanced by gravity in F_ext, not a passivity violation.
+            # Only H_res*susp_sq can inject phantom energy; penalize that alone.
             def per_sample(q_s, p_s, setup_s):
-                dH_dq = jax.grad(
-                    lambda q_: h_net.apply(params_, q_, p_s, setup_s)
+                dHr_dq  = jax.grad(
+                    lambda q_: _h_residual(params_, q_, p_s, setup_s)
                 )(q_s)
-                v      = p_s / M_diag
-                rate   = jnp.dot(dH_dq, v)
-                # Squared hinge: smoother gradient near zero-violation boundary
-                inject = jax.nn.relu(rate) ** 2
+                v       = p_s / (M_diag + 1e-8)
+                rate    = jnp.dot(dHr_dq, v)
+                inject  = jax.nn.relu(rate) ** 2
                 phantom = 0.1 * jax.nn.relu(-rate - DISSIPATION_THRESHOLD) ** 2
                 return inject + phantom
             return jnp.mean(jax.vmap(per_sample)(q, p, setup))
@@ -388,26 +449,23 @@ def train_neural_residuals():
         ph_val,   ph_grads   = jax.value_and_grad(phantom_rate_at_eq_loss)(params)
         pass_val, pass_grads = jax.value_and_grad(passivity_loss)(params)
 
-        def _norm(tree):
+        def _grad_norm(tree):
             return jnp.sqrt(sum(
                 jnp.sum(g ** 2) for g in jax.tree_util.tree_leaves(tree)
             ) + 1e-12)
 
-        mse_norm  = _norm(mse_grads)
-        ph_norm   = _norm(ph_grads)
-        pass_norm = _norm(pass_grads)
+        mse_norm  = _grad_norm(mse_grads)
+        ph_norm   = _grad_norm(ph_grads)
+        pass_norm = _grad_norm(pass_grads)
 
-        # Rationale: when ph_norm < mse_norm * 1e-3, the phantom constraint is
-        # already satisfied (gradient is numerically zero) — scaling it by 1e8
-        # adds nothing physically meaningful but overflows float32.
+        # Gradient-normalised scaling with symmetric caps to prevent float32 overflow.
+        # Lower bound on scale_pass prevents it collapsing when pass_norm is large.
         scale_ph   = jnp.minimum(
-            ALPHA_PHANTOM * mse_norm / (ph_norm   + 1e-8),
-            500.0,   # phantom contribution ≤ 500× phantom grad norm — never overflows f32
-        )
+            ALPHA_PHANTOM * mse_norm / (ph_norm   + 1e-8), 500.0)
         scale_pass = jnp.clip(
             ALPHA_PASS    * mse_norm / (pass_norm + 1e-8),
-            ALPHA_PASS * 0.01,
-            500.0,   # symmetric cap — pass_norm can also vanish on flat landscape
+            ALPHA_PASS * 0.01,   # floor: always apply at least 1% of nominal weight
+            500.0,
         )
 
         combined_grads = jax.tree_util.tree_map(
@@ -419,20 +477,25 @@ def train_neural_residuals():
         new_params = optax.apply_updates(params, updates)
         return new_params, new_state, mse_val, ph_val, pass_val, scale_ph, scale_pass
 
-    # ─────────────────────────────────────────────────────────────────────────
-    # R_net — DOF-weighted diagonal loss, two-phase
-    # ─────────────────────────────────────────────────────────────────────────
+    # ── R_net: DOF-weighted diagonal loss ────────────────────────────────────
+    # Weights reflect physical dissipation importance: suspension DOFs highest,
+    # wheel spin lowest (rolling resistance negligible vs. damper losses).
     R_DOF_WEIGHTS = jnp.array([
-        0.08, 0.08, 0.80, 0.40, 0.40, 0.15,
-        1.00, 1.00, 1.00, 1.00,
-        0.02, 0.02, 0.02, 0.02,
+        0.08, 0.08, 0.80, 0.40, 0.40, 0.15,   # body DOFs
+        1.00, 1.00, 1.00, 1.00,                 # suspension DOFs
+        0.02, 0.02, 0.02, 0.02,                 # wheel spin DOFs
     ])
 
-    r_schedule = optax.cosine_decay_schedule(init_value=1e-3,
-                                              decay_steps=NUM_EPOCHS,
-                                              alpha=0.01)
-    r_tx = optax.adamw(learning_rate=r_schedule, weight_decay=1e-4)
-    r_opt_state = r_tx.init(r_params)
+    R_PHASE_1_END = 1000
+    r_schedule_p1 = optax.cosine_decay_schedule(
+        init_value=1e-3, decay_steps=NUM_EPOCHS, alpha=0.01)
+    r_tx_p1       = optax.adamw(learning_rate=r_schedule_p1, weight_decay=1e-4)
+    r_opt_state   = r_tx_p1.init(r_params)
+
+    r_schedule_p2 = optax.cosine_decay_schedule(
+        init_value=5e-4, decay_steps=NUM_EPOCHS - R_PHASE_1_END, alpha=0.1)
+    r_tx_p2        = optax.adamw(learning_rate=r_schedule_p2, weight_decay=1e-4)
+    r_opt_state_p2 = None
 
     @jax.jit
     def r_loss_fn(params, q, p, target_mag_norm):
@@ -442,17 +505,10 @@ def train_neural_residuals():
         return jnp.mean((pred_diag - tgt_diag) ** 2)
 
     @jax.jit
-    def r_update(params, opt_state, q, p, target_mag_norm):
+    def r_update_p1(params, opt_state, q, p, target_mag_norm):
         loss, grads = jax.value_and_grad(r_loss_fn)(params, q, p, target_mag_norm)
-        updates, new_opt_state = r_tx.update(grads, opt_state, params)
-        return optax.apply_updates(params, updates), new_opt_state, loss
-
-    R_PHASE_1_END  = 1000
-    r_schedule_p2  = optax.cosine_decay_schedule(init_value=5e-4,
-                                                   decay_steps=NUM_EPOCHS - R_PHASE_1_END,
-                                                   alpha=0.1)
-    r_tx_p2        = optax.adamw(learning_rate=r_schedule_p2, weight_decay=1e-4)
-    r_opt_state_p2 = None
+        updates, new_state = r_tx_p1.update(grads, opt_state, params)
+        return optax.apply_updates(params, updates), new_state, loss
 
     @jax.jit
     def r_update_p2(params, opt_state, q, p, target_mag_norm):
@@ -460,23 +516,22 @@ def train_neural_residuals():
         updates, new_state = r_tx_p2.update(grads, opt_state, params)
         return optax.apply_updates(params, updates), new_state, loss
 
-    # ─────────────────────────────────────────────────────────────────────────
+    # ═════════════════════════════════════════════════════════════════════════
     # H_net training loop
-    # ─────────────────────────────────────────────────────────────────────────
+    # ═════════════════════════════════════════════════════════════════════════
     print("\n[Neural Physics] Training H_net (Energy Landscape Residual)...")
     print(f"  [Config] Epochs: {NUM_EPOCHS} | AdamW | weight_decay: 1e-4")
-    print(f"  [P5 SE(3)] 29 bilateral-symmetric features (anti-sym as x² eliminates phantom-vy/wz)")
-    print(f"  [P10] 28-param setup vector — NeuralEnergyLandscape input: 4+7+3+7+28=49 features")
-    print(f"  [Two-Phase v9: phantom rate at equilibrium]")
+    print(f"  [P5 SE(3)] 29 bilateral-symmetric features")
+    print(f"  [GP-vX2] setup-dependent target: V_spring_dev + V_arb + V_torsion")
     print(f"  Phase 1 (ep 1→{PHASE_1_END}): PURE MSE.")
     print(f"  Phase 2 (ep {PHASE_1_END+1}→{NUM_EPOCHS}): "
-          f"MSE + PhantomRate@eq [α={ALPHA_PHANTOM}] + passivity [α={ALPHA_PASS}]")
+          f"MSE + PhantomRate@z_eq [α={ALPHA_PHANTOM}] "
+          f"+ squared-hinge passivity [α={ALPHA_PASS}]")
 
     h_opt_state_p1 = h_tx_p1.init(h_params)
     h_opt_state_p2 = None
-
-    _last_mse_val = float('nan')
-    _last_ph_val  = float('nan')
+    _last_mse_val  = float('nan')
+    _last_ph_val   = float('nan')
 
     for epoch in range(1, NUM_EPOCHS + 1):
 
@@ -489,13 +544,14 @@ def train_neural_residuals():
             if epoch % 200 == 0:
                 lr_now = float(h_schedule_p1(epoch))
                 print(f"  Epoch {epoch:4d} | Loss: {h_loss:.6f} | "
-                      f"lr: {lr_now:.2e} | Phase 1 (pure MSE)")
+                      f"lr: {lr_now:.2e} | Phase 1 (MSE)")
 
         else:
             if h_opt_state_p2 is None:
                 h_opt_state_p2 = h_tx_p2.init(h_params)
                 print(f"\n  [Phase 2 START] Epoch {epoch}: fresh Adam (LR=5e-4). "
-                      f"PhantomRate@eq (α={ALPHA_PHANTOM:.1f}) + passivity (α={ALPHA_PASS:.1f}).")
+                      f"PhantomRate@z_eq (α={ALPHA_PHANTOM}) "
+                      f"+ squared-hinge passivity (α={ALPHA_PASS}).")
 
             (h_params, h_opt_state_p2, mse_l,
              ph_l, pass_l, sc_ph, sc_pass) = h_update_p2(
@@ -510,29 +566,29 @@ def train_neural_residuals():
                 lr_now = float(h_schedule_p2(epoch - PHASE_1_END))
                 print(f"  Epoch {epoch:4d} | "
                       f"MSE: {float(mse_l):.6f} | "
-                      f"PhRate: {float(ph_l):.1f} | "
+                      f"PhRate@z_eq: {float(ph_l):.4f} | "
                       f"Violation: {float(pass_l):.2f} J/s | "
-                      f"PhScale: {float(sc_ph):.4f} | "
+                      f"PhScale: {float(sc_ph):.2f} | "
                       f"PassScale: {float(sc_pass):.3f} | "
                       f"lr: {lr_now:.2e} | "
                       f"Phase 2 ({p2_pct}%)")
 
-    # ─────────────────────────────────────────────────────────────────────────
+    # ═════════════════════════════════════════════════════════════════════════
     # R_net training loop
-    # ─────────────────────────────────────────────────────────────────────────
+    # ═════════════════════════════════════════════════════════════════════════
     print("\n[Neural Physics] Training R_net (Dissipation Matrix Residual)...")
     for epoch in range(1, NUM_EPOCHS + 1):
         if epoch <= R_PHASE_1_END:
-            r_params, r_opt_state, r_loss = r_update(
+            r_params, r_opt_state, r_loss = r_update_p1(
                 r_params, r_opt_state, q_data, p_data, target_R_mag_norm,
             )
             if epoch % 200 == 0:
                 print(f"  Epoch {epoch:4d} | MSE Loss: {r_loss:.6f} | "
-                      f"lr: {float(r_schedule(epoch)):.2e}")
+                      f"lr: {float(r_schedule_p1(epoch)):.2e}")
         else:
             if r_opt_state_p2 is None:
                 r_opt_state_p2 = r_tx_p2.init(r_params)
-                print(f"  [R Phase 2] Epoch {epoch}: fresh Adam, LR restart 5e-4.")
+                print(f"  [R Phase 2] Epoch {epoch}: fresh Adam, LR 5e-4.")
             r_params, r_opt_state_p2, r_loss = r_update_p2(
                 r_params, r_opt_state_p2, q_data, p_data, target_R_mag_norm,
             )
@@ -541,72 +597,89 @@ def train_neural_residuals():
                 print(f"  Epoch {epoch:4d} | MSE Loss: {r_loss:.6f} | "
                       f"lr: {lr_now:.2e} | R Phase 2")
 
-    # ─────────────────────────────────────────────────────────────────────────
-    # Post-training passive energy injection diagnostic
-    # ─────────────────────────────────────────────────────────────────────────
+    # ═════════════════════════════════════════════════════════════════════════
+    # Post-training diagnostics
+    # ═════════════════════════════════════════════════════════════════════════
+
+    # Diagnostic 1: passive energy injection
     try:
         from models.vehicle_dynamics import DifferentiableMultiBodyVehicle
         from data.configs.tire_coeffs import tire_coeffs as TP_DICT
-        from models.vehicle_dynamics import build_default_setup_28 as _build_default_setup_28
+        from models.vehicle_dynamics import build_default_setup_28
 
         _veh = DifferentiableMultiBodyVehicle(VP_DICT, TP_DICT)
+        _sp  = build_default_setup_28(VP_DICT).at[1].set(38000.).at[21].set(0.28)
         _x0  = jnp.zeros(46).at[14].set(10.0)
-        _u0  = jnp.array([0.0, 0.0])
-
-        # P10 FIX: was jnp.array([35000., 38000., 400., 450., 2500., 2800., 0.28, 0.60])
-        # — 8-element vector crashed simulate_step which unpacks 28 params.
-        # Now use _build_default_setup_28 with a slight perturbation to test
-        # away from the mean (same spirit as the original diagnostic intent).
-        _sp_default = _build_default_setup_28(VP_DICT)
-        # Replicate the original perturbation: slightly stiffer rear, lower h_cg
-        _sp = _sp_default.at[1].set(38000.)   # k_r slightly stiffer
-        _sp = _sp.at[21].set(0.28)            # h_cg slightly lower (was 0.28)
-
-        _x1  = _veh.simulate_step(_x0, _u0, _sp, dt=0.01)
-        _m   = VP_DICT.get('total_mass', 230.0)
-        _dKE = 0.5 * _m * (float(_x1[14]) ** 2 - float(_x0[14]) ** 2)
+        _x1  = _veh.simulate_step(_x0, jnp.array([0.0, 0.0]), _sp, dt=0.01)
+        _dKE = 0.5 * VP_DICT.get('total_mass', 230.0) * (
+            float(_x1[14]) ** 2 - float(_x0[14]) ** 2
+        )
         budget_J = 0.10
         if abs(_dKE) < budget_J:
             _tag = f"✓ PASS  ({_dKE * 1000:.1f} mJ < {budget_J * 1000:.0f} mJ budget)"
         else:
-            sign = "injection" if _dKE > 0 else "phantom braking"
-            _tag = (f"✗ WARN  ({_dKE * 1000:.1f} mJ — {sign}) — "
-                    f"passivity not fully converged with synthetic data. "
-                    f"Real 4-post rig data will improve this further.")
+            _sign = "injection" if _dKE > 0 else "phantom braking"
+            _tag  = (f"✗ WARN  ({_dKE * 1000:.1f} mJ — {_sign}) — "
+                     f"passivity not fully converged with synthetic data.")
         print(f"\n[Neural Physics] Passive energy injection: {_tag}")
     except Exception as _e:
         print(f"[Neural Physics] Energy injection check skipped: {_e}")
 
-    print("\n[Neural Physics] Pre-training complete!")
-    print(f"Scale factors:  h_scale={h_scale:.2f} J  |  r_scale={r_scale:.4f}")
+    # Diagnostic 2: FiLM setup sensitivity
+    # Verifies that FiLM layers produce meaningful setup modulation.
+    # Computes std(H) across 200 random setups at fixed (q_eq, p_nominal).
+    # Target: std > 0.5 × h_scale — if near zero, FiLM is still dormant.
+    try:
+        _key_diag     = jax.random.PRNGKey(9999)
+        _kd1, _kd2    = jax.random.split(_key_diag)
+        # At z_eq susp_sq = 1e-4 (floor only) → H_res contribution ≈ 0 regardless
+        # of FiLM. Displace by 10mm: susp_sq ≈ 4*(0.010)^2 = 4e-4 → 4× larger,
+        # enough to expose FiLM sensitivity without leaving the linear spring regime.
+        _q_eq_diag    = jnp.zeros(14).at[6:10].set(_Z_EQ + 0.010)
+        _p_nom_diag   = jnp.zeros(14).at[0].set(m_s * 15.0)   # 15 m/s nominal
+        _setup_diag   = (PhysicsNormalizer.setup_mean[None, :]
+                         + jax.random.normal(_kd1, (200, 28))
+                         * PhysicsNormalizer.setup_scale * 0.5)
+        _H_diag       = jax.vmap(
+            lambda s: h_net.apply(h_params, _q_eq_diag, _p_nom_diag, s)
+        )(_setup_diag)
+        _film_std     = float(jnp.std(_H_diag))
+        _film_thresh  = 0.05 * h_scale
+        _film_ok      = _film_std > _film_thresh
+        print(f"[Neural Physics] FiLM sensitivity: "
+              f"std(H | varied_setup) = {_film_std:.4f} J  "
+              f"(threshold: {_film_thresh:.4f} J)  "
+              f"{'✓ PASS — FiLM active' if _film_ok else '✗ WARN — FiLM underutilized'}")
+    except Exception as _e:
+        print(f"[Neural Physics] FiLM sensitivity check skipped: {_e}")
 
-    # ── Update module-level scalars (P27: accessible from main.py) ────────────
+    print("\n[Neural Physics] Pre-training complete!")
+    print(f"Scale factors:  h_scale={h_scale:.4f} J  |  r_scale={r_scale:.4f}")
+
+    # ── Update module-level scalars ───────────────────────────────────────────
     TRAINED_H_SCALE = h_scale
     TRAINED_R_SCALE = r_scale
     LAST_TRAIN_MSE  = _last_mse_val
     LAST_PHRATE     = _last_ph_val
 
     # ── Persist weights ───────────────────────────────────────────────────────
-    _optimization_dir = os.path.dirname(os.path.abspath(__file__))
-    _project_root     = os.path.dirname(_optimization_dir)
-    _model_dir        = os.path.join(_project_root, 'models')
+    _opt_dir    = os.path.dirname(os.path.abspath(__file__))
+    _root       = os.path.dirname(_opt_dir)
+    _model_dir  = os.path.join(_root, 'models')
     os.makedirs(_model_dir, exist_ok=True)
 
     _h_path     = os.path.join(_model_dir, 'h_net.bytes')
     _r_path     = os.path.join(_model_dir, 'r_net.bytes')
     _scale_path = os.path.join(_model_dir, 'h_net_scale.txt')
 
-    with open(_h_path, 'wb') as f:
-        f.write(flax.serialization.to_bytes(h_params))
-    with open(_r_path, 'wb') as f:
-        f.write(flax.serialization.to_bytes(r_params))
-    with open(_scale_path, 'w') as f:
-        f.write(str(h_scale))
+    with open(_h_path,     'wb') as f: f.write(flax.serialization.to_bytes(h_params))
+    with open(_r_path,     'wb') as f: f.write(flax.serialization.to_bytes(r_params))
+    with open(_scale_path, 'w')  as f: f.write(str(h_scale))
 
     print(f"[Neural Physics] Weights saved → {_h_path}")
-    print(f"[Neural Physics] Scale saved   → {_scale_path}  ({h_scale:.2f} J)")
+    print(f"[Neural Physics] Scale saved   → {_scale_path}  ({h_scale:.4f} J)")
     print(f"[Neural Physics] LAST_TRAIN_MSE={LAST_TRAIN_MSE:.6f}  "
-          f"LAST_PHRATE={LAST_PHRATE:.2f}")
+          f"LAST_PHRATE={LAST_PHRATE:.4f}")
 
     return h_params, r_params
 

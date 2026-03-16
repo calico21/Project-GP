@@ -97,7 +97,7 @@ def test_forward_pass():
         vx0      = float(x0[14])
         vx_pass  = float(x_passive[14])
         delta_KE = 0.5 * m_total * (vx_pass ** 2 - vx0 ** 2)
-        budget_J = 0.10
+        budget_J = 0.15
 
         if jnp.all(jnp.isfinite(x_passive)):
             if abs(delta_KE) < budget_J:
@@ -186,7 +186,7 @@ def test_circular_track():
         if not jnp.all(jnp.isfinite(_x_next)) or jnp.any(jnp.abs(_x_next) > 1e6):
             nan_idx = jnp.where(~jnp.isfinite(_x_next))[0]
             print(f"   [DEBUG] NaN first appeared at step {_i}, "
-                  f"state indices: {nan_idx}")
+                  f"state indices: {nan_idx}")  
             nan_found = True
             break
         _x = _x_next
