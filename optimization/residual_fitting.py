@@ -358,8 +358,12 @@ def train_neural_residuals():
         init_value=1e-3, decay_steps=PHASE_1_END, alpha=0.01)
     h_tx_p1 = optax.adamw(learning_rate=h_schedule_p1, weight_decay=1e-4)
 
+    # BUG C FIX (part 1): Phase 1 ends at LR ≈ 1.39e-5 (cosine at epoch 2400/2500).
+    # Fresh Adam at 5e-4 is a 36× LR jump with reset momentum → guaranteed MSE spike.
+    # 5e-5 is ~4× above Phase 1 final LR — aggressive enough to learn passivity,
+    # conservative enough not to destroy the MSE landscape.
     h_schedule_p2 = optax.cosine_decay_schedule(
-        init_value=5e-4, decay_steps=PHASE_2_EPOCHS, alpha=0.1)
+        init_value=5e-5, decay_steps=PHASE_2_EPOCHS, alpha=0.1)
     h_tx_p2 = optax.adamw(learning_rate=h_schedule_p2, weight_decay=1e-4)
 
     # ── Phase 1: pure MSE ────────────────────────────────────────────────────
@@ -462,9 +466,16 @@ def train_neural_residuals():
         # Lower bound on scale_pass prevents it collapsing when pass_norm is large.
         scale_ph   = jnp.minimum(
             ALPHA_PHANTOM * mse_norm / (ph_norm   + 1e-8), 500.0)
-        scale_pass = jnp.clip(
+        # BUG C FIX (part 2): The floor ALPHA_PASS*0.01=0.25 forces passivity gradients
+        # to apply unconditionally even when mse_norm << pass_norm (i.e., MSE is well
+        # converged but passivity has never been trained). This makes pass_grads dominate
+        # the combined update, driving MSE from 0.006 → 1.97 in 100 epochs.
+        # Confirmed by output: PassScale: 0.250 is constant all through Phase 2 —
+        # the natural value was always below the floor and clamped to it.
+        # Without the floor, scale_pass starts near-zero (protecting MSE), then grows
+        # organically as passivity improves and pass_norm decreases.
+        scale_pass = jnp.minimum(
             ALPHA_PASS    * mse_norm / (pass_norm + 1e-8),
-            ALPHA_PASS * 0.01,   # floor: always apply at least 1% of nominal weight
             500.0,
         )
 

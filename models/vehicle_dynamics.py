@@ -799,8 +799,21 @@ class DifferentiableMultiBodyVehicle:
         tf2 = self.track_f / 2.0
         tr2 = self.track_r / 2.0
 
-        z_fl, z_fr, z_rl, z_rr     = q[6], q[7], q[8], q[9]
-        dz_fl, dz_fr, dz_rl, dz_rr = v[6], v[7], v[8], v[9]
+        # Physical travel limits — 150mm bump / 80mm droop.
+        # Without clipping: bumpstop softplus(200*(z-0.025)) overflows float32 at z≈0.47m.
+        # GLRK4 Newton intermediate stages can temporarily overshoot this — one NaN
+        # poisons all 320 downstream scan steps via JAX's non-short-circuiting scan.
+        _SZ_MAX, _SZ_MIN = 0.15, -0.08
+        z_fl = jnp.clip(q[6], _SZ_MIN, _SZ_MAX)
+        z_fr = jnp.clip(q[7], _SZ_MIN, _SZ_MAX)
+        z_rl = jnp.clip(q[8], _SZ_MIN, _SZ_MAX)
+        z_rr = jnp.clip(q[9], _SZ_MIN, _SZ_MAX)
+        # Clip suspension velocities — prevents extreme damper forces at Newton overshoot
+        _SDZ_MAX = 3.0
+        dz_fl = jnp.clip(v[6], -_SDZ_MAX, _SDZ_MAX)
+        dz_fr = jnp.clip(v[7], -_SDZ_MAX, _SDZ_MAX)
+        dz_rl = jnp.clip(v[8], -_SDZ_MAX, _SDZ_MAX)
+        dz_rr = jnp.clip(v[9], -_SDZ_MAX, _SDZ_MAX)
         omega_fl, omega_fr          = v[10], v[11]
         omega_rl, omega_rr          = v[12], v[13]
 
@@ -959,8 +972,11 @@ class DifferentiableMultiBodyVehicle:
         F_ext = F_ext.at[26].set(-Fx_rl * self.R_wheel + T_drive * 0.5)
         F_ext = F_ext.at[27].set(-Fx_rr * self.R_wheel + T_drive * 0.5)
 
-        dq_dt   = PH_accel[0:14]
-        dv_dt   = (PH_accel[14:28] + F_ext[14:28]) / self.M_diag
+        dq_dt = PH_accel[0:14]
+        dv_dt = (PH_accel[14:28] + F_ext[14:28]) / self.M_diag
+        # 500 m/s² ≈ 51G — physically unreachable, only active at Newton overshoot states.
+        # Clipping is inactive near the optimum so gradient quality is unaffected there.
+        dv_dt = jnp.clip(dv_dt, -500.0, 500.0)
         dx_mech = jnp.concatenate([dq_dt, dv_dt])
 
         dx_therm = (self.tire.compute_thermal_derivatives(
@@ -1040,7 +1056,7 @@ class DifferentiableMultiBodyVehicle:
          dx1_aux, dx2_aux), _ = jax.lax.scan(
             newton_iter,
             (k1_q, k1_v, k2_q, k2_v, jnp.zeros(_AUX), jnp.zeros(_AUX)),
-            None, length=3,
+            None, length=5
         )
 
         q_new   = q0  + dt_step * (b1 * k1_q  + b2 * k2_q)
@@ -1055,7 +1071,7 @@ class DifferentiableMultiBodyVehicle:
     # §5.5  Public simulate_step
     # ─────────────────────────────────────────────────────────────────────────
 
-    @partial(jax.jit, static_argnums=(0,))
+    @partial(jax.jit, static_argnums=(0, 5))
     def simulate_step(
         self,
         state:      jax.Array,

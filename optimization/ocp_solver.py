@@ -54,7 +54,7 @@ from jax import jit, value_and_grad
 
 from models.vehicle_dynamics import (
     DifferentiableMultiBodyVehicle, SuspensionSetup,
-    DEFAULT_SETUP, build_default_setup_28,
+    DEFAULT_SETUP, build_default_setup_28, compute_equilibrium_suspension,
 )
 from data.configs.vehicle_params import vehicle_params as VP
 
@@ -119,7 +119,7 @@ class DiffWMPCSolver:
 
         # Augmented Lagrangian state
         self._al_lambda     = None   # Lagrange multipliers (N,)
-        self._al_rho        = 10.0   # penalty parameter
+        self._al_rho        = 500.0
         self._al_rho_scale  = 2.0    # growth rate when constraint violated
 
         # Cost weights
@@ -300,11 +300,17 @@ class DiffWMPCSolver:
         w_mu, w_steer, w_accel,
         al_lambda, al_rho,
     ):
+        # AFTER:
+        # BUG A FIX: w_mu is (N,); passing (N,) as lmuy_scale into _simulate_trajectory
+        # causes scan_fn to evaluate u_raw[1] * (N,) → shape (N,), then
+        # jnp.array([scalar, (N,)]) → jnp.concatenate([(1,), (1, N)]) →
+        # "different numbers of dimensions: got (1,), (1, 64)" at XLA compile time.
+        lmuy_scalar = 1.0 - jnp.mean(w_mu) * 0.5  # (N,) → scalar: mean friction scale
         U_opt, x_traj, n_mean, n_var, s_dot = self._simulate_trajectory(
             wavelet_coeffs, x0, setup_params,
             track_k, track_x, track_y, track_psi,
             track_w_left, track_w_right,
-            1.0 - w_mu * 0.5, 0.0, self.dt_control,
+            lmuy_scalar, 0.0, self.dt_control,
         )
 
         # ── 1. Lap time cost  ─────────────────────────────────────────────────
@@ -504,7 +510,16 @@ class DiffWMPCSolver:
         x0    = x0.at[STATE_VX].set(v0)
         # Initialize tire temperatures to warm operating point
         x0    = x0.at[28:38].set(jnp.array([85., 85., 85., 85., 80.,  # front
-                                              85., 85., 85., 85., 80.]))  # rear
+                                            85., 85., 85., 85., 80.]))  # rear
+        # BUG B FIX: suspension DOFs must start at static equilibrium, not zero.
+        # At z=0: F_spring=0 N, F_grav≈588 N on unsprung → a_z≈66 m/s² upward →
+        # overshoots bumpstop gap (25 mm) within first oscillation cycle →
+        # softplus(200*(z-0.025)) overflows float32 at z≈469 mm → NaN at step 79.
+        z_eq_vec = compute_equilibrium_suspension(setup_params, self.vp)
+        x0 = x0.at[6].set(float(z_eq_vec[0]))  # z_fl [m]
+        x0 = x0.at[7].set(float(z_eq_vec[1]))  # z_fr [m]
+        x0 = x0.at[8].set(float(z_eq_vec[2]))  # z_rl [m]
+        x0 = x0.at[9].set(float(z_eq_vec[3]))  # z_rr [m]
 
         # ── Warm start (UPGRADE-2: quintic Hermite) ───────────────────────────
         U_warm = self._build_quintic_warmstart(track_k, track_psi)
@@ -515,7 +530,7 @@ class DiffWMPCSolver:
             flat_init    = self._db4_dwt(prev_shifted).flatten()
             print("[Diff-WMPC] Warm-starting from previous solution (shifted).")
         else:
-            flat_init = wc_kin.flatten()
+            flat_init = wc_kin.flatten() * 0.3
             print(f"[Diff-WMPC] First solve — quintic Hermite warm start (N={self.N}).")
 
         # ── Initialize Augmented Lagrangian multipliers ───────────────────────
@@ -525,7 +540,7 @@ class DiffWMPCSolver:
         al_rho    = self._al_rho
 
         # ── Outer AL loop: typically 3-5 iterations to converge ───────────────
-        n_al_iters   = 1 if self.dev_mode else 3
+        n_al_iters = 3
         opt_coeffs   = jnp.array(flat_init)
 
         for al_iter in range(n_al_iters):
@@ -570,7 +585,7 @@ class DiffWMPCSolver:
                 method='L-BFGS-B',
                 jac=True,
                 options={
-                    'maxiter': 2000 if not self.dev_mode else 500,
+                    'maxiter': 2000 if not self.dev_mode else 1000,
                     'maxls':   100,
                     'ftol':    1e-10,
                     'gtol':    1e-6,
