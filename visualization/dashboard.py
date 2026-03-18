@@ -545,8 +545,10 @@ class Dashboard:
                 "Setup Optimization",
                 "Driver Coaching",
                 "Telemetry Map",
-                "Mock Tracks",            # ← NEW
+                "Mock Tracks",
+                "Suspension Dynamics",
             ])
+ 
 
             st.markdown("---")
 
@@ -576,7 +578,10 @@ class Dashboard:
         elif mode == "Driver Coaching":    self.render_driver_analysis()
         elif mode == "Telemetry Map":      self.render_track_map()
         elif mode == "Mock Tracks":        self.render_mock_tracks()
-
+        elif mode == "Suspension Dynamics":
+            from visualization.suspension_viz import SuspensionVisualizer
+            SuspensionVisualizer().render()
+        
     # ─────────────────────────────────────────────────────────────────────────
     # SETUP OPTIMIZER  (unchanged)
     # ─────────────────────────────────────────────────────────────────────────
