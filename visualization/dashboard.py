@@ -547,6 +547,7 @@ class Dashboard:
                 "Telemetry Map",
                 "Mock Tracks",
                 "Suspension Dynamics",
+                "Suspension 3D",
             ])
  
 
@@ -581,6 +582,17 @@ class Dashboard:
         elif mode == "Suspension Dynamics":
             from visualization.suspension_viz import SuspensionVisualizer
             SuspensionVisualizer().render()
+        elif mode == "Suspension 3D":
+            from visualization.suspension_3d_embed import render_3d_suspension
+            st.title("Suspension 3D  ·  Interactive")
+            st.markdown(
+                '<p style="color:#9BA3BC;font-size:12px;font-family:\'Courier New\';">'
+                'Three.js monocoque · double wishbone · pushrod-bellcrank · '
+                'quasi-static maneuvers · Ter26 parametrisation'
+                '</p>',
+                unsafe_allow_html=True,
+            )
+            render_3d_suspension(height=720)
         
     # ─────────────────────────────────────────────────────────────────────────
     # SETUP OPTIMIZER  (unchanged)

@@ -1659,14 +1659,29 @@ class SuspensionVisualizer:
 
         st.title("Suspension Dynamics")
         st.markdown(
-            '<p style="color:#9BA3BC;font-size:12px;font-family:\'Courier New\';">'
-            'Quasi-static kinematics · Digressive damper model · K&amp;C maps · '
-            'Animated multi-body schematic · Ter26 FS2026 parametrisation'
-            '</p>',
+            """
+            <p style="color:#9BA3BC;font-size:12px;font-family:'Courier New';">
+            Quasi-static kinematics ...
+            </p>
+            """,
             unsafe_allow_html=True,
         )
-
-        # ── Controls ──────────────────────────────────────────────────────────
+ 
+        # ── 2D / 3D toggle ───────────────────────────────────────
+        view_mode = st.radio(
+            'VISUALIZATION MODE',
+            ['2D  ·  Plotly Schematic', '3D  ·  Interactive Three.js'],
+            horizontal=True,
+            help='3D mode: orbit (drag), zoom (scroll), pan (shift+drag)',
+        )
+        if '3D' in view_mode:
+            from visualization.suspension_3d_embed import render_3d_suspension
+            render_3d_suspension(height=700)
+            # Still show the 2D charts below for telemetry data
+            st.markdown('<div class="section-label">2D TELEMETRY CHARTS</div>',
+                        unsafe_allow_html=True)
+ 
+        # ── Controls ──────
         c1, c2, c3, c4 = st.columns([3, 2, 2, 2])
         with c1:
             maneuver = st.selectbox(
