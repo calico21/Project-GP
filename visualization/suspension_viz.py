@@ -1604,11 +1604,10 @@ def build_animated_schematic(
         yaxis=dict(**_BASE_LAY['yaxis'],
                    range=y_range, showticklabels=False, zeroline=False),
         updatemenus=[dict(
-            type='buttons', showactive=False,
-            direction='right',  # <-- ADD THIS LINE to stack horizontally
+            type='buttons', showactive=False, direction='right',
             bgcolor=_BG_CARD, bordercolor=_BORDER_M,
             font=dict(color=_CYAN, size=11, family='Courier New'),
-            x=0.0, y=1.10, xanchor='left',
+            x=0.0, y=1.0, xanchor='left', yanchor='bottom',  # <-- CHANGE y to 1.0 and add yanchor
             buttons=[
                 dict(label='▶  PLAY',
                      method='animate',
@@ -1750,37 +1749,31 @@ class SuspensionVisualizer:
                     sim, P, view=view, frame_step=frame_step)
         st.plotly_chart(st.session_state[anim_key], use_container_width=True)
 
-        # ── Section 2: Forces & Travel ────────────────────────────────────────
-        st.markdown('<div class="section-label">FORCE & TRAVEL TIME SERIES</div>',
+        # ── Section 2: Selectable Telemetry & Kinematics ──────────────────────
+        st.markdown('<div class="section-label">TELEMETRY & KINEMATIC MAPS</div>',
                     unsafe_allow_html=True)
-        ca, cb = st.columns(2)
-        with ca:
-            st.plotly_chart(chart_corner_loads(sim), use_container_width=True)
-        with cb:
-            st.plotly_chart(chart_wheel_travel(sim), use_container_width=True)
+        
+        # Map human-readable names to the functions that generate them
+        chart_options = {
+            "Corner Vertical Loads": lambda s: chart_corner_loads(s),
+            "Wheel Travel": lambda s: chart_wheel_travel(s),
+            "Damper F-v Characteristic": lambda s: chart_damper_fv(s, P, corner=damper_corner),
+            "Camber Evolution": lambda s: chart_camber_time(s),
+            "K&C Camber Map": lambda s: chart_camber_map(P),
+            "ARB Coupling Torque": lambda s: chart_arb_coupling(s),
+            "Roll Gradient": lambda s: chart_roll_gradient(s, P),
+            "g-g Envelope & Load Sensitivity": lambda s: chart_g_g(s),
+        }
 
-        # ── Section 3: Damper & Alignment ─────────────────────────────────────
-        st.markdown('<div class="section-label">DAMPER DYNAMICS & ALIGNMENT</div>',
-                    unsafe_allow_html=True)
-        cc, cd = st.columns(2)
-        with cc:
-            st.plotly_chart(chart_damper_fv(sim, P, corner=damper_corner),
-                            use_container_width=True)
-        with cd:
-            st.plotly_chart(chart_camber_time(sim), use_container_width=True)
+        # Let the user choose what to look at
+        selected_charts = st.multiselect(
+            "SELECT GRAPHS TO DISPLAY:",
+            options=list(chart_options.keys()),
+            default=["Wheel Travel", "Camber Evolution"], # What shows up on first load
+        )
 
-        # ── Section 4: Kinematic Maps & Coupling ──────────────────────────────
-        st.markdown('<div class="section-label">KINEMATIC MAPS & COUPLING</div>',
-                    unsafe_allow_html=True)
-        ce, cf_, cg = st.columns(3)
-        with ce:
-            st.plotly_chart(chart_camber_map(P), use_container_width=True)
-        with cf_:
-            st.plotly_chart(chart_arb_coupling(sim), use_container_width=True)
-        with cg:
-            st.plotly_chart(chart_roll_gradient(sim, P), use_container_width=True)
-
-        # ── Section 5: g-g diagram ────────────────────────────────────────────
-        st.markdown('<div class="section-label">g-g ENVELOPE & LOAD SENSITIVITY</div>',
-                    unsafe_allow_html=True)
-        st.plotly_chart(chart_g_g(sim), use_container_width=True)
+        # Dynamically render the selected charts in a 2-column grid
+        cols = st.columns(2)
+        for i, chart_name in enumerate(selected_charts):
+            with cols[i % 2]:
+                st.plotly_chart(chart_options[chart_name](sim), use_container_width=True)
