@@ -1073,7 +1073,7 @@ class _SchemBuilder:
                                   name=f'Tie rod {side_label}'))
 
         # ── Camber indicator ──────────────────────────────────────────────────
-        traces.append(self._camber_indicator(A, B, P.R, camber))
+        traces.append(self._camber_indicator(A, UBJ, P.R, camber))
 
         return traces, Rpiv
 
