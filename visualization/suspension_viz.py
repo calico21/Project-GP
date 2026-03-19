@@ -924,10 +924,15 @@ class _SchemBuilder:
 
     @staticmethod
     def _camber_indicator(A: np.ndarray, B: np.ndarray, R: float,
-                          camber_rad: float) -> dict:
+                          camber_rad: float, side: int) -> dict:
         """Green dashed line through wheel centre at camber angle from vertical."""
         r_in = R * 0.85
-        sa, ca = np.sin(camber_rad), np.cos(camber_rad)
+        
+        # Multiply by 'side' to mirror the angle! 
+        # Left (-1) * Negative Camber = leans Right (+X, inboard)
+        # Right (+1) * Negative Camber = leans Left (-X, inboard)
+        sa, ca = np.sin(camber_rad * side), np.cos(camber_rad)
+        
         return dict(type='scatter',
                     x=[A[0] - r_in*sa, A[0] + r_in*sa],
                     y=[A[1] - r_in*ca, A[1] + r_in*ca],
@@ -1010,6 +1015,7 @@ class _SchemBuilder:
                                   name=f'Upper WB {side_label}'))
 
         # ── Upright ───────────────────────────────────────────────────────────
+        # Drawn as a slightly widened bar to suggest a real cast/machined upright
         traces.append(self._line(LBJ, UBJ, color='#C0C0D0', width=6,
                                   name=f'Upright {side_label}'))
         # Brake disc outline behind upright (cosmetic — dark circle at hub)
@@ -1073,7 +1079,7 @@ class _SchemBuilder:
                                   name=f'Tie rod {side_label}'))
 
         # ── Camber indicator ──────────────────────────────────────────────────
-        traces.append(self._camber_indicator(A, UBJ, P.R, camber))
+        traces.append(self._camber_indicator(A, UBJ, P.R, camber, side))
 
         return traces, Rpiv
 
