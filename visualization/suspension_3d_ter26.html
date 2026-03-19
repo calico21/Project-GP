@@ -888,11 +888,10 @@ function updateSuspension(roll_deg, pitch_deg, steer_rad) {
     updateTube(c.upWishF, upIBf_w, upOBWorld, 0.007);
     updateTube(c.upWishR, upIBr_w, upOBWorld, 0.007);
 
-    // ── Pushrod (lower wishbone midpoint → bellcrank) ──────────────────
-    const prOB = loOBWorld.clone().lerp(
-      loIBf_w.clone().lerp(loIBr_w, 0.5),
-      0.35
-    );
+    // ── Pushrod (upright → bellcrank) ──────────────────
+    // Attaches 25% of the way up the upright from the lower ball joint
+    const prOB = loOBWorld.clone().lerp(upOBWorld, 0.25); 
+
     const bcPivot_w = c.bellcrankPivot.clone().applyMatrix4(bodyMatrix);
     updateTube(c.pushrod, prOB, bcPivot_w, 0.006);
 
