@@ -1035,18 +1035,6 @@ class _SchemBuilder:
                                marker=dict(size=sz, color=col, symbol='circle'),
                                showlegend=False, hoverinfo='skip'))
 
-        # ── Joint dots ────────────────────────────────────────────────────────
-        for pt, sz, col in [
-            (A,  9, '#E0E0F0'),   # hub / lower BJ
-            (B,  7, '#C0C0D8'),   # upper BJ
-            (P1, 6, '#8090B8'),   # lower WB inboard
-            (P2, 6, '#8090B8'),   # upper WB inboard
-        ]:
-            traces.append(dict(type='scatter', x=[pt[0]], y=[pt[1]],
-                               mode='markers',
-                               marker=dict(size=sz, color=col, symbol='circle'),
-                               showlegend=False, hoverinfo='skip'))
-
         # ── Pushrod ───────────────────────────────────────────────────────────
         # Thin diagonal strut: upright attachment → rocker arm tip (Kkpr)
         traces.append(self._line(PR_ob, Kkpr,
