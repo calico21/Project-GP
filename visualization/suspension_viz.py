@@ -815,7 +815,7 @@ class _SchemBuilder:
 
     @staticmethod
     def _spring_trace(p0: np.ndarray, p1: np.ndarray,
-                      comp_ratio: float = 0.0, n_coils: int = 7) -> dict:
+                      comp_ratio: float = 0.0, n_coils: int = 7, side: int = 1) -> dict: # <-- Added side
         """
         Coil spring between p0 and p1.
         comp_ratio ∈ [-0.4, +0.4]: +ve = compressed (bunched coils), -ve = extended.
@@ -823,7 +823,7 @@ class _SchemBuilder:
         """
         L    = float(np.linalg.norm(p1 - p0)) + 1e-9
         tang = (p1 - p0) / L
-        norm = np.array([-tang[1], tang[0]])
+        norm = np.array([-tang[1], tang[0]]) * side # <-- Multiply by side to mirror perfectly
 
         # Coil amplitude grows with compression (coils squash outward)
         w = 0.0185 * (1.0 + 1.2 * max(comp_ratio, 0.0))
@@ -1057,12 +1057,12 @@ class _SchemBuilder:
 
         # ── Spring (near-horizontal inboard) ──────────────────────────────────
         traces.append(self._spring_trace(Kksr, Fspr,
-                                          comp_ratio=comp, n_coils=7))
+                                          comp_ratio=comp, n_coils=7, side=side)) # <-- Pass side here
 
         # ── Damper (parallel to spring, offset perpendicular) ─────────────────
         diff  = Fspr - Kksr
         Ld    = np.linalg.norm(diff) + 1e-9
-        perp  = np.array([-diff[1], diff[0]]) / Ld * 0.022
+        perp  = np.array([-diff[1], diff[0]]) / Ld * 0.022 * side # <-- Multiply by side here
         traces += self._damper_traces(Kksr + perp, Fspr + perp, dcomp)
 
         # Spring chassis mount pin
@@ -1605,6 +1605,7 @@ def build_animated_schematic(
                    range=y_range, showticklabels=False, zeroline=False),
         updatemenus=[dict(
             type='buttons', showactive=False,
+            direction='right',  # <-- ADD THIS LINE to stack horizontally
             bgcolor=_BG_CARD, bordercolor=_BORDER_M,
             font=dict(color=_CYAN, size=11, family='Courier New'),
             x=0.0, y=1.10, xanchor='left',
