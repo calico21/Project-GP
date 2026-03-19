@@ -22,6 +22,7 @@ Usage B — Inject into existing SuspensionVisualizer.render() as a 2D/3D toggle
 """
 from __future__ import annotations
 import os
+import json # <-- ADD THIS IMPORT
 import streamlit as st
 import streamlit.components.v1 as components
 
@@ -59,12 +60,25 @@ def _load_html() -> str:
 def render_3d_suspension(height: int = 720) -> None:
     """
     Render the 3D interactive suspension visualizer inside a Streamlit app.
-
-    Parameters
-    ----------
-    height : int
-        Pixel height of the embedded iframe. Default 720 fits most monitors
-        while leaving room for the Streamlit sidebar and header.
     """
     html_content = _load_html()
+    
+    # ── NEW INJECTION CODE ──────────────────────────────────────────────
+    try:
+        from data.configs.vehicle_params import vehicle_params
+        
+        # Package the hardpoints into a JSON string
+        hp_data = json.dumps({
+            'f': vehicle_params.get('hardpoints_f', None),
+            'r': vehicle_params.get('hardpoints_r', None)
+        })
+        
+        # Inject it into the HTML so JavaScript can read it as a global variable
+        inject_script = f"<script>window.TEAM_HARDPOINTS = {hp_data};</script></head>"
+        html_content = html_content.replace('</head>', inject_script)
+        
+    except ImportError:
+        pass # If vehicle_params isn't found, JS will just use its visual fallbacks
+    # ────────────────────────────────────────────────────────────────────
+
     components.html(html_content, height=height, scrolling=False)

@@ -750,10 +750,34 @@ function createCorner(name, xAxle, ySign, track, isFront) {
   c.upright = upr;
 
   // ── Wishbone hardpoints (in BODY frame) ──────────────────────────────
-  const loIBz = -0.08;   // lower inboard Z (below CG)
-  const upIBz = 0.06;    // upper inboard Z (above CG)
-  const loIBSpan = 0.18; // fore-aft spread of lower A-arm inboard points
-  const upIBSpan = 0.14;
+  const axleKey = isFront ? 'f' : 'r';
+  const hp = (window.TEAM_HARDPOINTS && window.TEAM_HARDPOINTS[axleKey]) || null;
+
+  if (hp && hp.lca_in_f) {
+      // 🏎️ USE REAL CAD HARDPOINTS FROM PYTHON
+      // X = longitudinal (relative to axle), Y = vertical, Z = lateral
+      c.loIB_f = new THREE.Vector3(xAxle + hp.lca_in_f[0], hp.lca_in_f[1], ySign * hp.lca_in_f[2]);
+      c.loIB_r = new THREE.Vector3(xAxle + hp.lca_in_r[0], hp.lca_in_r[1], ySign * hp.lca_in_r[2]);
+      c.upIB_f = new THREE.Vector3(xAxle + hp.uca_in_f[0], hp.uca_in_f[1], ySign * hp.uca_in_f[2]);
+      c.upIB_r = new THREE.Vector3(xAxle + hp.uca_in_r[0], hp.uca_in_r[1], ySign * hp.uca_in_r[2]);
+      
+      c.loOB = new THREE.Vector3(xAxle + hp.lbj[0], hp.lbj[1], ySign * hp.lbj[2]);
+      c.upOB = new THREE.Vector3(xAxle + hp.ubj[0], hp.ubj[1], ySign * hp.ubj[2]);
+      
+      c.bellcrankPivot = new THREE.Vector3(xAxle + hp.rocker_piv[0], hp.rocker_piv[1], ySign * hp.rocker_piv[2]);
+  } else {
+      // 🛑 FALLBACK GEOMETRY (If Python data is missing)
+      const loIBz = -0.08, upIBz = 0.06;
+      const loIBSpan = 0.18, upIBSpan = 0.14;
+      
+      c.loIB_f = new THREE.Vector3(xAxle + loIBSpan/2, loIBz, ySign * 0.16);
+      c.loIB_r = new THREE.Vector3(xAxle - loIBSpan/2, loIBz, ySign * 0.16);
+      c.upIB_f = new THREE.Vector3(xAxle + upIBSpan/2, upIBz, ySign * 0.14);
+      c.upIB_r = new THREE.Vector3(xAxle - upIBSpan/2, upIBz, ySign * 0.14);
+      c.loOB = new THREE.Vector3(xAxle, R - VP.uprightHeight * 0.4, yAxle - ySign * tw * 0.35);
+      c.upOB = new THREE.Vector3(xAxle, R + VP.uprightHeight * 0.35, yAxle - ySign * tw * 0.35);
+      c.bellcrankPivot = new THREE.Vector3(xAxle, 0.04, ySign * 0.13);
+  }
 
   // Inboard pickups (body-attached, in bodyGroup local coords)
   c.loIB_f = new THREE.Vector3(xAxle + loIBSpan/2, loIBz, ySign * 0.16);

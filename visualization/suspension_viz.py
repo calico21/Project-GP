@@ -1115,10 +1115,14 @@ class _SchemBuilder:
         # ── Body chassis cross-section (drawn first = behind suspension) ───────
         bx, by  = float(cg_w[0]), float(cg_w[1])
         cr, sr  = np.cos(roll_rad), np.sin(roll_rad)
-        body_hw = P.tw_f * 0.33
-        body_hh = 0.078
-        bxs = np.array([-body_hw, body_hw, body_hw, -body_hw, -body_hw])
-        bys = np.array([-body_hh, -body_hh,  body_hh,  body_hh, -body_hh])
+        
+        # Create a trapezoid that reaches down to cover the rocker pivots
+        hw_top, hw_bot = 0.26, 0.38
+        hh_top, hh_bot = 0.08, 0.18 
+        
+        bxs = np.array([-hw_bot, hw_bot, hw_top, -hw_top, -hw_bot])
+        bys = np.array([-hh_bot, -hh_bot, hh_top,  hh_top, -hh_bot])
+        
         bxr = bx + bxs * cr - bys * sr
         byr = by + bxs * sr + bys * cr
         traces.append(dict(type='scatter', x=bxr.tolist(), y=byr.tolist(),

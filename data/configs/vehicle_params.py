@@ -222,3 +222,45 @@ vehicle_params['m_us_total']  = (2 * vehicle_params['unsprung_mass_f']
                                   + 2 * vehicle_params['unsprung_mass_r'])
 vehicle_params['sprung_mass'] = (vehicle_params['total_mass']
                                   - vehicle_params['m_us_total'])
+
+# ════════════════════════════════════════════════════════════════════════
+# 3D KINEMATIC HARDPOINTS (For 3D Visualizer & Advanced Kinematics)
+# Coordinate System: +X = Forward, +Y = Up, +Z = Right (Starboard)
+# Origin (0,0,0) for Front: Center of the front axle on the ground.
+# Origin (0,0,0) for Rear: Center of the rear axle on the ground.
+# All units in meters [m].
+# ════════════════════════════════════════════════════════════════════════
+
+vehicle_params['hardpoints_f'] = {
+    # Lower Wishbone (Inboard Front, Inboard Rear, Outboard/LBJ)
+    'lca_in_f':   [ 0.180, 0.160, 0.230],  
+    'lca_in_r':   [-0.180, 0.160, 0.230],  
+    'lbj':        [ 0.000, 0.120, 0.560],  
+
+    # Upper Wishbone (Inboard Front, Inboard Rear, Outboard/UBJ)
+    'uca_in_f':   [ 0.140, 0.310, 0.183],  
+    'uca_in_r':   [-0.140, 0.310, 0.183],  
+    'ubj':        [ 0.000, 0.380, 0.540],  
+
+    # Pushrod & Inboard Suspension 
+    'pushrod_out': [ 0.000, 0.180, 0.550],  # Mount on upright/LCA
+    'rocker_piv':  [ 0.000, 0.280, 0.340],  # Bellcrank center pivot
+    'spring_in':   [ 0.150, 0.280, 0.155],  # Spring chassis mount
+}
+
+vehicle_params['hardpoints_r'] = {
+    # Lower Wishbone
+    'lca_in_f':   [ 0.200, 0.160, 0.220],  
+    'lca_in_r':   [-0.200, 0.160, 0.220],  
+    'lbj':        [ 0.000, 0.120, 0.550],  
+
+    # Upper Wishbone
+    'uca_in_f':   [ 0.150, 0.310, 0.170],  
+    'uca_in_r':   [-0.150, 0.310, 0.170],  
+    'ubj':        [ 0.000, 0.380, 0.530],  
+
+    # Pushrod & Inboard Suspension
+    'pushrod_out': [ 0.000, 0.180, 0.540],  
+    'rocker_piv':  [ 0.000, 0.280, 0.320],  
+    'spring_in':   [ 0.150, 0.280, 0.150],  
+}
