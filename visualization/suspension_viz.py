@@ -573,20 +573,6 @@ class _KinSolver2D:
         roll:   float,
         side:   int,
     ) -> dict:
-        """
-        Solve one side's complete kinematic chain.
-
-        Parameters
-        ----------
-        z_m  : wheel travel [m], +ve = bump (spring compressed, body sinks)
-        cg_w : body CG in world frame [x, y]
-        roll : body roll [rad], +ve = roll right
-        side : +1 = right side, -1 = left side
-
-        Returns
-        -------
-        dict of all joint/attachment world positions + camber_rad
-        """
         P = self._phys
         b2w = lambda local: self._body_to_world(local, cg_w, roll, side)
 
@@ -597,32 +583,43 @@ class _KinSolver2D:
         P1 = b2w(self._lw_ib)   # lower WB inboard
         P2 = b2w(self._uw_ib)   # upper WB inboard
 
-        # ── Upper outboard B: 4-bar closure ──────────────────────────────────
-        # B ∈ circle(A, h_upright) ∩ circle(P2, l_uw)
-        # sign=-side selects the physically valid solution (B above and inboard of A)
-        B = self._circle_intersect(A, self.h_upright, P2, self.l_uw, sign=-side)
+        # ── Upright (Driven by analytical camber map) ─────────────────────────
+        # Fetch instantaneous camber from the physics model
+        camber_deg = P.camber(z_m, np.degrees(roll), 'f')
+        camber_rad = np.radians(camber_deg)
+        
+        # Local upright hardpoints relative to Hub (A)
+        # LBJ: 3cm inboard, 10cm below hub
+        lbj_local = np.array([side * -0.03, -0.10])
+        # UBJ: 4cm inboard, 12cm above hub
+        ubj_local = np.array([side * -0.04,  0.12])
 
-        # ── Upright-fixed attachment points ───────────────────────────────────
-        PR_ob     = A + self.pushrod_f  * (B - A)   # pushrod on upright
-        tierod_ob = A + self.tierod_f   * (B - A)   # steering arm on upright
+        # Rotate upright by camber angle (negative camber leans top inboard)
+        theta = -side * camber_rad
+        c, s = np.cos(theta), np.sin(theta)
+        R_mat = np.array([[c, -s], [s, c]])
 
-        # ── Body-fixed attachment points ──────────────────────────────────────
+        LBJ = A + R_mat @ lbj_local
+        UBJ = A + R_mat @ ubj_local
+
+        # Upright-fixed attachment points (interpolate between LBJ and UBJ)
+        PR_ob     = LBJ + self.pushrod_f * (UBJ - LBJ)
+        tierod_ob = LBJ + self.tierod_f  * (UBJ - LBJ)
+
+        # Body-fixed attachment points
         rocker  = b2w(self._rocker)
         spr_top = b2w(self._spr_top)
         rack    = b2w(self._rack)
 
-        # ── Camber: angle of upright vector from vertical ─────────────────────
-        uv = B - A   # upright vector (hub → upper ball joint)
-        camber_rad = float(np.arctan2(uv[0], uv[1]))   # +ve = top leans inboard
-
         return {
             'P1': P1, 'P2': P2,
-            'A':  A,  'B':  B,
-            'PR_ob':     PR_ob,
+            'A':  A,  'B':  UBJ,  # Keep 'B' as UBJ for compatibility
+            'LBJ': LBJ, 'UBJ': UBJ,
+            'PR_ob':      PR_ob,
             'tierod_ob': tierod_ob,
-            'rocker':    rocker,
-            'spr_top':   spr_top,
-            'rack':      rack,
+            'rocker':     rocker,
+            'spr_top':    spr_top,
+            'rack':       rack,
             'camber_rad': camber_rad,
         }
 
@@ -705,7 +702,7 @@ class _PushroDRocker:
 
         for side in (+1, -1):
             sol   = kin._solve_side(0.0, cg_design, 0.0, side)
-            PR_ob = sol['A'] + self._pr_frac * (sol['B'] - sol['A'])
+            PR_ob = sol['PR_ob']    # <-- REPLACE this line
             Rpiv  = kin._body_to_world(self._rpiv_b, cg_design, 0.0, side)
             Fspr  = kin._body_to_world(self._fspr_b, cg_design, 0.0, side)
 
@@ -732,17 +729,11 @@ class _PushroDRocker:
 
     def solve(self, upright_sol: dict, cg_w: np.ndarray,
               roll: float, side: int) -> dict:
-        """
-        Returns full pushrod-rocker state for one corner.
-
-        Constraint satisfied: |PR_ob - Kkpr| = L_pr (±0.1mm through full travel).
-        Branch selected by minimum angular distance from design alpha0 → continuity.
-        """
         b2w = lambda local: self._K._body_to_world(local, cg_w, roll, side)
 
         A     = upright_sol['A']
         B     = upright_sol['B']
-        PR_ob = A + self._pr_frac * (B - A)
+        PR_ob = upright_sol['PR_ob']   # <-- REPLACE this line
         Rpiv  = b2w(self._rpiv_b)
         Fspr  = b2w(self._fspr_b)
 
@@ -985,15 +976,10 @@ class _SchemBuilder:
     def _draw_corner(self, sol: dict, cg_w: np.ndarray,
                      roll_rad: float, side: int,
                      side_label: str) -> tuple:
-        """
-        Render one suspension corner using the full pushrod-rocker chain.
-
-        Returns (traces, Rpiv) so _front_traces can connect the ARB
-        between left/right rocker pivots.
-        """
         P       = self._P
-        A       = sol['A']           # hub / lower ball joint
-        B       = sol['B']           # upper ball joint
+        A       = sol['A']           # hub
+        LBJ     = sol['LBJ']         # lower ball joint
+        UBJ     = sol['UBJ']         # upper ball joint
         P1      = sol['P1']          # lower WB inboard
         P2      = sol['P2']          # upper WB inboard
         tierod  = sol['tierod_ob']   # steering arm on upright
@@ -1002,11 +988,11 @@ class _SchemBuilder:
 
         # ── Pushrod-rocker solution ──────────────────────────────────────────
         rk      = self._R.solve(sol, cg_w, roll_rad, side)
-        PR_ob   = rk['PR_ob']    # pushrod on upright (~28% up)
-        Rpiv    = rk['Rpiv']     # rocker pivot (body-fixed)
-        Kkpr    = rk['Kkpr']     # pushrod arm tip
-        Kksr    = rk['Kksr']     # spring arm tip
-        Fspr    = rk['Fspr']     # spring chassis mount (body-fixed)
+        PR_ob   = rk['PR_ob']        # pushrod on upright
+        Rpiv    = rk['Rpiv']         # rocker pivot (body-fixed)
+        Kkpr    = rk['Kkpr']         # pushrod arm tip
+        Kksr    = rk['Kksr']         # spring arm tip
+        Fspr    = rk['Fspr']         # spring chassis mount (body-fixed)
         comp    = rk['comp_ratio']
         dcomp   = float(np.clip(comp / 0.25, -1.0, 1.0))
 
@@ -1016,16 +1002,15 @@ class _SchemBuilder:
         traces += self._wheel_trace(A[0], A[1], P.R)
 
         # ── A-arm wishbones ───────────────────────────────────────────────────
-        # Lower WB: inboard pivot → hub (lower ball joint)
-        traces.append(self._line(P1, A, color='#4A80D0', width=4,
+        # Lower WB: inboard pivot → lower ball joint
+        traces.append(self._line(P1, LBJ, color='#4A80D0', width=4,
                                   name=f'Lower WB {side_label}'))
         # Upper WB: inboard pivot → upper ball joint
-        traces.append(self._line(P2, B, color='#2A5898', width=4,
+        traces.append(self._line(P2, UBJ, color='#2A5898', width=4,
                                   name=f'Upper WB {side_label}'))
 
         # ── Upright ───────────────────────────────────────────────────────────
-        # Drawn as a slightly widened bar to suggest a real cast/machined upright
-        traces.append(self._line(A, B, color='#C0C0D0', width=6,
+        traces.append(self._line(LBJ, UBJ, color='#C0C0D0', width=6,
                                   name=f'Upright {side_label}'))
         # Brake disc outline behind upright (cosmetic — dark circle at hub)
         th  = np.linspace(0, 2*np.pi, 48)
@@ -1036,6 +1021,19 @@ class _SchemBuilder:
                            mode='lines',
                            line=dict(color='rgba(140,50,50,0.65)', width=2.5),
                            showlegend=False, hoverinfo='skip'))
+
+        # ── Joint dots ────────────────────────────────────────────────────────
+        for pt, sz, col in [
+            (A,   9, '#E0E0F0'),   # hub
+            (LBJ, 7, '#C0C0D8'),   # lower BJ
+            (UBJ, 7, '#C0C0D8'),   # upper BJ
+            (P1,  6, '#8090B8'),   # lower WB inboard
+            (P2,  6, '#8090B8'),   # upper WB inboard
+        ]:
+            traces.append(dict(type='scatter', x=[pt[0]], y=[pt[1]],
+                               mode='markers',
+                               marker=dict(size=sz, color=col, symbol='circle'),
+                               showlegend=False, hoverinfo='skip'))
 
         # ── Joint dots ────────────────────────────────────────────────────────
         for pt, sz, col in [
