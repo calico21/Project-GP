@@ -375,9 +375,15 @@ def train_neural_residuals():
                 total    = h_net.apply(params_, q_s, p_s, setup_s)
                 T_prior  = 0.5 * jnp.sum((p_s ** 2) / (M_diag + 1e-8))
                 V_struct = 0.5 * jnp.sum(q_s[6:10] ** 2) * _V_STRUCT_PRIOR_K
-                # residual = H_res * susp_sq (both prior terms subtracted)
-                residual = (total - T_prior - V_struct) / h_scale
-                return (residual - t_s) ** 2
+                
+                # FIX: Un-attenuate the loss by removing the susp_sq scaling
+                susp_sq = jnp.sum((q_s[6:10] - _Z_EQ) ** 2) + 1e-4
+                susp_sq_frozen = jax.lax.stop_gradient(susp_sq)
+                
+                pred_H_res = (total - T_prior - V_struct) / susp_sq_frozen
+                target_H_res = (t_s * h_scale) / susp_sq_frozen
+                
+                return ((pred_H_res - target_H_res) / h_scale) ** 2
             return jnp.mean(jax.vmap(per_sample)(q, p, setup, target_norm))
 
         loss, grads = jax.value_and_grad(mse_loss)(params)
@@ -413,8 +419,15 @@ def train_neural_residuals():
                 total    = h_net.apply(params_, q_s, p_s, setup_s)
                 T_prior  = 0.5 * jnp.sum((p_s ** 2) / (M_diag + 1e-8))
                 V_struct = 0.5 * jnp.sum(q_s[6:10] ** 2) * _V_STRUCT_PRIOR_K
-                residual = (total - T_prior - V_struct) / h_scale
-                return (residual - t_s) ** 2
+                
+                # FIX: Un-attenuate the loss by removing the susp_sq scaling
+                susp_sq = jnp.sum((q_s[6:10] - _Z_EQ) ** 2) + 1e-4
+                susp_sq_frozen = jax.lax.stop_gradient(susp_sq)
+                
+                pred_H_res = (total - T_prior - V_struct) / susp_sq_frozen
+                target_H_res = (t_s * h_scale) / susp_sq_frozen
+                
+                return ((pred_H_res - target_H_res) / h_scale) ** 2
             return jnp.mean(jax.vmap(per_sample)(q, p, setup, target_norm))
 
         def phantom_rate_at_eq_loss(params_):

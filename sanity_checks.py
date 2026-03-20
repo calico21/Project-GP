@@ -195,7 +195,13 @@ def test_circular_track():
               f"Final vx={float(_x[14]):.3f} m/s — physics is stable.")
 
     try:
-        solver = DiffWMPCSolver(N_horizon=N, n_substeps=5, dev_mode=True)
+        # In sanity_checks.py — Test 3 solver instantiation
+        solver = DiffWMPCSolver(
+            N_horizon=64,
+            mu_friction=1.40,
+            V_limit=30.0,
+            dev_mode=False,   # ← must be False for AL multiplier updates to run
+        )
         result = solver.solve(
             track_s=track_s, track_k=track_k,
             track_x=track_x, track_y=track_y, track_psi=track_psi,

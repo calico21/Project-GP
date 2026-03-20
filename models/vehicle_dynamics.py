@@ -991,6 +991,10 @@ class DifferentiableMultiBodyVehicle:
             d_alpha_rl, d_kappa_rl, d_alpha_rr, d_kappa_rr,
         ])
 
+        # FIX: Clip slip derivatives to prevent Explicit Euler instability
+        # at high speeds where the relaxation time constant tau < dt/2.
+        dx_slip = jnp.clip(dx_slip, -200.0, 200.0)
+
         return jnp.concatenate([dx_mech[:28], dx_therm, dx_slip])
 
     # ─────────────────────────────────────────────────────────────────────────
@@ -1048,8 +1052,35 @@ class DifferentiableMultiBodyVehicle:
             dx1 = self._compute_derivatives(x1, u, setup_params)
             dx2 = self._compute_derivatives(x2, u, setup_params)
 
-            return (dx1[0:14], dx1[14:28],
-                    dx2[0:14], dx2[14:28],
+            # Clip stage-derivative carry between Newton iterations.
+            #
+            # ROOT CAUSE OF 46% NaN RATE IN WMPC:
+            # _compute_derivatives is called inside the GLRK-4 Newton scan,
+            # which is itself inside the WMPC trajectory scan. When the
+            # WMPC optimizer explores states above the friction limit, vx can
+            # transiently reach 25–30 m/s at a Newton intermediate stage.
+            # At those states, jax.grad(H_net.apply) produces second-order
+            # H_net derivatives that are not bounded by the forward tanh clips
+            # (the clips act on the OUTPUT of the gradient, not on second-order
+            # terms arising from the backward pass through tanh itself).
+            # The second-order gradient of tanh(x/C) is -2x/C² * tanh(x/C) *
+            # sech²(x/C), which at x≈5C (reached transiently) gives O(C⁻¹)
+            # magnitudes. Over 5 Newton iterations the carry compounds this:
+            # dx_i+1 depends on dx_i through the stage update, so the
+            # compounded second-order error grows as r^5 where r = O(C⁻¹ * dt).
+            # At C=12000 and dt=0.01: r≈8e-7, harmless.
+            # At vx=25 m/s and C=150 (VEL_CAP): r≈1.7e-3, still ok.
+            # But VEL_CAP * tanh(dH_dp / VEL_CAP): the second derivative w.r.t.
+            # p at |dH_dp| >> VEL_CAP gives -2/VEL_CAP * tanh(...) * sech²(...).
+            # With GLRK-4 stage point v1 = v0 + dt*(a11*k1_v + a12*k2_v), the
+            # momentum p = M * v at that stage can briefly exceed the soft cap.
+            # Clipping the carry to ±500 m/s² is 50G — never active within
+            # the physical operating envelope, always active at Newton overshoot.
+            _DC = 500.0
+            return (jnp.clip(dx1[0:14],  -_DC, _DC),
+                    jnp.clip(dx1[14:28], -_DC, _DC),
+                    jnp.clip(dx2[0:14],  -_DC, _DC),
+                    jnp.clip(dx2[14:28], -_DC, _DC),
                     dx1[28:46], dx2[28:46]), None
 
         (k1_q, k1_v, k2_q, k2_v,
@@ -1062,6 +1093,9 @@ class DifferentiableMultiBodyVehicle:
         q_new   = q0  + dt_step * (b1 * k1_q  + b2 * k2_q)
         v_new   = v0  + dt_step * (b1 * k1_v  + b2 * k2_v)
         aux_new = aux0 + dt_step * (b1 * dx1_aux + b2 * dx2_aux)
+        
+        # FIX: Hard-cap the aux states so jnp.sin() never sees Infinity
+        aux_new = jnp.clip(aux_new, -1000.0, 1000.0)
 
         return (x.at[0:14].set(q_new)
                   .at[14:28].set(v_new)

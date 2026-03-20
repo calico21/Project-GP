@@ -186,27 +186,36 @@ class DiffWMPCSolver:
         lo1 = self._idwt_1d_single_level(lo2, hi2)
         return self._idwt_1d_single_level(lo1, hi1)
 
-    def _db4_dwt(self, signal):
+    def _db4_dwt(self, signal: jax.Array) -> jax.Array:
         """3-level DWT.  signal: (N, 2) → coeffs: (N, 2)
 
-        jax.vmap over jnp.convolve is NOT stable across JAX versions — under
-        abstract tracing vmap materialises the batch axis inside convolve's
-        lax.conv_general_dilated lowering, producing (batch, N+filter-1) shapes
-        that propagate as (1, N) through subsequent slicing, causing the
-        downstream jnp.concatenate inside dwt_1d_3level to receive 2-D arrays
-        and raising: 'got (1,), (1, 64)'.
-        Two explicit calls over 2 channels is zero overhead and avoids the class
-        of vmap-convolve abstract-trace shape instability permanently.
+        Explicit per-channel calls — never vmap over convolve.
+        vmap materialises the batch axis inside lax.conv_general_dilated,
+        producing (batch, N+filter-1) shapes that propagate as (1, N) and
+        cause concatenate shape errors in _dwt_1d_3level.
         """
-        ch0 = self._dwt_1d_3level(signal[:, 0])   # steering  (N,)
-        ch1 = self._dwt_1d_3level(signal[:, 1])   # accel     (N,)
-        return jnp.stack([ch0, ch1], axis=1)        # (N, 2) — unambiguous
+        signal = signal.reshape(self.N, 2)            # defensive contract
 
-    def _db4_idwt(self, coeffs):
-        """3-level IDWT.  coeffs: (N, 2) → signal: (N, 2)"""
-        ch0 = self._idwt_1d_3level(coeffs[:, 0])   # steering  (N,)
-        ch1 = self._idwt_1d_3level(coeffs[:, 1])   # accel     (N,)
-        return jnp.stack([ch0, ch1], axis=1)         # (N, 2) — unambiguous
+        ch0 = self._dwt_1d_3level(signal[:, 0])      # (N,)
+        ch1 = self._dwt_1d_3level(signal[:, 1])      # (N,)
+        return jnp.stack([ch0, ch1], axis=1)           # (N, 2)
+
+    def _db4_idwt(self, coeffs: jax.Array) -> jax.Array:
+        """3-level IDWT.  coeffs: (N, 2) → signal: (N, 2)
+
+        Shape contract enforced at entry: coeffs must be exactly (N, 2).
+        Any upstream shape ambiguity (e.g. from a flat optimizer vector that
+        was not reshaped before passing in) is caught here rather than
+        propagating into the convolve lowering where the error message is
+        cryptic.
+        """
+        # Hard reshape: if coeffs somehow arrived as (N*2,) or (1, N, 2),
+        # this corrects it and makes the error site obvious in the traceback.
+        coeffs = coeffs.reshape(self.N, 2)
+
+        ch0 = self._idwt_1d_3level(coeffs[:, 0])    # (N,) ✓
+        ch1 = self._idwt_1d_3level(coeffs[:, 1])    # (N,) ✓
+        return jnp.stack([ch0, ch1], axis=1)          # (N, 2) ✓
 
     # ─────────────────────────────────────────────────────────────────────────
     # §3  Unscented Transform
@@ -257,6 +266,29 @@ class DiffWMPCSolver:
                                                    dt=dt_sub, n_substeps=1), None
 
             x_next, _ = jax.lax.scan(substep_fn, x, None, length=self.n_substeps)
+
+            # ── Soft vx saturation at LOCAL friction limit ────────────────────
+            # BUGFIX: previous version saturated at V_limit=30 m/s — completely
+            # inactive at the 15–20 m/s operating range. The per-step Jacobian
+            # eigenvalue was never damped, allowing gradient magnitude to grow as
+            # eigenvalue^64 through the scan backward pass.
+            #
+            # Fix: saturate at 1.25 × local friction-circle speed.
+            # ∂vx_sat/∂vx = sigmoid(v_ceil − vx):
+            #   vx << v_fric   → sigmoid ≈ 0.99  (transparent, signal preserved)
+            #   vx = v_fric    → sigmoid ≈ 0.76  (gentle onset, ~24% damping/step)
+            #   vx = 1.25×v_f  → sigmoid = 0.50  (eigenvalue 0.5, 0.5^64≈5e-20)
+            #   vx >> v_ceil   → sigmoid → 0     (gradient dead, prevents NaN)
+            #
+            # The 1.25× factor keeps the saturation inactive within the physical
+            # envelope (vx ≤ v_fric). The gradient ratio between AL-penalty and
+            # time-cost is UNCHANGED by saturation (both scale identically), so
+            # the optimizer still finds the correct Pareto trade-off.
+            v_fric_sq  = (self.mu_friction * 9.81) / (jnp.abs(k_c) + 1e-4)
+            v_sat_ceil = jnp.minimum(jnp.sqrt(v_fric_sq) * 1.25, self.V_limit)
+            vx_raw     = x_next[STATE_VX]
+            vx_sat     = vx_raw - jax.nn.softplus(vx_raw - v_sat_ceil)
+            x_next     = x_next.at[STATE_VX].set(jnp.maximum(vx_sat, 0.5))
 
             # Curvilinear coordinate: lateral deviation n from track centerline
             dx_world = x_next[STATE_X] - x_ref
@@ -363,84 +395,124 @@ class DiffWMPCSolver:
 
         return time_cost + effort_cost + barrier_cost + term_cost + al_friction
 
-    # ─────────────────────────────────────────────────────────────────────────
-    # §6  Quintic Hermite warm start (UPGRADE-2)
-    # ─────────────────────────────────────────────────────────────────────────
+    # ─────────────────────────────────────────────────────────────────────────────
+    # §6a  Physics-based warm start  (replaces _build_quintic_warmstart for init)
+    # ─────────────────────────────────────────────────────────────────────────────
+    #
+    # BUGFIX (GP-vX3) — warm start unit error and GTOL premature convergence
+    # ─────────────────────────────────────────────────────────────────────────────
+    #
+    # ROOT CAUSE A — unit mismatch:
+    #   The quintic warm start stores accel_guess in m/s² (clip range [-14.7, 9.81]).
+    #   The physics u[1] channel expects Newtons (clip range [-8000, 8000]).
+    #   For a constant-speed circular track: dv ≈ 0 → accel_guess ≈ 0 m/s² ≈ 0 N.
+    #   The physics needs u[1] ≈ -786 N to counteract H_net phantom energy
+    #   (confirmed from debug rollout: zero-control drives v from 16.6 → 19.22 m/s).
+    #   The warm start encodes zero braking → flat_init ≈ 0.
+    #
+    # ROOT CAUSE B — GTOL premature convergence:
+    #   With flat_init ≈ 0, the first gradient evaluation produces NaN (remaining
+    #   GP + scan Jacobian sources) → L2 fallback returns grad = clip(0, -10, 10) = 0.
+    #   The scipy_minimize gtol=1e-6 check fires on ||grad|| < 1e-6 → CONVERGENCE
+    #   declared after nit=1. The optimizer returns flat_init unchanged every AL
+    #   iteration. This is why constraint violation = 3.1689 across all 5 iters:
+    #   the trajectory evaluated is ALWAYS the flat_init trajectory.
+    #
+    # ROOT CAUSE C — per-step Jacobian eigenvalue > 1:
+    #   H_net phantom energy adds ~2.62 m/s² even with zero controls → per-step
+    #   Jacobian ∂vx(t+1)/∂vx(t) > 1. Over 64 lax.scan steps, the vx gradient
+    #   grows as eigenvalue^64. Above V_limit this exceeds float32 range → NaN.
+    #
+    # FIX A — physics warm start in Newton units:
+    #   Run N forward simulation steps with a P-controller that brakes to maintain
+    #   the friction-circle speed limit. The resulting U_warm[:,1] is in Newtons
+    #   (matching the physics u[1] channel). The P-controller accounts for phantom
+    #   energy in closed loop. flat_init = DWT(U_warm) has ||flat_init|| >> 0,
+    #   preventing GTOL premature convergence.
+    #
+    # FIX B — soft vx saturation in scan_fn:
+    #   vx_sat = vx - softplus(vx - V_limit)
+    #   Gradient: ∂vx_sat/∂vx = 1 - sigmoid(vx - V_limit) ∈ (0, 1)
+    #   → At vx << V_limit: gradient ≈ 1 (transparent)
+    #   → At vx >> V_limit: gradient → 0 (Jacobian eigenvalue capped below 1)
+    #   Eliminates the gradient explosion source without changing forward physics
+    #   within the operating envelope.
+    #
+    # FIX C — gradient norm clipping + correct gtol:
+    #   Clips gradient L2 norm to 200 before returning to L-BFGS-B. Any
+    #   remaining large-but-finite gradients (from Jacobian accumulation near
+    #   V_limit) no longer corrupt the line search Wolfe condition checks.
+    #   gtol raised from 1e-6 → 1e-3 (still tight; prevents premature GTOL stop).
+    #   maxls reduced from 100 → 30: more Newton steps, fewer wasted line evals.
+    # ─────────────────────────────────────────────────────────────────────────────
 
-    # ─────────────────────────────────────────────────────────────────────────
-    # §6  Quintic Hermite warm start (UPGRADE-2)
-    # ─────────────────────────────────────────────────────────────────────────
-    #
-    # FIX 4  —  optimization/ocp_solver.py
-    #
-    # ROOT CAUSE: shape ambiguity producing (1,) vs (1, 64) concatenate crash.
-    #
-    # Two sub-issues:
-    #
-    #   A)  jnp.convolve(..., mode='same') is not guaranteed to return a 1-D
-    #       array with the exact input length across all JAX versions.
-    #       Internally JAX may return shape (1, N) after an internal unsqueeze
-    #       that isn't squeezed back, which propagates into v_smooth and then
-    #       into accel_guess.  When accel_guess has shape (1, N), jnp.column_stack
-    #       produces shape (N, 1+1) = (N, 2) only if JAX column_stack handles it
-    #       the same way NumPy does — it doesn't always.
-    #
-    #   B)  jnp.append(jnp.diff(v_smooth), 0.0) — jnp.append is a thin shim
-    #       around concatenate and can produce shape (N+1, 1) when v_smooth has
-    #       a trailing unit dimension.
-    #
-    # FIX:
-    #   1. Replace jnp.convolve mode='same' with mode='full' + manual crop
-    #      (always returns exactly (N,) because the output length is
-    #       len(a)+len(b)-1 and we slice to exactly N elements).
-    #   2. Replace jnp.append with jnp.concatenate on explicit 1-D arrays.
-    #   3. Replace jnp.column_stack with jnp.stack(..., axis=1) after
-    #      explicit .ravel() — this is the only unambiguous (N, 2) constructor.
-    #
-    # ─────────────────────────────────────────────────────────────────────────
+    _MAX_GRAD_NORM = 200.0   # L2 gradient clip threshold for scipy_obj
 
-    def _build_quintic_warmstart(self, track_k, track_psi):
+
+    def _build_physics_warmstart(
+        self,
+        track_k:      jax.Array,     # (N,) curvature  [1/m]
+        track_psi:    jax.Array,     # (N,) heading    [rad]
+        x0:           jax.Array,     # (46,) initial state — concrete, not traced
+        setup_params: jax.Array,     # (28,) suspension setup
+    ) -> jax.Array:                   # (N, 2) in [steer_rad, force_N]
         """
-        Smooth velocity profile via curvature-adaptive kinematic warm start.
-        Returns U_warm of shape (N, 2) = [steer_guess, accel_guess] per step.
+        Forward-simulation warm start with closed-loop P-velocity-controller.
+
+        Produces U_warm[:,1] in Newton units — the correct units for u[1] in the
+        physics simulation. Counteracts H_net phantom energy through closed-loop
+        braking, giving a starting trajectory that satisfies the friction constraint
+        before the optimizer even starts.
+
+        P-controller gain Kp = 6000 N/(m/s):
+        · At v_err = 1.0 m/s above target → F_brake = 6000 N (75% max)
+        · Phantom energy equivalent force ≈ 786 N → corrected within 1 step
+        · Under-speed: light throttle capped at 600 N to avoid instability
+
+        No JAX tracing — Python loop over concrete simulate_step evaluations.
+        JIT cache from earlier calls (Test 2 forward pass) means effectively zero
+        recompilation cost on subsequent calls in the same process.
         """
-        g        = 9.81
-        k_safe   = jnp.abs(track_k) + 1e-4
+        g  = 9.81
+        wb = self.vp.get('lf', 0.8525) + self.vp.get('lr', 0.6975)
+        Kp = 6000.0   # N / (m/s)
+
+        k_safe   = jnp.abs(track_k).ravel() + 1e-4
         v_target = jnp.minimum(
             jnp.sqrt((self.mu_friction * g) / k_safe),
-            self.V_limit,
-        )                                              # shape (N,)
+            self.V_limit * 0.92,   # 8% safety margin below friction limit
+        )
+        steer_ref = jnp.clip(track_k.ravel() * wb, -0.45, 0.45)
 
-        # ── Running-average smoothing ─────────────────────────────────────────
-        # mode='full' gives length (N + window - 1); we crop to exactly N.
-        # This is strictly safer than mode='same' whose output length depends
-        # on which of {a, b} is longer — not guaranteed consistent across JAX
-        # versions when one operand is dynamically shaped under vmap/jit.
-        window   = 5
-        kernel   = jnp.ones(window, dtype=v_target.dtype) / window
-        v_full   = jnp.convolve(v_target.ravel(), kernel, mode='full')
-        pad      = window // 2
-        v_smooth = v_full[pad : pad + self.N]          # shape exactly (N,)
+        state      = x0
+        steer_hist = []
+        force_hist = []
 
-        # ── Acceleration profile ──────────────────────────────────────────────
-        # jnp.append can silently produce (N+1, 1) when v_smooth has a unit
-        # trailing dim after the convolve crop.  Use explicit concatenate on
-        # guaranteed 1-D slices instead.
-        dv_inner    = v_smooth[1:] - v_smooth[:-1]    # shape (N-1,)
-        dv          = jnp.concatenate([dv_inner, jnp.zeros(1, dtype=dv_inner.dtype)])  # (N,)
-        accel_guess = jnp.clip(dv / (self.dt_control + 1e-6), -1.5 * g, g)
+        for i in range(self.N):
+            v_curr  = float(state[STATE_VX])
+            v_tgt_i = float(v_target[i])
+            steer_i = float(steer_ref[i])
 
-        # ── Steering profile ──────────────────────────────────────────────────
-        wheelbase   = self.vp.get('wheelbase', self.vp.get('wb', 1.550))
-        steer_guess = jnp.clip(track_k * wheelbase, -0.45, 0.45)
+            v_err = v_curr - v_tgt_i
+            if v_err > 0.0:
+                # Over target: brake. Negative u[1] = braking force in physics.
+                F_ctrl = float(jnp.clip(-Kp * v_err, -8000.0, 0.0))
+            else:
+                # Under target: gentle throttle capped to avoid oscillation.
+                F_ctrl = float(jnp.clip(-Kp * v_err * 0.3, 0.0, 600.0))
 
-        # ── Assemble (N, 2) output ─────────────────────────────────────────────
-        # jnp.column_stack has implementation drift across JAX versions for
-        # 1-D inputs — use jnp.stack(axis=1) after explicit ravel() to
-        # guarantee exactly (N, 2) regardless of upstream shape ambiguity.
-        steer_1d = steer_guess.ravel()[:self.N]        # strict (N,)
-        accel_1d = accel_guess.ravel()[:self.N]        # strict (N,)
-        return jnp.stack([steer_1d, accel_1d], axis=1) # (N, 2)  ← unambiguous
+            u_i   = jnp.array([steer_i, F_ctrl])
+            state = self._vehicle.simulate_step(
+                state, u_i, setup_params,
+                dt=self.dt_control, n_substeps=self.n_substeps,
+            )
+            steer_hist.append(steer_i)
+            force_hist.append(F_ctrl)
+
+        return jnp.stack([
+            jnp.array(steer_hist, dtype=jnp.float32),   # (N,) steer [rad]
+            jnp.array(force_hist, dtype=jnp.float32),   # (N,) force [N] ← correct units
+        ], axis=1)                                        # (N, 2)
 
     # ─────────────────────────────────────────────────────────────────────────
     # §7  Public solve interface
@@ -521,17 +593,34 @@ class DiffWMPCSolver:
         x0 = x0.at[8].set(float(z_eq_vec[2]))  # z_rl [m]
         x0 = x0.at[9].set(float(z_eq_vec[3]))  # z_rr [m]
 
-        # ── Warm start (UPGRADE-2: quintic Hermite) ───────────────────────────
-        U_warm = self._build_quintic_warmstart(track_k, track_psi)
-        wc_kin = self._db4_dwt(U_warm)
-
+        # ── Warm start (GP-vX3: physics P-ctrl warm start) ────────────────────
+        # The quintic warm start encoded accel in m/s² (wrong units for u[1]
+        # which expects Newtons). For a constant-speed circular track this gave
+        # flat_init ≈ 0, triggering GTOL convergence after nit=1 because the
+        # L2 fallback gradient at near-zero is also near-zero.
+        # The physics warm start encodes braking in Newtons, produces a feasible
+        # starting trajectory, and gives flat_init with ||flat_init|| >> 0.
         if self._prev_solution is not None:
             prev_shifted = jnp.roll(self._prev_solution, -1, axis=0)
             flat_init    = self._db4_dwt(prev_shifted).flatten()
             print("[Diff-WMPC] Warm-starting from previous solution (shifted).")
         else:
-            flat_init = wc_kin.flatten() * 0.3
-            print(f"[Diff-WMPC] First solve — quintic Hermite warm start (N={self.N}).")
+            try:
+                U_warm    = self._build_physics_warmstart(
+                    track_k, track_psi, x0, setup_params)
+                wc_kin    = self._db4_dwt(U_warm)
+                flat_init = wc_kin.flatten()   # no * 0.3 — warm start already
+                                                # physically calibrated in Newton units
+                print(f"[Diff-WMPC] Physics P-ctrl warm start "
+                      f"(N={self.N}, Kp=6000 N/(m/s)).")
+            except Exception as _ws_err:
+                print(f"[Diff-WMPC] Physics warm start failed "
+                      f"({_ws_err}), falling back to quintic Hermite.")
+                U_warm    = self._build_quintic_warmstart(track_k, track_psi)
+                wc_kin    = self._db4_dwt(U_warm)
+                flat_init = wc_kin.flatten() * 0.3
+                
+            wc_kin_flat_np = np.array(wc_kin.flatten(), dtype=np.float64)  # fallback anchor
 
         # ── Initialize Augmented Lagrangian multipliers ───────────────────────
         if self._al_lambda is None or self._al_lambda.shape[0] != self.N:
@@ -540,14 +629,19 @@ class DiffWMPCSolver:
         al_rho    = self._al_rho
 
         # ── Outer AL loop: typically 3-5 iterations to converge ───────────────
-        n_al_iters = 3
+        n_al_iters = 3 if self.dev_mode else 5
         opt_coeffs   = jnp.array(flat_init)
 
         for al_iter in range(n_al_iters):
             def objective_wrapper(flat_coeffs):
                 coeffs      = flat_coeffs.reshape((self.N, 2))
                 coeffs_safe = jnp.clip(coeffs, -3.0, 3.0)
-                coeff_reg   = 5e-5 * jnp.sum(coeffs_safe ** 2)
+                # Regularize toward the physics warm start, NOT toward zero.
+                # Zero coefficients = zero braking = maximum speed = maximum
+                # friction constraint violation. Warm-start coefficients encode
+                # a feasible braking trajectory. The gradient of this term at any
+                # NaN-producing point correctly points back toward feasibility.
+                coeff_reg   = 5e-5 * jnp.sum((coeffs_safe - wc_kin) ** 2)
                 loss = self._loss_fn(
                     coeffs_safe, x0, setup_params,
                     track_k, track_x, track_y, track_psi,
@@ -565,19 +659,41 @@ class DiffWMPCSolver:
                 total_calls[0] += 1
                 x_jax              = jnp.array(x_np)
                 loss_jax, grad_jax = val_grad_fn(x_jax)
-                if not (bool(jnp.isfinite(loss_jax)) and bool(jnp.all(jnp.isfinite(grad_jax)))):
+
+                if not (bool(jnp.isfinite(loss_jax)) and
+                        bool(jnp.all(jnp.isfinite(grad_jax)))):
                     nan_count[0] += 1
-                    loss_fb = 1e6 + 0.5 * float(np.sum(x_np ** 2))
-                    grad_fb = np.clip(x_np, -10.0, 10.0).astype(np.float64)
+                    # CRITICAL FIX: anchor the fallback at the warm start.
+                    # Previous L2 fallback: 1e6 + 0.5‖x‖² → gradient = x_np.
+                    # For a braking warm start x_np has negative components →
+                    # gradient = x_np is negative → L-BFGS-B descends in +x
+                    # direction → LESS braking → MORE speed → MORE violation.
+                    # Each AL iteration drifted opt_coeffs further from feasibility
+                    # until all evaluations NaN → ABNORMAL (nit=0).
+                    #
+                    # New fallback: 1e9 + 0.5‖x − wc_kin‖² → gradient = x − wc_kin.
+                    # · 1e9 > any real loss (max real loss ≈ λ_max * g * N ≈ 3.2M)
+                    #   → L-BFGS-B correctly identifies NaN points as "worse"
+                    # · Gradient points TOWARD warm start (feasible trajectory)
+                    #   → fallback descent direction is physically meaningful
+                    diff      = x_np - wc_kin_flat_np
+                    loss_fb   = 1e9 + 0.5 * float(np.dot(diff, diff))
+                    grad_fb   = np.clip(diff, -100.0, 100.0).astype(np.float64)
                     if nan_count[0] <= 3 or nan_count[0] % 20 == 0:
-                        print(f"[Diff-WMPC] NaN #{nan_count[0]} (AL iter {al_iter}): "
-                              f"L2 fallback")
+                        print(f"[Diff-WMPC] NaN #{nan_count[0]} "
+                              f"(AL iter {al_iter}): warm-start fallback")
                     return loss_fb, grad_fb
-                return float(loss_jax), np.array(grad_jax, dtype=np.float64)
+
+                grad_np   = np.array(grad_jax, dtype=np.float64)
+                grad_norm = float(np.linalg.norm(grad_np))
+                if grad_norm > self._MAX_GRAD_NORM:
+                    grad_np = grad_np * (self._MAX_GRAD_NORM / grad_norm)
+                return float(loss_jax), grad_np
 
             print(f"[Diff-WMPC] AL iter {al_iter+1}/{n_al_iters} — "
                   f"ρ={al_rho:.1f}, λ_max={float(jnp.max(al_lambda)):.3f}")
-            print(f"[Diff-WMPC] Optimising 3-level Db4 basis over N={self.N} via L-BFGS-B…")
+            print(f"[Diff-WMPC] Optimising 3-level Db4 basis "
+                  f"over N={self.N} via L-BFGS-B…")
 
             res = scipy_minimize(
                 scipy_obj,
@@ -585,10 +701,12 @@ class DiffWMPCSolver:
                 method='L-BFGS-B',
                 jac=True,
                 options={
-                    'maxiter': 2000 if not self.dev_mode else 1000,
-                    'maxls':   100,
-                    'ftol':    1e-10,
-                    'gtol':    1e-6,
+                    'maxiter': 2000 if not self.dev_mode else 500,
+                    'maxls':   30,      # was 100 — more Newton steps, fewer
+                                        # wasted line-search evaluations per step
+                    'ftol':    1e-9,
+                    'gtol':    1e-3,    # was 1e-6 — prevented by GTOL firing at
+                                        # near-zero flat_init with L2 fallback grad
                     'disp':    False,
                 },
             )
@@ -598,6 +716,16 @@ class DiffWMPCSolver:
                 jnp.array(res.x, dtype=jnp.float32),
                 opt_coeffs,
             )
+
+            # ADD immediately after the opt_coeffs update block:
+            # If NaN dominated this AL iteration, the opt_coeffs may have drifted
+            # away from the feasible region. Reset to warm start so the next AL
+            # iteration starts fresh from a known-feasible trajectory.
+            nan_rate_iter = nan_count[0] / max(total_calls[0], 1)
+            if nan_rate_iter > 0.30:
+                print(f"[Diff-WMPC] NaN rate {nan_rate_iter:.0%} > 30% — "
+                      f"resetting opt_coeffs to physics warm start.")
+                opt_coeffs = jnp.array(flat_init)
 
             if not self.dev_mode:
                 # Evaluate constraint violation for AL multiplier update
