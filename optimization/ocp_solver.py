@@ -446,9 +446,6 @@ class DiffWMPCSolver:
     #   maxls reduced from 100 → 30: more Newton steps, fewer wasted line evals.
     # ─────────────────────────────────────────────────────────────────────────────
 
-    _MAX_GRAD_NORM = 200.0   # L2 gradient clip threshold for scipy_obj
-
-
     def _build_physics_warmstart(
         self,
         track_k:      jax.Array,     # (N,) curvature  [1/m]
@@ -635,7 +632,7 @@ class DiffWMPCSolver:
         for al_iter in range(n_al_iters):
             def objective_wrapper(flat_coeffs):
                 coeffs      = flat_coeffs.reshape((self.N, 2))
-                coeffs_safe = jnp.clip(coeffs, -3.0, 3.0)
+                coeffs_safe = jnp.clip(coeffs, -25000.0, 25000.0)
                 # Regularize toward the physics warm start, NOT toward zero.
                 # Zero coefficients = zero braking = maximum speed = maximum
                 # friction constraint violation. Warm-start coefficients encode
@@ -684,10 +681,7 @@ class DiffWMPCSolver:
                               f"(AL iter {al_iter}): warm-start fallback")
                     return loss_fb, grad_fb
 
-                grad_np   = np.array(grad_jax, dtype=np.float64)
-                grad_norm = float(np.linalg.norm(grad_np))
-                if grad_norm > self._MAX_GRAD_NORM:
-                    grad_np = grad_np * (self._MAX_GRAD_NORM / grad_norm)
+                grad_np = np.array(grad_jax, dtype=np.float64)
                 return float(loss_jax), grad_np
 
             print(f"[Diff-WMPC] AL iter {al_iter+1}/{n_al_iters} — "
@@ -702,11 +696,15 @@ class DiffWMPCSolver:
                 jac=True,
                 options={
                     'maxiter': 2000 if not self.dev_mode else 500,
-                    'maxls':   30,      # was 100 — more Newton steps, fewer
-                                        # wasted line-search evaluations per step
-                    'ftol':    1e-9,
-                    'gtol':    1e-3,    # was 1e-6 — prevented by GTOL firing at
-                                        # near-zero flat_init with L2 fallback grad
+                    'maxls':   30,
+                    'ftol':    1e-30,   # was 1e-9 — FACTR was firing after nit=1
+                                        # because AL quadratic penalty curvature
+                                        # forces tiny Wolfe line-search steps whose
+                                        # absolute function reduction < ftol×|f|.
+                                        # Setting ftol≈0 disables FACTR entirely;
+                                        # termination is now controlled by gtol=1e-3
+                                        # (gradient norm) and maxiter=2000.
+                    'gtol':    1e-3,
                     'disp':    False,
                 },
             )
@@ -730,7 +728,7 @@ class DiffWMPCSolver:
             if not self.dev_mode:
                 # Evaluate constraint violation for AL multiplier update
                 wc_opt = opt_coeffs.reshape((self.N, 2))
-                wc_opt = jnp.clip(wc_opt, -3.0, 3.0)
+                wc_opt = jnp.clip(wc_opt, -25000.0, 25000.0)
                 U_al, x_al, _, _, _ = self._simulate_trajectory(
                     wc_opt, x0, setup_params,
                     track_k, track_x, track_y, track_psi,
@@ -769,7 +767,7 @@ class DiffWMPCSolver:
 
         # ── Final trajectory extraction ───────────────────────────────────────
         wc_final = opt_coeffs.reshape((self.N, 2))
-        wc_final = jnp.clip(wc_final, -3.0, 3.0)
+        wc_final = jnp.clip(wc_final, -25000.0, 25000.0)
 
         U_opt, x_traj, n_opt, var_n_opt, s_dot_opt = self._simulate_trajectory(
             wc_final, x0, setup_params,

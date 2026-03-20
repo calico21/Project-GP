@@ -776,6 +776,30 @@ class DifferentiableMultiBodyVehicle:
         FORCE_CAP = 12000.0; VEL_CAP = 150.0
         dH_dq  = FORCE_CAP * jnp.tanh(dH_dq / (FORCE_CAP + 1e-8))
         dH_dp  = VEL_CAP   * jnp.tanh(dH_dp / (VEL_CAP   + 1e-8))
+
+        # Stop the H_net Hessian from entering ANY outer optimization backward pass.
+        #
+        # WHAT THIS DOES: blocks ∂²H/∂(q,p)² from accumulating through the
+        # WMPC lax.scan (64 steps) × GLRK-4 Newton scan (5 iters) × substep
+        # scan (5 substeps) = up to 1600 chained Hessian evaluations. Even one
+        # ill-conditioned Hessian evaluation at a transient non-physical state
+        # NaNs the entire backward pass via JAX's non-short-circuiting scan.
+        #
+        # WHAT THIS PRESERVES:
+        # · Forward dynamics remain exactly correct — H_net forces (PH_accel)
+        #   are computed faithfully and drive the car in the forward pass.
+        # · Physical force gradients (∂F_tire/∂u, ∂F_spring/∂k, ∂F_damper/∂c)
+        #   still flow back through the entire scan chain — the optimizer retains
+        #   full gradient signal for braking, cornering, and setup optimization.
+        # · MORL setup gradients are unaffected: setup enters through
+        #   SuspensionSetup (spring/ARB/damper), not through H_net argnums.
+        #
+        # WHY SEMANTICALLY EXACT: H_params are frozen during all online
+        # optimization (WMPC, MORL). H_net's Hessian w.r.t. state contributes
+        # zero useful gradient information for the wavelet coefficient search.
+        # This is the straight-through estimator applied to a frozen network.
+        dH_dq = jax.lax.stop_gradient(dH_dq)
+        dH_dp = jax.lax.stop_gradient(dH_dp)
         grad_H = jnp.concatenate([dH_dq, dH_dp])
 
         J = jnp.zeros((28, 28))

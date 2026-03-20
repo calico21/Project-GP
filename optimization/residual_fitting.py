@@ -375,15 +375,15 @@ def train_neural_residuals():
                 total    = h_net.apply(params_, q_s, p_s, setup_s)
                 T_prior  = 0.5 * jnp.sum((p_s ** 2) / (M_diag + 1e-8))
                 V_struct = 0.5 * jnp.sum(q_s[6:10] ** 2) * _V_STRUCT_PRIOR_K
-                
-                # FIX: Un-attenuate the loss by removing the susp_sq scaling
-                susp_sq = jnp.sum((q_s[6:10] - _Z_EQ) ** 2) + 1e-4
-                susp_sq_frozen = jax.lax.stop_gradient(susp_sq)
-                
-                pred_H_res = (total - T_prior - V_struct) / susp_sq_frozen
-                target_H_res = (t_s * h_scale) / susp_sq_frozen
-                
-                return ((pred_H_res - target_H_res) / h_scale) ** 2
+                # Original form — correct units, correct gradient.
+                # The susp_sq equilibrium centering in NeuralEnergyLandscape
+                # (BUGFIX-5) already resolved the gradient attenuation issue.
+                # This loss operates in H_total space [J], normalized by h_scale [J].
+                # Gradient: 2*(H_res*susp_sq - target_H)/h_scale² * susp_sq * ∂H_res/∂w
+                # susp_sq ≈ 1.7e-3 at training distribution — mild attenuation,
+                # not the 100× collapse that existed before the z_eq centering fix.
+                residual = (total - T_prior - V_struct) / h_scale
+                return (residual - t_s) ** 2
             return jnp.mean(jax.vmap(per_sample)(q, p, setup, target_norm))
 
         loss, grads = jax.value_and_grad(mse_loss)(params)
@@ -419,15 +419,8 @@ def train_neural_residuals():
                 total    = h_net.apply(params_, q_s, p_s, setup_s)
                 T_prior  = 0.5 * jnp.sum((p_s ** 2) / (M_diag + 1e-8))
                 V_struct = 0.5 * jnp.sum(q_s[6:10] ** 2) * _V_STRUCT_PRIOR_K
-                
-                # FIX: Un-attenuate the loss by removing the susp_sq scaling
-                susp_sq = jnp.sum((q_s[6:10] - _Z_EQ) ** 2) + 1e-4
-                susp_sq_frozen = jax.lax.stop_gradient(susp_sq)
-                
-                pred_H_res = (total - T_prior - V_struct) / susp_sq_frozen
-                target_H_res = (t_s * h_scale) / susp_sq_frozen
-                
-                return ((pred_H_res - target_H_res) / h_scale) ** 2
+                residual = (total - T_prior - V_struct) / h_scale
+                return (residual - t_s) ** 2
             return jnp.mean(jax.vmap(per_sample)(q, p, setup, target_norm))
 
         def phantom_rate_at_eq_loss(params_):
