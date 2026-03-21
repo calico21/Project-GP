@@ -76,3 +76,22 @@ export function gFidelitySpider(){return[{axis:"Kinematic R²",score:94,fullMark
 export function gDamperHist(){const bins=[];for(let v=-.3;v<=.3;v+=.025){const x=v/.12;bins.push({vel:+v.toFixed(3),front:Math.round(800*Math.exp(-x*x/2)*(1+.3*RN())),rear:Math.round(600*Math.exp(-x*x/1.8)*(1+.25*RN()))});}return bins;}
 
 export function gGripUtil(track){return track.filter((_,i)=>i%4===0).map(p=>{const lg=Math.abs(Number(p.lat_g)||0),lon=Math.abs(Number(p.lon_g)||0);const mu=1.35;const combined=Math.sqrt(lg*lg+lon*lon);return{s:p.s,utilisation:+Math.min(combined/mu,1.0).toFixed(3),combined:+combined.toFixed(3)};});}
+
+export function gDriverInputs(track){
+  const R7=sd("driverinputs2026");
+  return track.filter((_,i)=>i%2===0).map((p,i)=>{
+    const k=Number(p.curvature)||0,v=Number(p.speed)||1,vOpt=12+10/(1+3*Math.abs(k));
+    const optSteer=k*1.55*14*180/Math.PI;
+    const actSteer=optSteer*(1+0.12*(R7()-.5))+1.5*R7();
+    const optThr=v<vOpt?Math.min(1,(vOpt-v)/8+0.15):0;
+    const actThr=Math.max(0,optThr*(0.85+0.3*R7())+0.05*R7());
+    const optBrk=v>vOpt+1?Math.min(1,(v-vOpt)/6):0;
+    const actBrk=Math.max(0,optBrk*(0.9+0.2*R7())+0.03*R7());
+    return{
+      s:p.s,
+      steerAct:+actSteer.toFixed(1),steerOpt:+optSteer.toFixed(1),
+      thrAct:+(actThr*100).toFixed(0),thrOpt:+(optThr*100).toFixed(0),
+      brkAct:+(actBrk*100).toFixed(0),brkOpt:+(optBrk*100).toFixed(0),
+    };
+  });
+}

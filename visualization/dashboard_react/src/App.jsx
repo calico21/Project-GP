@@ -61,7 +61,15 @@ export default function App() {
       <div style={{ width: 210, minHeight: "100vh", background: C.panel, backdropFilter: "blur(24px) saturate(1.3)", borderRight: `1px solid ${C.glassB}`, display: "flex", flexDirection: "column", flexShrink: 0, zIndex: 2 }}>
         <div style={{ padding: "22px 18px 16px", borderBottom: `1px solid ${C.b1}` }}>
           <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-            <div style={{ width: 36, height: 36, borderRadius: 8, background: `linear-gradient(135deg, ${C.red}, #ff3d00)`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 14, fontWeight: 900, color: "#fff", fontFamily: C.hd, boxShadow: `0 3px 18px ${C.red}35` }}>GP</div>
+            <svg width="36" height="36" viewBox="0 0 64 64" style={{ flexShrink: 0 }}>
+              <defs>
+                <linearGradient id="logoBg" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stopColor="#e10600"/><stop offset="100%" stopColor="#ff3d00"/></linearGradient>
+              </defs>
+              <rect x="2" y="2" width="60" height="60" rx="14" fill="url(#logoBg)"/>
+              <rect x="4" y="4" width="56" height="56" rx="12" fill="none" stroke="rgba(255,255,255,0.15)" strokeWidth="1"/>
+              <text x="32" y="44" textAnchor="middle" fontFamily="Arial, Helvetica, sans-serif" fontWeight="900" fontSize="32" fill="white" letterSpacing="-1">GP</text>
+              <rect x="14" y="52" width="36" height="2" rx="1" fill="rgba(255,255,255,0.3)"/>
+            </svg>
             <div>
               <div style={{ fontSize: 15, fontWeight: 900, color: C.w, letterSpacing: 2.5, fontFamily: C.hd }}>PROJECT-GP</div>
               <div style={{ fontSize: 8, color: C.dm, letterSpacing: 2.5, fontFamily: C.dt, textTransform: "uppercase" }}>Digital Twin · Ter26</div>
