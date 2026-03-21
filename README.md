@@ -199,6 +199,7 @@ from the unmodulated baseline.
 **Energy output:**
 
 $$H_{total} = T_{prior} + V_{structural} + H_{res} \cdot \underbrace{\sum(q_{susp} - z_{eq})^2 + \epsilon}_{\texttt{susp\\_sq\\_eq}}$$
+
 Key properties:
 - `T_prior = 0.5 * ||p||² / M_diag` — exact kinetic energy from generalised momenta
 - `V_structural = 0.5 * ||q_{susp}||² * K_{prior}` (K_prior = 30,000 N/m) — structural spring prior
