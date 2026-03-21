@@ -1,34 +1,32 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import { C, GL } from "./theme.js";
 
-// ── Animated page/tab wrapper ───────────────────────────────────────
+// ── FadeSlide — FIXED ───────────────────────────────────────────────
+// Previous version had `children` in useEffect deps → new React element
+// reference every render → infinite loop → opacity stuck at 0 → BLACK SCREEN.
+// Fix: only depend on keyVal, render children directly (no state copy).
 export function FadeSlide({ children, keyVal }) {
-  const [show, setShow] = useState(false);
-  const [rendered, setRendered] = useState(children);
-  const [currentKey, setCurrentKey] = useState(keyVal);
+  const [visible, setVisible] = useState(true);
+  const prevKey = useRef(keyVal);
 
   useEffect(() => {
-    if (keyVal !== currentKey) {
-      setShow(false);
+    if (keyVal !== prevKey.current) {
+      setVisible(false);
       const t = setTimeout(() => {
-        setRendered(children);
-        setCurrentKey(keyVal);
-        setTimeout(() => setShow(true), 40);
-      }, 200);
+        prevKey.current = keyVal;
+        setVisible(true);
+      }, 220);
       return () => clearTimeout(t);
     }
-    setRendered(children);
-    const t = setTimeout(() => setShow(true), 40);
-    return () => clearTimeout(t);
-  }, [keyVal, children]);
+  }, [keyVal]);
 
   return (
     <div style={{
-      opacity: show ? 1 : 0,
-      transform: show ? "translateY(0)" : "translateY(14px)",
-      transition: "opacity 0.4s cubic-bezier(0.25,0.1,0.25,1), transform 0.4s cubic-bezier(0.25,0.1,0.25,1)",
+      opacity: visible ? 1 : 0,
+      transform: visible ? "translateY(0)" : "translateY(14px)",
+      transition: "opacity 0.35s ease, transform 0.35s ease",
     }}>
-      {rendered}
+      {children}
     </div>
   );
 }
@@ -38,7 +36,10 @@ export function KPI({ label, value, sub, sentiment = "neutral", delay = 0 }) {
   const ac = sentiment === "positive" ? C.gn : sentiment === "negative" ? C.red : sentiment === "amber" ? C.am : C.cy;
   const bg = sentiment === "positive" ? C.gnG : sentiment === "negative" ? C.redG : sentiment === "amber" ? C.amG : C.cyG;
   const [vis, setVis] = useState(false);
-  useEffect(() => { const t = setTimeout(() => setVis(true), 80 + delay * 100); return () => clearTimeout(t); }, []);
+  useEffect(() => {
+    const t = setTimeout(() => setVis(true), 80 + delay * 100);
+    return () => clearTimeout(t);
+  }, [delay]);
 
   return (
     <div
