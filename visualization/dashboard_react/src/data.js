@@ -15,7 +15,7 @@ export function gSN(){return PN.slice(0,14).map(p=>({param:p,dGrip:+((RN()-.3)*.
 export function gTrustRegion(n=200){const d=[];for(let i=0;i<n;i++){const fishNorm=2.5*Math.exp(-i/60)+.3+.15*RN();const stepSize=Math.min(.02,0.005/fishNorm+.001*RN());const damp=Math.min(1,fishNorm/3);d.push({iter:i,fishNorm:+fishNorm.toFixed(3),stepSize:+(stepSize*1000).toFixed(2),dampFactor:+damp.toFixed(3)});}return d;}
 
 export function gEpistemicConf(pareto){
-  const vars=pareto.map(p=>p.params.reduce((a,v)=>a+(v-.5)**2,0)/28);
+  const vars=pareto.map(p=>p.params.reduce((a,v)=>a+Math.pow(v-.5,2),0)/28);
   const meanVar=vars.reduce((a,v)=>a+v,0)/vars.length;
   const conf=Math.max(0,Math.min(100,100*(1-meanVar*4)));
   const breakdown=[{axis:"Spring Rates",score:+(conf+3*RN()).toFixed(0)},{axis:"Damper Maps",score:+(conf-5+4*RN()).toFixed(0)},{axis:"ARB Stiffness",score:+(conf+2*RN()).toFixed(0)},{axis:"Geometry",score:+(conf-8+5*RN()).toFixed(0)},{axis:"Aero Platform",score:+(conf-3+3*RN()).toFixed(0)},{axis:"Thermal Model",score:+(conf-10+6*RN()).toFixed(0)}];
@@ -27,7 +27,7 @@ export function gTK(n=360){const v=[];let cx=0,cy=0,psi=0;for(let i=0;i<n;i++){c
 export function gTT(n=200){const d=[];let a=25,b=25,c=25,e=25;for(let i=0;i<n;i++){const h=.4+.3*Math.sin(i/20)+.1*RN(),cl=.12;a=Math.min(128,Math.max(20,a+h*(.9+.2*RN())-cl*(a-25)/60));b=Math.min(128,Math.max(20,b+h*(1+.15*RN())-cl*(b-25)/60));c=Math.min(128,Math.max(20,c+h*(.75+.2*RN())-cl*(c-25)/60));e=Math.min(128,Math.max(20,e+h*(.8+.15*RN())-cl*(e-25)/60));d.push({s:i,tfl:+a.toFixed(1),tfr:+b.toFixed(1),trl:+c.toFixed(1),trr:+e.toFixed(1)});}return d;}
 export function gSU(){const d=[];for(let i=0;i<150;i++){const t=i*.02;d.push({t:+t.toFixed(3),steer:+(12*Math.sin(t*2.5)).toFixed(2),roll:+(12*Math.sin(t*2.5)*.15+.3*RN()).toFixed(2),heave_f:+(-12.8+2.5*Math.sin(t*3)+.5*RN()).toFixed(2),heave_r:+(-14.2+2*Math.sin(t*3+.5)+.4*RN()).toFixed(2)});}return d;}
 
-export function gFreqResponse(){const d=[];for(let f=.5;f<=25;f+=.5){const wnf=2*Math.PI*1.8,wnr=2*Math.PI*2.1,z=.35,w=2*Math.PI*f;d.push({freq:f,front_dB:+(20*Math.log10(1/Math.sqrt((1-(w/wnf)**2)**2+(2*z*w/wnf)**2))).toFixed(1),rear_dB:+(20*Math.log10(1/Math.sqrt((1-(w/wnr)**2)**2+(2*z*w/wnr)**2))).toFixed(1)});}return d;}
+export function gFreqResponse(){const d=[];for(let f=.5;f<=25;f+=.5){const wnf=2*Math.PI*1.8,wnr=2*Math.PI*2.1,z=.35,w=2*Math.PI*f;d.push({freq:f,front_dB:+(20*Math.log10(1/Math.sqrt(Math.pow(1-Math.pow(w/wnf,2),2)+Math.pow(2*z*w/wnf,2)))).toFixed(1),rear_dB:+(20*Math.log10(1/Math.sqrt(Math.pow(1-Math.pow(w/wnr,2),2)+Math.pow(2*z*w/wnr,2)))).toFixed(1)});}return d;}
 
 export function gYawPhaseLag(track){return track.filter((_,i)=>i%3===0).map((p,i)=>{const steerRate=Math.abs(12*2.5*Math.cos(i*.03*2.5));const yawRate=Math.abs(Number(p.lat_g)||0)*2.5;const lagMs=18+12*Math.exp(-steerRate/8)+5*R2();return{s:p.s,steerRate:+steerRate.toFixed(1),yawRate:+yawRate.toFixed(2),lagMs:+lagMs.toFixed(1)};});}
 
@@ -58,9 +58,9 @@ export function gTorqueVectoring(track){return track.filter((_,i)=>i%3===0).map(
 // ── Grid 5: Diff-WMPC Horizon ───────────────────────────────────────
 export function gHorizonTraj(){const d=[];let x=0,y=0,psi=0;for(let i=0;i<64;i++){const ki=.04*Math.sin(i/8)+.02*Math.sin(i/3);psi+=ki*.8;x+=Math.cos(psi)*.8;y+=Math.sin(psi)*.8;const wL=y+1.75+.3*R5(),wR=y-1.75-.3*R5();d.push({step:i,xPred:+x.toFixed(2),yPred:+y.toFixed(2),yBoundL:+wL.toFixed(2),yBoundR:+wR.toFixed(2),sigma:+(.1+.05*i/64+.03*R5()).toFixed(3)});}return d;}
 
-export function gWaveletCoeffs(){const levels=["cA3","cD3","cD2","cD1"];const d=[];levels.forEach((lv,li)=>{const n=li===0?8:8*(2**li);for(let i=0;i<Math.min(n,16);i++){const mag=li===0?.8+.4*R5():(1/(li+1))*R5();d.push({level:lv,idx:i,mag:+mag.toFixed(3),active:mag>.15});}});return d;}
+export function gWaveletCoeffs(){const levels=["cA3","cD3","cD2","cD1"];const d=[];levels.forEach((lv,li)=>{const n=li===0?8:8*Math.pow(2,li);for(let i=0;i<Math.min(n,16);i++){const mag=li===0?.8+.4*R5():(1/(li+1))*R5();d.push({level:lv,idx:i,mag:+mag.toFixed(3),active:mag>.15});}});return d;}
 
-export function gALSlack(track){return track.filter((_,i)=>i%4===0).map(p=>{const lg=Math.abs(Number(p.lat_g)||0);const slackGrip=Math.max(0,1.35-Math.sqrt(lg*lg+(Number(p.lon_g)||0)**2));const slackSteer=Math.max(0,.45-Math.abs(Number(p.curvature)||0)*10);return{s:p.s,slackGrip:+slackGrip.toFixed(3),slackSteer:+slackSteer.toFixed(3),penalty:+(slackGrip<.1?500*Math.pow(0.1-slackGrip,2):0).toFixed(1)};});}
+export function gALSlack(track){return track.filter((_,i)=>i%4===0).map(p=>{const lg=Math.abs(Number(p.lat_g)||0);const slackGrip=Math.max(0,1.35-Math.sqrt(lg*lg+Math.pow(Number(p.lon_g)||0,2)));const slackSteer=Math.max(0,.45-Math.abs(Number(p.curvature)||0)*10);return{s:p.s,slackGrip:+slackGrip.toFixed(3),slackSteer:+slackSteer.toFixed(3),penalty:+(slackGrip<.1?500*Math.pow(0.1-slackGrip,2):0).toFixed(1)};});}
 
 export function gControlEffort(track){return track.filter((_,i)=>i%3===0).map(p=>{const lg=Math.abs(Number(p.lat_g)||0);const lon=Math.abs(Number(p.lon_g)||0);return{s:p.s,steerUtil:+Math.min(1,lg/.8+.1*R5()).toFixed(3),brakeUtil:+Math.min(1,lon/.6+.08*R5()).toFixed(3),throttleUtil:+Math.min(1,(Number(p.speed)||0)/25+.05*R5()).toFixed(3)};});}
 
@@ -74,3 +74,5 @@ export function gPSDOverlay(){const d=[];for(let f=.5;f<=30;f+=.5){const base=-2
 export function gFidelitySpider(){return[{axis:"Kinematic R²",score:94,fullMark:100},{axis:"Dynamic NRMSE",score:88,fullMark:100},{axis:"Thermal ΔT",score:91,fullMark:100},{axis:"Slip Angle",score:86,fullMark:100},{axis:"Load Transfer",score:93,fullMark:100},{axis:"Freq. Response",score:89,fullMark:100}];}
 
 export function gDamperHist(){const bins=[];for(let v=-.3;v<=.3;v+=.025){const x=v/.12;bins.push({vel:+v.toFixed(3),front:Math.round(800*Math.exp(-x*x/2)*(1+.3*RN())),rear:Math.round(600*Math.exp(-x*x/1.8)*(1+.25*RN()))});}return bins;}
+
+export function gGripUtil(track){return track.filter((_,i)=>i%4===0).map(p=>{const lg=Math.abs(Number(p.lat_g)||0),lon=Math.abs(Number(p.lon_g)||0);const mu=1.35;const combined=Math.sqrt(lg*lg+lon*lon);return{s:p.s,utilisation:+Math.min(combined/mu,1.0).toFixed(3),combined:+combined.toFixed(3)};});}

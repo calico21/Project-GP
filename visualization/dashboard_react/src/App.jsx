@@ -47,7 +47,7 @@ export default function App() {
   const renderContent = () => {
     switch (active) {
       case "setup": return <SetupModule pareto={pareto} conv={conv} sens={sens} track={track} />;
-      case "telemetry": return <TelemetryModule track={track} tireTemps={tireT} />;
+      case "telemetry": return <TelemetryModule track={track} tireTemps={tireT} mode={mode} />;
       case "suspension": return <SuspensionModule data={susp} />;
       default: return <OverviewModule />;
     }
