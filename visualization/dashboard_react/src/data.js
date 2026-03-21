@@ -95,3 +95,118 @@ export function gDriverInputs(track){
     };
   });
 }
+
+export function gSetupComparison() {
+  const R8 = sd("setupcomp2026");
+  const cats = {
+    "Springs": [0,1], "ARB": [2,3], "Damper Low-Spd": [4,5], "Damper High-Spd": [6,7],
+    "Camber": [8,9], "Toe": [10,11], "Geometry": [12,13,14],
+    "Differential": [15], "Heave Springs": [16,17], "Bumpstop": [18,19],
+    "Roll Center": [20,21], "CG & Bias": [22,23], "Tire Pressure": [24,25],
+    "Steering": [26,27]
+  };
+  const ranges = [
+    [25000,55000],[25000,55000],[800,4000],[800,4000],[1200,4500],[1200,4500],[600,2200],[600,2200],
+    [-3.5,-0.5],[-2.5,0],[-0.3,0.5],[-0.3,0.5],[3,8],[0.1,0.6],[0.1,0.6],
+    [0.2,0.95],[15000,40000],[15000,40000],[2,12],[2,12],
+    [20,80],[30,90],[280,350],[0.45,0.65],[75,110],[75,110],[0.4,1.0],[3,6]
+  ];
+  const current = ranges.map(([lo,hi]) => lo + (hi - lo) * (0.4 + 0.2 * R8()));
+  const optimal = ranges.map(([lo,hi],i) => {
+    const c = current[i];
+    const shift = (hi - lo) * (R8() - 0.4) * 0.3;
+    return Math.max(lo, Math.min(hi, c + shift));
+  });
+
+  const params = PN.map((name, i) => {
+    const cur = current[i], opt = optimal[i], rng = ranges[i][1] - ranges[i][0];
+    const delta = opt - cur;
+    const deltaPct = (delta / rng) * 100;
+    const gripGain = Math.abs(deltaPct) * 0.0008 * (1 + R8() * 0.5);
+    const stabGain = Math.abs(deltaPct) * 0.0003 * (R8() > 0.5 ? 1 : -1);
+    const cat = Object.entries(cats).find(([_, idxs]) => idxs.includes(i));
+    return {
+      name, unit: PU[i], category: cat ? cat[0] : "Other",
+      current: +cur.toFixed(i >= 8 && i <= 14 ? 2 : 0),
+      optimal: +opt.toFixed(i >= 8 && i <= 14 ? 2 : 0),
+      delta: +delta.toFixed(i >= 8 && i <= 14 ? 3 : 1),
+      deltaPct: +deltaPct.toFixed(1),
+      gripGain: +gripGain.toFixed(4),
+      stabGain: +stabGain.toFixed(4),
+      priority: Math.abs(deltaPct) > 15 ? "HIGH" : Math.abs(deltaPct) > 5 ? "MED" : "LOW",
+      min: ranges[i][0], max: ranges[i][1],
+    };
+  });
+  const totalGrip = params.reduce((a, p) => a + p.gripGain, 0);
+  const totalStab = params.reduce((a, p) => a + p.stabGain, 0);
+  return { params, totalGrip: +totalGrip.toFixed(3), totalStab: +totalStab.toFixed(3) };
+}
+
+// ── Extended Grid 2: Compliance Steer + Ackermann Error ─────────────
+export function gComplianceSteer(track){
+  const R8=sd("compliance2026");
+  return track.filter((_,i)=>i%3===0).map(p=>{
+    const lg=Number(p.lat_g)||0;
+    return{s:p.s,
+      compSteer:+(lg*0.12+0.03*R8()).toFixed(3),
+      ackErr:+(lg*0.8*(1-0.95)+0.2*R8()).toFixed(2),
+      camberGain:+(-0.7*lg+0.1*R8()).toFixed(2),
+    };
+  });
+}
+
+// ── Extended Grid 3: Tire Wear Model ────────────────────────────────
+export function gTireWear(nLaps=20){
+  const R9=sd("tirewear2026");
+  const d=[];let wFL=0,wFR=0,wRL=0,wRR=0;
+  for(let i=1;i<=nLaps;i++){
+    wFL+=0.08+0.03*R9();wFR+=0.09+0.03*R9();
+    wRL+=0.06+0.02*R9();wRR+=0.065+0.02*R9();
+    d.push({lap:i,wFL:+wFL.toFixed(2),wFR:+wFR.toFixed(2),wRL:+wRL.toFixed(2),wRR:+wRR.toFixed(2)});
+  }
+  return d;
+}
+
+// ── Extended Grid 4: Energy Budget ──────────────────────────────────
+export function gEnergyBudget(track){
+  const R10=sd("energy2026");
+  let cumE=0;
+  return track.filter((_,i)=>i%4===0).map(p=>{
+    const v=Number(p.speed)||0,thr=Math.max(0,Number(p.lon_g)||0);
+    const pDeploy=0.3*300*v*thr*(0.85+0.1*R10());
+    const pRegen=Math.max(0,-Number(p.lon_g)||0)*0.3*300*v*0.35;
+    cumE+=(pDeploy-pRegen)*0.02;
+    return{s:p.s,deploy:+(pDeploy/1000).toFixed(2),regen:+(pRegen/1000).toFixed(2),cumKJ:+(cumE/1000).toFixed(1),socPct:+(100-cumE/3600/2.5*100).toFixed(1)};
+  });
+}
+
+// ── Extended Grid 5: Solver Convergence per Step ────────────────────
+export function gSolverIter(){
+  const R11=sd("solver2026");
+  const d=[];
+  for(let i=0;i<80;i++){
+    const nIter=Math.round(8+12*R11());
+    const residual=0.1*Math.exp(-nIter/5)+0.005*R11();
+    const solveMs=2+nIter*0.4+R11();
+    d.push({step:i,nIter,residual:+residual.toFixed(4),solveMs:+solveMs.toFixed(1),feasible:residual<0.01?1:0});
+  }
+  return d;
+}
+
+// ── Extended Grid 6: Sensor Covariance ──────────────────────────────
+export function gSensorCov(){
+  return[
+    {sensor:"IMU a_x",variance:0.015,unit:"m/s²",status:"GOOD"},
+    {sensor:"IMU a_y",variance:0.012,unit:"m/s²",status:"GOOD"},
+    {sensor:"Gyro ω_z",variance:0.008,unit:"rad/s",status:"GOOD"},
+    {sensor:"WS FL",variance:0.25,unit:"rad/s",status:"GOOD"},
+    {sensor:"WS FR",variance:0.28,unit:"rad/s",status:"GOOD"},
+    {sensor:"WS RL",variance:0.22,unit:"rad/s",status:"GOOD"},
+    {sensor:"WS RR",variance:0.24,unit:"rad/s",status:"GOOD"},
+    {sensor:"Damper FL",variance:0.4,unit:"mm",status:"FAIR"},
+    {sensor:"Damper FR",variance:0.45,unit:"mm",status:"FAIR"},
+    {sensor:"Steer δ",variance:0.15,unit:"deg",status:"GOOD"},
+    {sensor:"Brake P",variance:1.2,unit:"bar",status:"FAIR"},
+    {sensor:"GPS pos",variance:12,unit:"mm",status:"WARN"},
+  ];
+}

@@ -1,0 +1,174 @@
+
+============================================================
+PHASE 4: DYNAMIC AI SETUP DISCOVERY (MORL-SB-TRPO)
+============================================================
+/home/alexr/FS_Driver_Setup_Optimizer/main.py:163: UserWarning: [MORL] dim=8 requested but canonical dim=28. Upgrading to 28.
+  optimizer = MORL_SB_TRPO_Optimizer(ensemble_size=20, dim=8)
+[VehicleDynamics] H_net train scale (diagnostic): 14.3849 J  [NOT applied to architecture]
+[VehicleDynamics] Loaded h_net.bytes
+[VehicleDynamics] Loaded r_net.bytes
+
+[MORL-SB-TRPO] Initialising 28-dim Pareto Policy Ensemble…
+[SB-TRPO] Compiling 46-DOF physics gradients via XLA…
+[SB-TRPO] dim=28 | KL_threshold=0.00935 | Chebyshev N=20
+   [DIAG] Soft grip: 1.6161 G | Hard grip: 1.1117 G
+   Grip gradient norm: 0.719628
+   [OK] Gradient flow confirmed.
+
+[Phase 0] ARD-BO cold-start on 28-dim space (10 init + 30 EI)…
+   [BO] Phase 0a (10 evals): best = 1.4340 G
+   [BO] Phase 0b iter  5/30: best = 1.4447 G | mean ls_0: 1.801 ls_2: 1.172
+   [BO] Phase 0b iter 10/30: best = 1.5119 G | mean ls_0: 1.181 ls_2: 1.412
+   [BO] Phase 0b iter 15/30: best = 1.5119 G | mean ls_0: 1.427 ls_2: 1.007
+   [BO] Phase 0b iter 20/30: best = 1.5460 G | mean ls_0: 1.881 ls_2: 0.896
+   [BO] Phase 0b iter 25/30: best = 1.5460 G | mean ls_0: 2.000 ls_2: 0.985
+   [BO] Phase 0b iter 30/30: best = 1.5460 G | mean ls_0: 2.000 ls_2: 0.999
+   [BO] 5 diverse basins found. Top grips: ['1.5460G', '1.5119G', '1.5087G', '1.5030G', '1.4840G']
+[Phase 0] Seeded 5 BO basins into ensemble.
+[SB-TRPO] Running feasibility pre-check…
+   [DIAG] Chebyshev omegas: 8/20 members in high-grip region [0.7,1.0]
+   [DIAG] Stability cap: 5.0 rad/s
+   [DIAG] dim=28 KL_threshold=0.00935
+[SB-TRPO] i=   0 | Safe: 20/20 | Valid: 20/20 | Grip: 1.5455 G | log_std: -0.995 | Trust: off
+[SB-TRPO] i=   1 | Safe: 20/20 | Valid: 20/20 | Grip: 1.5450 G | log_std: -0.990 | Trust: off
+[SB-TRPO] i=   2 | Safe: 20/20 | Valid: 20/20 | Grip: 1.5445 G | log_std: -0.985 | Trust: off
+[SB-TRPO] i=   3 | Safe: 20/20 | Valid: 20/20 | Grip: 1.5440 G | log_std: -0.980 | Trust: off
+[SB-TRPO] i=   4 | Safe: 20/20 | Valid: 20/20 | Grip: 1.5434 G | log_std: -0.975 | Trust: off
+[SB-TRPO] i=  20 | Safe: 20/20 | Valid: 20/20 | Grip: 1.5435 G | log_std: -0.974 | Trust: ON
+[SB-TRPO] i=  40 | Safe: 20/20 | Valid: 20/20 | Grip: 1.5434 G | log_std: -0.970 | Trust: ON
+[SB-TRPO] i=  60 | Safe: 20/20 | Valid: 20/20 | Grip: 1.5439 G | log_std: -0.966 | Trust: ON
+[SB-TRPO] i=  80 | Safe: 20/20 | Valid: 20/20 | Grip: 1.5439 G | log_std: -0.955 | Trust: ON
+[SB-TRPO] i= 100 | Safe: 20/20 | Valid: 20/20 | Grip: 1.5438 G | log_std: -0.942 | Trust: ON
+[SB-TRPO] i= 120 | Safe: 20/20 | Valid: 20/20 | Grip: 1.5436 G | log_std: -0.926 | Trust: ON
+[SB-TRPO] i= 140 | Safe: 20/20 | Valid: 20/20 | Grip: 1.5435 G | log_std: -0.910 | Trust: ON
+[SB-TRPO] i= 160 | Safe: 20/20 | Valid: 20/20 | Grip: 1.5433 G | log_std: -0.892 | Trust: ON
+[SB-TRPO] i= 180 | Safe: 20/20 | Valid: 20/20 | Grip: 1.5431 G | log_std: -0.873 | Trust: ON
+[P24] Restart at iter 200: bottom 5 members → unexplored dim: 'c_low_f'
+[SB-TRPO] i= 200 | Safe: 20/20 | Valid: 20/20 | Grip: 1.5554 G | log_std: -0.889 | Trust: ON
+[SB-TRPO] i= 220 | Safe: 20/20 | Valid: 20/20 | Grip: 1.5507 G | log_std: -0.883 | Trust: ON
+[SB-TRPO] i= 240 | Safe: 20/20 | Valid: 20/20 | Grip: 1.5509 G | log_std: -0.880 | Trust: ON
+[SB-TRPO] i= 260 | Safe: 20/20 | Valid: 20/20 | Grip: 1.5569 G | log_std: -0.859 | Trust: ON
+[SB-TRPO] i= 280 | Safe: 20/20 | Valid: 20/20 | Grip: 1.5633 G | log_std: -0.835 | Trust: ON
+Traceback (most recent call last):
+  File "/home/alexr/FS_Driver_Setup_Optimizer/main.py", line 362, in <module>
+    main()
+  File "/home/alexr/FS_Driver_Setup_Optimizer/main.py", line 353, in main
+    execute_morl_setup(wandb_run=wandb_run, iterations=args.iterations)
+  File "/home/alexr/FS_Driver_Setup_Optimizer/main.py", line 166, in execute_morl_setup
+    pareto_setups, pareto_grips, pareto_stabs, pareto_gen = optimizer.run(
+                                                            ^^^^^^^^^^^^^^
+  File "/home/alexr/FS_Driver_Setup_Optimizer/optimization/evolutionary.py", line 560, in run
+    grads = jax.grad(total_loss)(self.ensemble_params)
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/alexr/project_gp_env/lib/python3.12/site-packages/jax/_src/traceback_util.py", line 195, in reraise_with_filtered_traceback
+    return fun(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^
+  File "/home/alexr/project_gp_env/lib/python3.12/site-packages/jax/_src/api.py", line 469, in grad_f
+    _, g = value_and_grad_f(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/alexr/project_gp_env/lib/python3.12/site-packages/jax/_src/traceback_util.py", line 195, in reraise_with_filtered_traceback
+    return fun(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^
+  File "/home/alexr/project_gp_env/lib/python3.12/site-packages/jax/_src/api.py", line 543, in value_and_grad_f
+    ans, vjp_py = _vjp(f_partial, *dyn_args)
+                  ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/alexr/project_gp_env/lib/python3.12/site-packages/jax/_src/api.py", line 2230, in _vjp
+    out_primals_flat, out_pvals, jaxpr, residuals = ad.linearize(
+                                                    ^^^^^^^^^^^^^
+  File "/home/alexr/project_gp_env/lib/python3.12/site-packages/jax/_src/interpreters/ad.py", line 281, in linearize
+    return direct_linearize(traceable, primals, kwargs, has_aux=has_aux)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/alexr/project_gp_env/lib/python3.12/site-packages/jax/_src/interpreters/ad.py", line 255, in direct_linearize
+    ans = traceable.call_wrapped(*tracers)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/alexr/project_gp_env/lib/python3.12/site-packages/jax/_src/linear_util.py", line 212, in call_wrapped
+    return self.f_transformed(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/alexr/project_gp_env/lib/python3.12/site-packages/jax/_src/api_util.py", line 91, in flatten_fun_nokwargs
+    ans = f(*py_args)
+          ^^^^^^^^^^^
+  File "/home/alexr/project_gp_env/lib/python3.12/site-packages/jax/_src/api_util.py", line 293, in _argnums_partial
+    return _fun(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "/home/alexr/FS_Driver_Setup_Optimizer/optimization/evolutionary.py", line 539, in total_loss
+    losses = jax.vmap(
+             ^^^^^^^^^
+  File "/home/alexr/project_gp_env/lib/python3.12/site-packages/jax/_src/traceback_util.py", line 195, in reraise_with_filtered_traceback
+    return fun(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^
+  File "/home/alexr/project_gp_env/lib/python3.12/site-packages/jax/_src/api.py", line 1210, in vmap_f
+    out_flat, inferred_out_axes = batching.batch(
+                                  ^^^^^^^^^^^^^^^
+  File "/home/alexr/project_gp_env/lib/python3.12/site-packages/jax/_src/linear_util.py", line 212, in call_wrapped
+    return self.f_transformed(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/alexr/project_gp_env/lib/python3.12/site-packages/jax/_src/interpreters/batching.py", line 372, in _batch_outer
+    outs, out_dim_srcs, trace = f(tag, in_dims, *in_vals)
+                                ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/alexr/project_gp_env/lib/python3.12/site-packages/jax/_src/interpreters/batching.py", line 391, in _batch_inner
+    outs = f(*in_tracers)
+           ^^^^^^^^^^^^^^
+  File "/home/alexr/project_gp_env/lib/python3.12/site-packages/jax/_src/interpreters/batching.py", line 127, in flatten_fun_for_vmap
+    ans = f(*py_args, **py_kwargs)
+          ^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/alexr/FS_Driver_Setup_Optimizer/optimization/evolutionary.py", line 540, in <lambda>
+    lambda mu_k, ls_k, om: member_loss({'mu': mu_k, 'log_std': ls_k}, om),
+                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/alexr/FS_Driver_Setup_Optimizer/optimization/evolutionary.py", line 531, in member_loss
+    grip, stab, safety = self.evaluate_setup_jax(setup_norm)
+                         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/alexr/project_gp_env/lib/python3.12/site-packages/jax/_src/traceback_util.py", line 195, in reraise_with_filtered_traceback
+    return fun(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^
+  File "/home/alexr/project_gp_env/lib/python3.12/site-packages/jax/_src/pjit.py", line 259, in cache_miss
+    executable, pgle_profiler, const_args) = _run_python_pjit(
+                                             ^^^^^^^^^^^^^^^^^
+  File "/home/alexr/project_gp_env/lib/python3.12/site-packages/jax/_src/pjit.py", line 145, in _run_python_pjit
+    out_flat = jit_p.bind(*args_flat, **p.params)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/alexr/project_gp_env/lib/python3.12/site-packages/jax/_src/core.py", line 632, in bind
+    return self._true_bind(*args, **params)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/alexr/project_gp_env/lib/python3.12/site-packages/jax/_src/core.py", line 648, in _true_bind
+    return self.bind_with_trace(prev_trace, args, params)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/alexr/project_gp_env/lib/python3.12/site-packages/jax/_src/core.py", line 660, in bind_with_trace
+    return trace.process_primitive(self, args, params)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/alexr/project_gp_env/lib/python3.12/site-packages/jax/_src/interpreters/batching.py", line 260, in process_primitive
+    val_out, dim_out = fancy_primitive_batchers[p](
+                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/alexr/project_gp_env/lib/python3.12/site-packages/jax/_src/pjit.py", line 1491, in _pjit_batcher
+    vals_out = jit_p.bind(
+               ^^^^^^^^^^^
+  File "/home/alexr/project_gp_env/lib/python3.12/site-packages/jax/_src/core.py", line 632, in bind
+    return self._true_bind(*args, **params)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/alexr/project_gp_env/lib/python3.12/site-packages/jax/_src/core.py", line 648, in _true_bind
+    return self.bind_with_trace(prev_trace, args, params)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/alexr/project_gp_env/lib/python3.12/site-packages/jax/_src/core.py", line 660, in bind_with_trace
+    return trace.process_primitive(self, args, params)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/alexr/project_gp_env/lib/python3.12/site-packages/jax/_src/interpreters/ad.py", line 781, in process_primitive
+    primal_out, tangent_nzs_out, residuals, linearized = lin(
+                                                         ^^^^
+  File "/home/alexr/project_gp_env/lib/python3.12/site-packages/jax/_src/pjit.py", line 1654, in _pjit_linearize
+    ans = jit_p.bind(*primals_in, jaxpr=primal_jaxpr,
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/alexr/project_gp_env/lib/python3.12/site-packages/jax/_src/core.py", line 632, in bind
+    return self._true_bind(*args, **params)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/alexr/project_gp_env/lib/python3.12/site-packages/jax/_src/core.py", line 648, in _true_bind
+    return self.bind_with_trace(prev_trace, args, params)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/alexr/project_gp_env/lib/python3.12/site-packages/jax/_src/core.py", line 660, in bind_with_trace
+    return trace.process_primitive(self, args, params)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/alexr/project_gp_env/lib/python3.12/site-packages/jax/_src/core.py", line 1205, in process_primitive
+    return primitive.impl(*args, **params)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/alexr/project_gp_env/lib/python3.12/site-packages/jax/_src/pjit.py", line 1273, in _pjit_call_impl
+    return xc._xla.pjit(
+           ^^^^^^^^^^^^^
+KeyboardInterrupt

@@ -324,6 +324,7 @@ function LiveMode({ mode }) {
   const { frame, history } = useLiveData(mode === "LIVE");
   const [graphs, setGraphs] = useState([1]);
   const [constraints, setConstraints] = useState([]);
+  const [fpvExpanded, setFpvExpanded] = useState(false);
   const nextId = useRef(2);
 
   const addGraph = () => { setGraphs(prev => [...prev, nextId.current++]); };
@@ -348,6 +349,77 @@ function LiveMode({ mode }) {
         </Panel>)}
       </div>
 
+      {/* ═══ FPV EXPANDED OVERLAY ═══════════════════════════════════ */}
+      {fpvExpanded && (
+        <div style={{position:"relative",width:"100%",background:"#000",borderRadius:10,overflow:"hidden",border:`1px solid ${C.b2}`}}>
+          {/* Simulated video area */}
+          <div style={{width:"100%",height:420,background:"linear-gradient(135deg, #080810 0%, #0c1018 50%, #080810 100%)",display:"flex",alignItems:"center",justifyContent:"center",position:"relative"}}>
+            <div style={{fontSize:12,color:C.dm,fontFamily:C.dt,textAlign:"center"}}>
+              FPV STREAM — rtsp://192.168.1.10:8554/fpv<br/>
+              <span style={{fontSize:9,color:C.dm}}>Connect camera to see live feed with AR overlay</span>
+            </div>
+
+            {/* HUD OVERLAY — speed, RPM, G-force, gear indicator */}
+            <div style={{position:"absolute",top:12,left:16,display:"flex",flexDirection:"column",gap:6}}>
+              <div style={{...GL,padding:"6px 14px",background:"rgba(0,0,0,0.7)"}}>
+                <div style={{fontSize:8,color:C.dm,fontFamily:C.dt,letterSpacing:1.5}}>SPEED</div>
+                <div style={{fontSize:28,fontWeight:800,color:C.cy,fontFamily:C.dt}}>{f.speed} <span style={{fontSize:10,color:C.dm}}>km/h</span></div>
+              </div>
+              <div style={{...GL,padding:"6px 14px",background:"rgba(0,0,0,0.7)"}}>
+                <div style={{fontSize:8,color:C.dm,fontFamily:C.dt,letterSpacing:1.5}}>MOTOR</div>
+                <div style={{fontSize:18,fontWeight:700,color:C.am,fontFamily:C.dt}}>{f.motorRPM} <span style={{fontSize:9,color:C.dm}}>rpm</span></div>
+              </div>
+            </div>
+
+            {/* Right HUD — G meter */}
+            <div style={{position:"absolute",top:12,right:16,display:"flex",flexDirection:"column",gap:6,alignItems:"flex-end"}}>
+              <div style={{...GL,padding:"6px 14px",background:"rgba(0,0,0,0.7)",textAlign:"right"}}>
+                <div style={{fontSize:8,color:C.dm,fontFamily:C.dt,letterSpacing:1.5}}>LATERAL</div>
+                <div style={{fontSize:22,fontWeight:700,color:C.am,fontFamily:C.dt}}>{f.latG} <span style={{fontSize:9,color:C.dm}}>G</span></div>
+              </div>
+              <div style={{...GL,padding:"6px 14px",background:"rgba(0,0,0,0.7)",textAlign:"right"}}>
+                <div style={{fontSize:8,color:C.dm,fontFamily:C.dt,letterSpacing:1.5}}>LONGITUDINAL</div>
+                <div style={{fontSize:22,fontWeight:700,color:C.cy,fontFamily:C.dt}}>{f.lonG} <span style={{fontSize:9,color:C.dm}}>G</span></div>
+              </div>
+            </div>
+
+            {/* Bottom HUD — pedals bar */}
+            <div style={{position:"absolute",bottom:12,left:16,right:16,display:"flex",gap:10}}>
+              <div style={{flex:1,...GL,padding:"4px 10px",background:"rgba(0,0,0,0.7)"}}>
+                <div style={{display:"flex",justifyContent:"space-between",marginBottom:3}}><Lbl color={C.gn}>THR</Lbl><span style={{fontSize:9,fontFamily:C.dt,color:C.gn}}>{(f.throttle*100).toFixed(0)}%</span></div>
+                <Bar_ value={f.throttle} color={C.gn} h={6}/>
+              </div>
+              <div style={{flex:1,...GL,padding:"4px 10px",background:"rgba(0,0,0,0.7)"}}>
+                <div style={{display:"flex",justifyContent:"space-between",marginBottom:3}}><Lbl color={C.red}>BRK</Lbl><span style={{fontSize:9,fontFamily:C.dt,color:C.red}}>{(f.brake*100).toFixed(0)}%</span></div>
+                <Bar_ value={f.brake} color={C.red} h={6}/>
+              </div>
+              <div style={{flex:1,...GL,padding:"4px 10px",background:"rgba(0,0,0,0.7)"}}>
+                <div style={{display:"flex",justifyContent:"space-between",marginBottom:3}}><Lbl color={C.pr}>STR</Lbl><span style={{fontSize:9,fontFamily:C.dt,color:C.pr}}>{f.steer}°</span></div>
+                <Bar_ value={Math.abs(f.steer)/25} color={C.pr} h={6}/>
+              </div>
+              <div style={{...GL,padding:"4px 10px",background:"rgba(0,0,0,0.7)"}}>
+                <Lbl color={C.am}>SoC</Lbl><span style={{fontSize:12,fontFamily:C.dt,color:tc(100-f.soc,30,60),fontWeight:700,marginLeft:6}}>{f.soc}%</span>
+              </div>
+            </div>
+
+            {/* WMPC trajectory indicator */}
+            <div style={{position:"absolute",top:12,left:"50%",transform:"translateX(-50%)",...GL,padding:"3px 12px",background:"rgba(0,0,0,0.7)"}}>
+              <span style={{fontSize:8,fontFamily:C.dt,color:C.cy,letterSpacing:1.5}}>WMPC HORIZON ACTIVE</span>
+              <span style={{fontSize:8,fontFamily:C.dt,color:C.gn,marginLeft:8}}>● TRACKING</span>
+            </div>
+          </div>
+
+          {/* Embedded graph below video */}
+          <div style={{padding:"8px 10px",background:"rgba(5,7,11,0.9)",borderTop:`1px solid ${C.b2}`}}>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:4}}>
+              <Lbl color={C.cy}>OVERLAY GRAPH — select channels to display over video</Lbl>
+              <button onClick={()=>setFpvExpanded(false)} style={{background:`${C.red}15`,border:`1px solid ${C.red}30`,borderRadius:4,padding:"3px 12px",fontSize:9,color:C.red,fontFamily:C.dt,cursor:"pointer",fontWeight:700}}>✕ Close FPV</button>
+            </div>
+            <GraphSlot id={99} history={history} onRemove={()=>setFpvExpanded(false)}/>
+          </div>
+        </div>
+      )}
+
       {/* ═══ ROW 2: GRAPHS + TRACK MAP ══════════════════════════════ */}
       <div style={{ display: "grid", gridTemplateColumns: "1fr 280px", gap: 8 }}>
         <div>
@@ -360,16 +432,21 @@ function LiveMode({ mode }) {
         </div>
         <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
           <Panel title="TRACK MAP" color={C.cy}><LiveTrackMap frame={f} hist={history} /></Panel>
-          <Panel title="FPV CAMERA + HUD" color={C.dm} style={{display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",background:"rgba(5,7,11,0.8)",padding:"12px 8px",minHeight:100}}>
-            <Lbl color={C.dm}>RTSP ROLL-HOOP CAMERA</Lbl>
-            <div style={{margin:"6px 0",fontSize:9,color:C.dm,fontFamily:C.dt,textAlign:"center",lineHeight:1.7}}>
-              HUD overlay: Speed + WMPC trajectory<br/>
-              <span style={{color:C.am}}>rtsp://192.168.1.10:8554/fpv</span>
-            </div>
-            <div style={{display:"flex",gap:4}}>
-              <div style={{...GL,padding:"2px 6px",fontSize:8,fontFamily:C.dt,color:C.red}}>● REC</div>
-              <div style={{...GL,padding:"2px 6px",fontSize:8,fontFamily:C.dt,color:C.dm}}>NO SIGNAL</div>
-            </div>
+          {/* FPV CAMERA — expandable */}
+          <Panel title="FPV CAMERA" color={fpvExpanded?C.cy:C.dm} style={{position:"relative",background:"rgba(5,7,11,0.85)",padding:fpvExpanded?"0":"12px 8px",minHeight:fpvExpanded?0:100,cursor:"pointer"}} >
+            {!fpvExpanded ? (<>
+              <div onClick={()=>setFpvExpanded(true)} style={{display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",height:"100%"}}>
+                <Lbl color={C.dm}>RTSP ROLL-HOOP</Lbl>
+                <div style={{margin:"6px 0",fontSize:9,color:C.dm,fontFamily:C.dt,textAlign:"center",lineHeight:1.7}}>
+                  <span style={{color:C.am}}>rtsp://192.168.1.10:8554/fpv</span>
+                </div>
+                <div style={{display:"flex",gap:4}}>
+                  <div style={{...GL,padding:"2px 6px",fontSize:8,fontFamily:C.dt,color:C.red}}>● REC</div>
+                  <div style={{...GL,padding:"2px 6px",fontSize:8,fontFamily:C.dt,color:C.dm}}>NO SIGNAL</div>
+                </div>
+                <div style={{marginTop:6,fontSize:8,color:C.cy,fontFamily:C.dt,border:`1px solid ${C.cy}30`,padding:"3px 10px",borderRadius:4}}>Click to expand ↗</div>
+              </div>
+            </>) : null}
           </Panel>
           <Panel title="6-AXIS INERTIAL" color={C.pr}>
             <MRow label="Sideslip β" value={f.beta} unit="°" color={Math.abs(f.beta)>4?C.red:C.w}/>
