@@ -1,326 +1,317 @@
-// ═══════════════════════════════════════════════════════════════════════════════
-// src/live/LiveMode.jsx — Live Telemetry Orchestrator v4.2
-// ═══════════════════════════════════════════════════════════════════════════════
-//
-// Layout:
-//   ROW 0: 10-KPI numeric bar with color-coded thresholds
-//   ROW 1: Track+Tubes (Canvas) | FPV Camera (expandable) | 5-Node Thermal
-//   ROW 2: Wavelet Heatmap | G-Force Diagram (Canvas) | E-Drive + TV Panel
-//   ROW 3: AL Constraint Monitor | Energy Flow (Port-Hamiltonian)
-//   ROW 4: Twin Health status row (EKF, λ_μ, WMPC, H(q,p), Constraints)
-//   ROW 5: Configurable time-series graphs (add/remove, 40+ channels)
-//
-// ═══════════════════════════════════════════════════════════════════════════════
+// src/live/LiveMode.jsx — v4.5
 
-import React, { useState, useEffect, useRef, useMemo, useCallback } from "react";
+import React, { useState, useEffect, useRef, useMemo } from "react";
 import {
-  AreaChart, Area, LineChart, Line,
-  XAxis, YAxis, CartesianGrid, Tooltip,
-  ResponsiveContainer, ReferenceLine, Legend,
+  AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip,
+  ResponsiveContainer, Legend,
 } from "recharts";
 import { C, GL, GS, TT, AX } from "../theme.js";
 import { Sec, GC, Pill } from "../components.jsx";
 import { TubeTrackMap, ThermalQuintet, WaveletHeatmap } from "../canvas";
-import LiveGraphPanel from "./LiveGraphSystem.jsx";
+import LiveGraphPanel, { GraphSlot } from "./LiveGraphSystem.jsx";
+import {
+  FourCornerEllipses, StabilityPhasePlane, AeroPlatform,
+  DamperBars, WMPCCostRadar, LivePacejkaCurve, DriverInputsPanel,
+} from "./LiveAdvancedPanels.jsx";
 
-// ═════════════════════════════════════════════════════════════════════════════
-// MICRO-COMPONENTS
-// ═════════════════════════════════════════════════════════════════════════════
-const Lbl=({children,color})=><span style={{fontSize:8,fontWeight:700,color:color||C.dm,fontFamily:C.dt,letterSpacing:1.5,textTransform:"uppercase"}}>{children}</span>;
-const Val=({children,color,big})=><span style={{fontSize:big?18:12,fontWeight:700,color:color||C.w,fontFamily:C.dt}}>{children}</span>;
-const Vu=({children})=><span style={{fontSize:7,color:C.dm,fontFamily:C.dt,marginLeft:2}}>{children}</span>;
-const StatusDot=({ok})=><div style={{width:5,height:5,borderRadius:"50%",background:ok?C.gn:C.red,boxShadow:`0 0 4px ${ok?C.gn:C.red}`,display:"inline-block"}}/>;
+const Lbl=({children,color})=><span style={{fontSize:9,fontWeight:700,color:color||C.dm,fontFamily:C.dt,letterSpacing:1.5,textTransform:"uppercase"}}>{children}</span>;
+const Val=({children,color,big})=><span style={{fontSize:big?20:14,fontWeight:700,color:color||C.w,fontFamily:C.dt}}>{children}</span>;
+const Vu=({children})=><span style={{fontSize:8,color:C.dm,fontFamily:C.dt,marginLeft:2}}>{children}</span>;
+const StatusDot=({ok})=><div style={{width:6,height:6,borderRadius:"50%",background:ok?C.gn:C.red,boxShadow:`0 0 5px ${ok?C.gn:C.red}`,display:"inline-block"}}/>;
 const tc=(v,lo,hi)=>v<lo?C.gn:v<hi?C.am:C.red;
-const MRow=({label,value,unit,color,warn})=>(
-  <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"1px 0",borderBottom:`1px solid ${C.b1}15`}}>
-    <Lbl>{label}</Lbl>
-    <div><Val color={color}>{value}</Val>{unit&&<Vu>{unit}</Vu>}{warn&&<span style={{fontSize:7,color:C.red,marginLeft:3}}>⚠</span>}</div>
-  </div>
-);
-const Panel=({title,color,children,style})=>(
-  <div style={{...GL,padding:"6px 8px",borderTop:`2px solid ${color||C.cy}`,...style}}>
-    <div style={{marginBottom:4}}><Lbl color={color}>{title}</Lbl></div>
-    {children}
-  </div>
-);
+const MRow=({label,value,unit,color})=>(<div style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"2px 0",borderBottom:`1px solid ${C.b1}15`}}><Lbl>{label}</Lbl><div><Val color={color}>{value}</Val>{unit&&<Vu>{unit}</Vu>}</div></div>);
+const Panel=({title,color,children,style})=>(<div style={{...GL,padding:"8px 10px",borderTop:`2px solid ${color||C.cy}`,...style}}><div style={{marginBottom:5}}><Lbl color={color}>{title}</Lbl></div>{children}</div>);
 
-// ═════════════════════════════════════════════════════════════════════════════
-// LIVE DATA HOOK — expanded with 40+ synthetic channels
-// ═════════════════════════════════════════════════════════════════════════════
 const HIST_LEN=200;
-
 function useLiveData(active){
   const[frame,setFrame]=useState(null);const history=useRef([]);const step=useRef(0);
   useEffect(()=>{if(!active)return;const id=setInterval(()=>{
-    step.current+=1;const t=step.current*0.05;const s=12*Math.sin(t*1.5);
-    const spd=14+4*Math.sin(t*0.3)+Math.random();
+    step.current+=1;const t=step.current*0.05;const R=Math.random;
+    const s=12*Math.sin(t*1.5),spd=14+4*Math.sin(t*0.3)+R();
     const k=0.08*Math.sin(t/15)+0.04*Math.sin(t/7);
-    const latG=spd*spd*k/9.81;const lonG=(Math.random()-0.5)*0.3;
-    const cG=Math.sqrt(latG*latG+lonG*lonG);
-    const yr=latG*0.6+Math.random()*0.1;const bs=latG*0.02-0.01+Math.random()*0.005;
-    const ms=6+5*Math.random();const hj=4.5+0.5*Math.sin(t*0.2);
-    const ei=Math.random()*0.04-0.02;
-    // Thermal (synthetic 5-node)
-    const tBase=80+15*Math.sin(t*0.1)+10*cG;
-    // Forces
-    const m=300,hcg=0.33,tw=1.2,L=1.55;
-    const dLat=m*9.81*Math.abs(latG)*hcg/tw;const dLon=m*9.81*lonG*hcg/L;
-    const sf=m*9.81*0.45,sr=m*9.81*0.55;
-    const f={
-      step:step.current,t:+t.toFixed(2),speed:+spd.toFixed(1),steer:+s.toFixed(1),
-      latG:+latG.toFixed(3),lonG:+lonG.toFixed(3),combinedG:+cG.toFixed(3),
-      curvature:+k.toFixed(5),yawRate:+yr.toFixed(3),sideslip:+bs.toFixed(4),
-      rollRate:+(yr*0.3+Math.random()*0.1).toFixed(3),
-      pitchRate:+(lonG*0.2+Math.random()*0.05).toFixed(3),
-      wmpcSolveMs:+ms.toFixed(1),hamiltonianJ:+hj.toFixed(2),ekfInnov:+ei.toFixed(3),
-      ekfInnovWz:+(Math.random()*0.03-0.015).toFixed(3),
-      modelConf:+(92+5*Math.random()).toFixed(0),
-      // Thermal
-      tfl_surf:+(tBase+Math.random()*3).toFixed(1),tfr_surf:+(tBase+2+Math.random()*3).toFixed(1),
-      trl_surf:+(tBase-5+Math.random()*3).toFixed(1),trr_surf:+(tBase-3+Math.random()*3).toFixed(1),
-      tfl_flash:+(tBase+8+Math.random()*5).toFixed(1),tfr_flash:+(tBase+10+Math.random()*5).toFixed(1),
-      tfl_core:+(tBase-15+Math.random()*2).toFixed(1),tfr_core:+(tBase-13+Math.random()*2).toFixed(1),
-      flashDelta:+(8+5*cG+Math.random()*3).toFixed(1),
-      // Slip
-      slipAngleF:+(latG*4+Math.random()).toFixed(2),slipAngleR:+(latG*3.5+Math.random()).toFixed(2),
-      slipRatioFL:+(lonG*0.05+Math.random()*0.02).toFixed(3),slipRatioFR:+(lonG*0.05+Math.random()*0.02).toFixed(3),
-      gripUtil:+(Math.min(100,cG/1.35*100)).toFixed(0),
-      // Forces
-      fzFL:+(sf-dLon/2-dLat/2).toFixed(0),fzFR:+(sf-dLon/2+dLat/2).toFixed(0),
-      fzRL:+(sr+dLon/2-dLat/2).toFixed(0),fzRR:+(sr+dLon/2+dLat/2).toFixed(0),
-      fxTotal:+(m*9.81*lonG).toFixed(0),fyTotal:+(m*9.81*latG).toFixed(0),
-      // MPC
-      alIters:Math.round(3+5*Math.random()),alSlackGrip:+(0.05+0.15*Math.random()).toFixed(3),
-      horizonErr:+(0.1+0.3*Math.random()).toFixed(2),
-      // Energy
-      dHdt:+(-10+20*Math.random()).toFixed(1),rDiss:+(8+12*Math.random()).toFixed(1),
-      hNetResid:+(15+2*Math.sin(t*0.05)).toFixed(1),
-      // Driver
-      throttle:+(Math.max(0,lonG)*80+Math.random()*10).toFixed(0),
-      brake:+(Math.max(0,-lonG)*70+Math.random()*5).toFixed(0),
-      steerInput:+(s*14).toFixed(0),
-      // Inverter & motor (e-drive)
-      invTempR:+(42+8*cG+Math.random()*3).toFixed(0),invTempL:+(41+8*cG+Math.random()*3).toFixed(0),
-      motorTempR:+(55+12*cG+Math.random()*4).toFixed(0),motorTempL:+(54+12*cG+Math.random()*4).toFixed(0),
-      lambda_mu:+(1+3*(1-Math.exp(-step.current/200))+0.3*Math.random()).toFixed(2),
-      x:+(Math.cos(t*0.3)*20).toFixed(2),y:+(Math.sin(t*0.3)*15).toFixed(2),
+    const ay=spd*spd*k/9.81,ax=(R()-0.5)*0.3,cG=Math.sqrt(ax*ax+ay*ay);
+    const wz=ay*0.6+R()*0.1,bs=ay*0.02-0.01+R()*0.005;
+    const zEqF=-12.8,zEqR=-14.2;
+    const zFL=zEqF+ay*3+R()*0.5,zFR=zEqF-ay*3+R()*0.5,zRL=zEqR+ay*2.5+R()*0.4,zRR=zEqR-ay*2.5+R()*0.4;
+    const m=300,hcg=0.33,tw=1.2,L=1.55,lf=0.8525,lr=0.6975;
+    const dLat=m*9.81*Math.abs(ay)*hcg/tw,dLon=m*9.81*ax*hcg/L;
+    const sf=m*9.81*lr/L/2,sr=m*9.81*lf/L/2;
+    const tBase=82+15*Math.sin(t*0.08)+12*cG;
+    const ei=()=>(R()-0.5)*0.04;
+    // Derived intermediates for force/geometry calculations
+    const FzFL=sf-dLon/2-dLat/2, FzFR=sf-dLon/2+dLat/2;
+    const FzRL=sr+dLon/2-dLat/2, FzRR_=sr+dLon/2+dLat/2;
+    const whlSpd=spd/0.2032; // wheel angular velocity
+    const tBaseR=tBase-5;
+    const FxFL_=m*9.81*ax*0.3, FxFR_=m*9.81*ax*0.3, FxRL_=m*9.81*ax*0.2, FxRR_=m*9.81*ax*0.2;
+    const FyFL_=m*9.81*ay*0.28, FyFR_=m*9.81*ay*0.28, FyRL_=m*9.81*ay*0.22, FyRR_=m*9.81*ay*0.22;
+    const FzAeroF_=0.5*1.225*1.2*spd*spd*0.45, FzAeroR_=0.5*1.225*1.2*spd*spd*0.55;
+    const muT=0.95+0.05*Math.sin(t*0.1)-0.1*Math.max(0,tBase-110)/50;
+    const muP=1+0.02*Math.sin(t*0.05);
+    const solveMs=6+5*R(),Htotal=4500+500*Math.sin(t*0.2);
+
+    const f={step:step.current,t:+t.toFixed(2),
+      // ═══ CHASSIS (18) ═══
+      posX:+(Math.cos(t*0.3)*20).toFixed(2), posY:+(Math.sin(t*0.3)*15).toFixed(2), posZ:+(0.33+0.005*Math.sin(t*3)).toFixed(4),
+      roll:+(ay*1.2+R()*0.1).toFixed(2), pitch:+(ax*0.8+R()*0.05).toFixed(2), yaw:+(t*20%360-180).toFixed(1),
+      speed:+spd.toFixed(1), vx:+spd.toFixed(1), vy:+(spd*bs).toFixed(3), vz:+(R()*0.02-0.01).toFixed(4),
+      wx:+(ay*0.3+R()*0.05).toFixed(3), wy:+(ax*0.2+R()*0.03).toFixed(3), wz:+wz.toFixed(3),
+      ax:+ax.toFixed(3), ay:+ay.toFixed(3), az:+(R()*0.02-0.01).toFixed(3),
+      combinedG:+cG.toFixed(3), sideslip:+bs.toFixed(4),
+      // ═══ SUSPENSION (20) ═══
+      zFL:+zFL.toFixed(1), zFR:+zFR.toFixed(1), zRL:+zRL.toFixed(1), zRR:+zRR.toFixed(1),
+      zdFL:+(R()*0.2-0.1).toFixed(3), zdFR:+(R()*0.2-0.1).toFixed(3), zdRL:+(R()*0.15-0.075).toFixed(3), zdRR:+(R()*0.15-0.075).toFixed(3),
+      FspFL:+(35000*(zFL-zEqF)/1000).toFixed(0), FspFR:+(35000*(zFR-zEqF)/1000).toFixed(0),
+      FdmpFL:+(2500*(R()-0.5)*0.3).toFixed(0), FdmpFR:+(2500*(R()-0.5)*0.3).toFixed(0),
+      FbsFL:+(Math.max(0,Math.abs(zFL)-25)*500).toFixed(0),
+      FarbF:+(1200*(zFL-zFR)/1000).toFixed(0), FarbR:+(1000*(zRL-zRR)/1000).toFixed(0),
+      FzFL:+FzFL.toFixed(0), FzFR:+FzFR.toFixed(0), FzRL:+FzRL.toFixed(0), FzRR:+FzRR_.toFixed(0),
+      // ═══ WHEELS (6) ═══
+      whlAngFL:+(step.current*whlSpd*0.05).toFixed(0), whlAngFR:+(step.current*whlSpd*0.05).toFixed(0),
+      whlSpdFL:+(whlSpd+R()*2).toFixed(1), whlSpdFR:+(whlSpd+R()*2).toFixed(1),
+      whlSpdRL:+(whlSpd+R()*1.5).toFixed(1), whlSpdRR:+(whlSpd+R()*1.5).toFixed(1),
+      // ═══ THERMAL (14) ═══
+      TsurfInF:+(tBase+R()*3).toFixed(1), TsurfMdF:+(tBase+2+R()*2).toFixed(1), TsurfOtF:+(tBase+1+R()*3).toFixed(1),
+      TgasF:+(35+5*Math.sin(t*0.02)).toFixed(1), TcoreF:+(tBase-20+R()*2).toFixed(1),
+      TsurfInR:+(tBaseR+R()*3).toFixed(1), TsurfMdR:+(tBaseR+2+R()*2).toFixed(1), TsurfOtR:+(tBaseR+1+R()*3).toFixed(1),
+      TgasR:+(34+4*Math.sin(t*0.02)).toFixed(1), TcoreR:+(tBaseR-18+R()*2).toFixed(1),
+      flashDtF:+(8+5*cG+R()*3).toFixed(1), flashDtR:+(6+4*cG+R()*3).toFixed(1),
+      muTherm:+muT.toFixed(3), muPress:+muP.toFixed(3),
+      // ═══ SLIP (13) ═══
+      alphaFL:+(ay*4.2+R()).toFixed(2), kappaFL:+(ax*0.05+R()*0.02).toFixed(3),
+      alphaFR:+(ay*3.8+R()).toFixed(2), kappaFR:+(ax*0.05+R()*0.02).toFixed(3),
+      alphaRL:+(ay*3.5+R()).toFixed(2), kappaRL:+(ax*0.04+R()*0.015).toFixed(3),
+      alphaRR:+(ay*3.2+R()).toFixed(2), kappaRR:+(ax*0.04+R()*0.015).toFixed(3),
+      aKinF:+(ay*4+R()*0.5).toFixed(2), aKinR:+(ay*3.3+R()*0.5).toFixed(2),
+      kKinF:+(ax*0.055+R()*0.01).toFixed(3), kKinR:+(ax*0.045+R()*0.01).toFixed(3),
+      fricUtil:+(Math.min(100,cG/1.35*100)).toFixed(0),
+      // ═══ TIRE FORCES (16) ═══
+      FxFL:+FxFL_.toFixed(0), FxFR:+FxFR_.toFixed(0), FxRL:+FxRL_.toFixed(0), FxRR:+FxRR_.toFixed(0),
+      FyFL:+FyFL_.toFixed(0), FyFR:+FyFR_.toFixed(0), FyRL:+FyRL_.toFixed(0), FyRR:+FyRR_.toFixed(0),
+      MzFL:+(ay*12+R()*3).toFixed(1), MzFR:+(ay*11+R()*3).toFixed(1),
+      Gyk:+(1-0.3*Math.abs(ax*0.05)).toFixed(3), Gxa:+(1-0.4*Math.abs(ay*0.05)).toFixed(3),
+      dFxPinn:+(50*(R()-0.5)).toFixed(0), dFyPinn:+(80*(R()-0.5)).toFixed(0),
+      sigGP:+(5000+10000*cG+R()*3000).toFixed(0), lcbPen:+(0.03+0.05*cG).toFixed(3),
+      // ═══ AERO (7) ═══
+      FzAeroF:+FzAeroF_.toFixed(0), FzAeroR:+FzAeroR_.toFixed(0),
+      FxAero:+(0.5*1.225*0.8*spd*spd).toFixed(0),
+      MyAero:+(0.5*1.225*0.1*spd*spd).toFixed(0), MxAero:+(ay*5).toFixed(1),
+      rideHF:+(30-0.02*spd*spd+R()*2).toFixed(1), rideHR:+(45-0.015*spd*spd+R()*2).toFixed(1),
+      // ═══ GEOMETRY (9) ═══
+      steer:+s.toFixed(1),
+      camFL:+(-2.5+ay*0.3+zFL*0.01).toFixed(2), camFR:+(-2.5-ay*0.3+zFR*0.01).toFixed(2),
+      camRL:+(-1.8+ay*0.2+zRL*0.008).toFixed(2), camRR:+(-1.8-ay*0.2+zRR*0.008).toFixed(2),
+      toeFL:+(0.1+zFL*0.002).toFixed(3), toeFR:+(-0.1+zFR*0.002).toFixed(3),
+      compSteer:+(ay*0.12+R()*0.03).toFixed(3), turnSlip:+k.toFixed(5),
+      // ═══ ENERGY (9) ═══
+      Htotal:+Htotal.toFixed(0), Tkin:+(0.5*m*spd*spd).toFixed(0),
+      Vstruct:+(0.5*35000*((zFL-zEqF)**2+(zFR-zEqF)**2+(zRL-zEqR)**2+(zRR-zEqR)**2)/1e6).toFixed(1),
+      Hres:+(15+2*Math.sin(t*0.05)).toFixed(1),
+      dHdt:+(-10+20*R()).toFixed(1), Rdiss:+(8+12*R()).toFixed(1),
+      Qtherm:+(5+3*cG+R()*2).toFixed(1),
+      passViol:+(Math.max(0,-10+20*R())*0.3).toFixed(2), RnetCond:+(12+5*R()).toFixed(1),
+      // ═══ WMPC (19) ═══
+      ctrlSteer:+(s*(0.9+0.2*R())).toFixed(1), ctrlThrot:+(Math.max(0,ax)*0.8+R()*0.1).toFixed(3),
+      ctrlBrake:+(Math.max(0,-ax)*2000+R()*100).toFixed(0),
+      muNmean:+(R()*0.4-0.2).toFixed(3), sigNvar:+(0.3+0.5*R()).toFixed(3),
+      dLeft:+(1.5+R()).toFixed(2), dRight:+(1.5+R()).toFixed(2),
+      lamGrip:+(1+3*(1-Math.exp(-step.current/200))+R()*0.3).toFixed(2),
+      lamSteer:+(0.5+R()*0.3).toFixed(2), lamAx:+(0.3+R()*0.2).toFixed(2), lamTrack:+(0.8+R()*0.4).toFixed(2),
+      slkGrip:+(0.15*Math.exp(-step.current/100)+0.03*R()).toFixed(3),
+      slkSteer:+(0.12+0.04*R()).toFixed(3), slkTrack:+(0.2+0.05*R()).toFixed(3),
+      alRho:+(50+200*(1-Math.exp(-step.current/150))).toFixed(0),
+      lbfgsIter:Math.round(5+8*R()),
+      costLap:+(20+15*R()).toFixed(1), costTrack:+(5+8*R()).toFixed(1), costL1:+(2+4*R()).toFixed(1),
+      jaxFwdMs:+(2+3*R()).toFixed(1), jaxBwdMs:+(4+6*R()).toFixed(1), solveMs:+solveMs.toFixed(1),
+      // ═══ E-DRIVE (7) ═══
+      invTmpR:+(42+8*cG+R()*3).toFixed(0), invTmpL:+(41+8*cG+R()*3).toFixed(0),
+      motTmpR:+(55+12*cG+R()*4).toFixed(0), motTmpL:+(54+12*cG+R()*4).toFixed(0),
+      tvTarget:+(ay*120).toFixed(0), tvActual:+(ay*120*(0.9+0.2*R())).toFixed(0),
+      tvError:+(ay*12*(R()-0.5)).toFixed(0),
+      // ═══ TWIN (5) ═══
+      ekfAx:+ei().toFixed(3), ekfWz:+ei().toFixed(3), ekfVy:+ei().toFixed(3),
+      modConf:+(92+5*R()).toFixed(0), twinFid:+(88+8*R()).toFixed(0),
     };
     history.current.push(f);if(history.current.length>HIST_LEN)history.current.shift();setFrame(f);
   },50);return()=>clearInterval(id);},[active]);
   return{frame,history,stepIdx:step};
 }
 
-// ═════════════════════════════════════════════════════════════════════════════
-// G-FORCE FRICTION CIRCLE (Canvas)
-// ═════════════════════════════════════════════════════════════════════════════
-function GForceDiagram({latG,lonG,size=160}){
-  const cv=useRef(null);const trail=useRef([]);
-  useEffect(()=>{
-    const c=cv.current;if(!c)return;const ctx=c.getContext("2d");
-    const W=c.width,H=c.height,cx=W/2,cy=H/2,r=W*0.38;
-    ctx.clearRect(0,0,W,H);
-    // Friction circle boundary
-    [1.0,0.75,0.5,0.25].forEach(f=>{ctx.strokeStyle=`rgba(62,74,100,${0.15+f*0.1})`;ctx.lineWidth=0.5;ctx.beginPath();ctx.arc(cx,cy,r*f,0,Math.PI*2);ctx.stroke();});
-    // Crosshair
-    ctx.strokeStyle="rgba(62,74,100,0.3)";ctx.lineWidth=0.5;
-    ctx.beginPath();ctx.moveTo(cx,cy-r);ctx.lineTo(cx,cy+r);ctx.stroke();
-    ctx.beginPath();ctx.moveTo(cx-r,cy);ctx.lineTo(cx+r,cy);ctx.stroke();
-    // Labels
-    ctx.fillStyle=C.dm;ctx.font=`8px ${C.dt}`;ctx.textAlign="center";
-    ctx.fillText("1.35G",cx,cy-r-4);ctx.fillText("Lat →",cx+r+2,cy+12);
-    // Trail
-    trail.current.push({x:+latG,y:+lonG});if(trail.current.length>60)trail.current.shift();
-    trail.current.forEach((p,i)=>{
-      const a=i/trail.current.length;
-      const px=cx+(p.x/1.5)*r,py=cy-(p.y/1.5)*r;
-      const g=Math.sqrt(p.x*p.x+p.y*p.y);const norm=Math.min(1,g/1.35);
-      ctx.beginPath();ctx.arc(px,py,1.5,0,Math.PI*2);
-      ctx.fillStyle=`rgba(${Math.round(225*norm)},${Math.round(230*(1-norm))},${Math.round(80+140*(1-norm))},${a*0.6})`;
-      ctx.fill();
-    });
-    // Current dot
-    const gx=cx+(+latG/1.5)*r,gy=cy-(+lonG/1.5)*r;
-    ctx.beginPath();ctx.arc(gx,gy,4,0,Math.PI*2);ctx.fillStyle=C.gn;ctx.fill();
-    ctx.beginPath();ctx.arc(gx,gy,7,0,Math.PI*2);ctx.strokeStyle=C.gn;ctx.lineWidth=1;ctx.globalAlpha=0.3;ctx.stroke();ctx.globalAlpha=1;
-    // Utilisation readout
-    const util=Math.sqrt(latG*latG+lonG*lonG)/1.35*100;
-    ctx.fillStyle=util>90?C.red:util>70?C.am:C.gn;ctx.font=`bold 14px ${C.dt}`;ctx.textAlign="center";
-    ctx.fillText(`${util.toFixed(0)}%`,cx,cy+r+16);
-  },[latG,lonG]);
-  return<canvas ref={cv} width={size*2} height={(size+24)*2} style={{width:size,height:size+24,display:"block"}}/>;
-}
+// Row wrapper — forces all children to same height via stretch + child height
+const Row = ({ cols, gap = 8, mb = 10, minH, children }) => (
+  <div style={{
+    display: "grid",
+    gridTemplateColumns: cols,
+    gap,
+    marginBottom: mb,
+    alignItems: "stretch",
+    ...(minH ? { minHeight: minH } : {}),
+  }}>
+    {React.Children.map(children, child => (
+      <div style={{ display: "flex", flexDirection: "column", minHeight: 0 }}>
+        {child}
+      </div>
+    ))}
+  </div>
+);
 
-// ═════════════════════════════════════════════════════════════════════════════
-// FPV CAMERA PANEL (expandable with graph overlay)
-// ═════════════════════════════════════════════════════════════════════════════
-function FPVCamera({history,expanded,setExpanded}){
-  return(
-    <Panel title="FPV CAMERA" color={expanded?C.cy:C.dm}>
-      {!expanded?(
-        <div onClick={()=>setExpanded(true)} style={{cursor:"pointer",textAlign:"center",padding:"12px 0"}}>
-          <div style={{width:"100%",height:100,borderRadius:6,background:`linear-gradient(135deg,${C.bg2},rgba(14,20,32,0.8))`,display:"flex",alignItems:"center",justifyContent:"center",border:`1px dashed ${C.b2}`}}>
-            <div>
-              <div style={{fontSize:20,color:C.dm,marginBottom:4}}>📹</div>
-              <div style={{fontSize:8,color:C.dm,fontFamily:C.dt}}>Click to expand FPV</div>
-            </div>
-          </div>
-          <div style={{display:"flex",justifyContent:"center",gap:4,marginTop:4}}>
-            <StatusDot ok={true}/><span style={{fontSize:7,fontFamily:C.dt,color:C.gn}}>● TRACKING</span>
-          </div>
-        </div>
-      ):(
-        <div>
-          {/* Expanded camera view with telemetry overlay */}
-          <div style={{width:"100%",height:200,borderRadius:6,background:`linear-gradient(135deg,${C.bg2},rgba(14,20,32,0.9))`,position:"relative",overflow:"hidden",border:`1px solid ${C.b2}`,marginBottom:6}}>
-            {/* Simulated camera feed (gradient + grid overlay) */}
-            <div style={{position:"absolute",inset:0,background:`repeating-linear-gradient(0deg,transparent,transparent 19px,rgba(0,210,255,0.03) 19px,rgba(0,210,255,0.03) 20px),repeating-linear-gradient(90deg,transparent,transparent 19px,rgba(0,210,255,0.03) 19px,rgba(0,210,255,0.03) 20px)`}}/>
-            <div style={{position:"absolute",top:8,left:8,display:"flex",alignItems:"center",gap:4}}>
-              <div style={{width:6,height:6,borderRadius:"50%",background:C.red,animation:"pulseGlow 1s infinite"}}/>
-              <span style={{fontSize:8,fontFamily:C.dt,color:C.red,fontWeight:700}}>REC</span>
-            </div>
-            <div style={{position:"absolute",top:8,right:8,fontSize:7,fontFamily:C.dt,color:C.dm}}>1920×1080 @ 60fps</div>
-            <div style={{position:"absolute",bottom:8,left:8,right:8,display:"flex",justifyContent:"space-between"}}>
-              <span style={{fontSize:7,fontFamily:C.dt,color:C.gn}}>● TRACKING</span>
-              <span style={{fontSize:7,fontFamily:C.dt,color:C.dm}}>CAM-01 · FRONT</span>
-            </div>
-          </div>
-          <button onClick={()=>setExpanded(false)} style={{width:"100%",padding:"4px",background:`${C.red}10`,border:`1px solid ${C.red}30`,borderRadius:4,fontSize:8,color:C.red,fontFamily:C.dt,cursor:"pointer",fontWeight:700}}>✕ Close FPV</button>
-        </div>
-      )}
-    </Panel>
-  );
-}
-
-// ═════════════════════════════════════════════════════════════════════════════
-// E-DRIVE & TORQUE VECTORING PANEL
-// ═════════════════════════════════════════════════════════════════════════════
-function EDrivePanel({f}){
-  return(
-    <div style={{display:"flex",flexDirection:"column",gap:4}}>
-      <Panel title="INVERTER" color={C.cy}>
-        <MRow label="Temp R" value={f.invTempR} unit="°C" color={tc(+f.invTempR,70,85)}/>
-        <MRow label="Temp L" value={f.invTempL} unit="°C" color={tc(+f.invTempL,70,85)}/>
-      </Panel>
-      <Panel title="MOTOR" color={C.am}>
-        <MRow label="Temp R" value={f.motorTempR} unit="°C" color={tc(+f.motorTempR,80,100)}/>
-        <MRow label="Temp L" value={f.motorTempL} unit="°C" color={tc(+f.motorTempL,80,100)}/>
-      </Panel>
-      <Panel title="TORQUE VECTOR" color={C.pr}>
-        <MRow label="Target" value={(+f.latG*120).toFixed(0)} unit="Nm"/>
-        <MRow label="Split" value={+f.latG>0?"R bias":"L bias"} color={C.pr}/>
-      </Panel>
+// Box wrapper — stretches canvas content to fill parent grid cell
+const Box = ({ title, children, noPad }) => (
+  <div style={{ display: "flex", flexDirection: "column", height: "100%", minHeight: 0 }}>
+    <div style={{ fontSize: 9, fontWeight: 700, color: C.dm, fontFamily: C.dt, letterSpacing: 1.5, textTransform: "uppercase", borderLeft: `2px solid ${C.red}`, paddingLeft: 8, marginBottom: 6 }}>{title}</div>
+    <div style={{ ...GL, padding: noPad ? 0 : 6, flex: 1, display: "flex", flexDirection: "column", minHeight: 0 }}>
+      <div style={{ flex: 1, minHeight: 0, position: "relative" }}>
+        {children}
+      </div>
     </div>
-  );
-}
+  </div>
+);
 
-// ═════════════════════════════════════════════════════════════════════════════
-// CONSTRAINT STATUS BAR
-// ═════════════════════════════════════════════════════════════════════════════
-function ConstraintBar({alFrame}){
-  const constraints=[];
-  if((+alFrame.grip||1)<0.05)constraints.push({msg:"μ-circle binding",color:C.red});
-  if((+alFrame.alSlackGrip||1)<0.03)constraints.push({msg:"Grip slack < 3%",color:C.am});
-  return(
-    <div style={{maxHeight:28,overflowY:"auto"}}>
-      {constraints.length===0?<span style={{fontSize:7,color:C.gn,fontFamily:C.dt}}>✓ All constraints clear</span>:
-        constraints.map((c,i)=><div key={i} style={{fontSize:7,fontFamily:C.dt,color:c.color}}>{c.msg}</div>)}
-    </div>
-  );
-}
-
-// ═════════════════════════════════════════════════════════════════════════════
-// MAIN LIVE MODE EXPORT
-// ═════════════════════════════════════════════════════════════════════════════
 export default function LiveMode({mode,thermal5,tubes,wavelets,alData,energy,track}){
   const{frame,history,stepIdx}=useLiveData(mode==="LIVE");
   const[alView,setAlView]=useState("slack");
-  const[fpvExpanded,setFpvExpanded]=useState(false);
+  const[fpvExpanded,setFpvExpanded]=useState(true);
   const step=stepIdx.current||0;
-  const f=frame||{speed:0,steer:0,latG:0,lonG:0,combinedG:0,curvature:0,yawRate:0,sideslip:0,wmpcSolveMs:0,hamiltonianJ:0,ekfInnov:0,ekfInnovWz:0,modelConf:0,invTempR:0,invTempL:0,motorTempR:0,motorTempL:0,lambda_mu:0,throttle:0,brake:0,gripUtil:0};
-  const sl=a=>Math.max(1,a.length);
-  const alW=useMemo(()=>alData.length?alData.slice(Math.max(0,(step%sl(alData))-80),(step%sl(alData))+1):[],[alData,step]);
-  const enW=useMemo(()=>energy.length?energy.slice(Math.max(0,(step%sl(energy))-100),(step%sl(energy))+1):[],[energy,step]);
-  const ef=energy.length?energy[step%energy.length]:{};
-  const af=alData.length?alData[step%alData.length]:{};
+  const f=frame||{};
+  const sl=a=>Math.max(1,(a||[]).length);
+  const alW=useMemo(()=>(alData||[]).length?alData.slice(Math.max(0,(step%sl(alData))-80),(step%sl(alData))+1):[],[alData,step]);
+  const enW=useMemo(()=>(energy||[]).length?energy.slice(Math.max(0,(step%sl(energy))-100),(step%sl(energy))+1):[],[energy,step]);
+  const ef=(energy||[]).length?energy[step%energy.length]:{};
+  const af=(alData||[]).length?alData[step%alData.length]:{};
 
   return(<div>
     {/* ═══ ROW 0: KPI BAR ════════════════════════════════════════════ */}
-    <div style={{display:"grid",gridTemplateColumns:"repeat(10,1fr)",gap:4,marginBottom:8}}>
-      {[["Speed",f.speed,C.w,"m/s"],["Lat G",f.latG,C.cy,"G"],["Lon G",f.lonG,C.am,"G"],["Comb G",f.combinedG,C.gn,"G"],["ψ̇",f.yawRate,C.pr,"rad/s"],["β",f.sideslip,C.pr,"rad"],["Grip",f.gripUtil,+f.gripUtil>85?C.am:C.gn,"%"],["WMPC",f.wmpcSolveMs,tc(+f.wmpcSolveMs,8,10),"ms"],["H(q,p)",f.hamiltonianJ,C.e_hnet,"kJ"],["λ_μ",f.lambda_mu,C.am,""]].map(([l,v,c,u],i)=>
-        <div key={i} style={{...GL,padding:"4px 5px",textAlign:"center",borderTop:`2px solid ${c}`}}>
-          <div style={{fontSize:6,color:C.dm,fontFamily:C.dt,letterSpacing:1,textTransform:"uppercase"}}>{l}</div>
-          <div style={{fontSize:14,fontWeight:800,color:c,fontFamily:C.dt}}>{v}</div>
-          {u&&<div style={{fontSize:6,color:C.dm,fontFamily:C.dt}}>{u}</div>}
-        </div>)}
-    </div>
+    <Row cols="repeat(8,1fr)" gap={5} mb={10}>
+      {[["SPEED",f.speed,C.w,"m/s"],["LAT G",f.ay,C.cy,"G"],["LON G",f.ax,C.am,"G"],["COMB G",f.combinedG,C.gn,"G"],["GRIP",f.fricUtil,+f.fricUtil>85?C.red:C.gn,"%"],["WMPC",f.solveMs,tc(+f.solveMs,8,10),"ms"],["H(q,p)",f.Htotal,C.e_hnet,"J"],["λ_grip",f.lamGrip,C.am,""]].map(([l,v,c,u],i)=>
+        <div key={i} style={{...GL,padding:"6px 8px",textAlign:"center",borderTop:`2px solid ${c}`}}>
+          <div style={{fontSize:8,color:C.dm,fontFamily:C.dt,letterSpacing:1.5}}>{l}</div>
+          <div style={{fontSize:18,fontWeight:800,color:c,fontFamily:C.dt}}>{v||"—"}</div>
+          <div style={{fontSize:8,color:C.dm,fontFamily:C.dt}}>{u}</div></div>)}
+    </Row>
 
-    {/* ═══ ROW 1: TRACK + FPV + THERMAL ══════════════════════════════ */}
-    <div style={{display:"grid",gridTemplateColumns:fpvExpanded?"1fr 1.5fr 0.7fr":"1.3fr 0.7fr 0.8fr",gap:8,marginBottom:8}}>
-      <Sec title="Track + Safety Tubes"><GC style={{padding:6}}>
-        <TubeTrackMap track={track} tubes={tubes} step={step%Math.max(1,track.length)} width={fpvExpanded?320:380} height={fpvExpanded?220:260}/>
-      </GC></Sec>
-      <div style={{display:"flex",flexDirection:"column",gap:6}}>
-        <FPVCamera history={history} expanded={fpvExpanded} setExpanded={setFpvExpanded}/>
+    {/* ═══ ROW 1: FPV + DRIVER INPUTS + TRACK ════════════════════════ */}
+    <Row cols="1.4fr 0.6fr 1fr" minH={380}>
+      {/* FPV Camera */}
+      <div style={{...GL,padding:0,overflow:"hidden",borderTop:`2px solid ${C.cy}`,display:"flex",flexDirection:"column"}}>
+        <div style={{flex:1,minHeight:200,background:`linear-gradient(135deg,${C.bg2},rgba(14,20,32,0.9))`,position:"relative",overflow:"hidden"}}>
+          <div style={{position:"absolute",inset:0,background:`repeating-linear-gradient(0deg,transparent,transparent 19px,rgba(0,210,255,0.03) 19px,rgba(0,210,255,0.03) 20px),repeating-linear-gradient(90deg,transparent,transparent 19px,rgba(0,210,255,0.03) 19px,rgba(0,210,255,0.03) 20px)`}}/>
+          <div style={{position:"absolute",top:8,left:10,display:"flex",alignItems:"center",gap:4}}>
+            <div style={{width:7,height:7,borderRadius:"50%",background:C.red,animation:"pulseGlow 1s infinite"}}/><span style={{fontSize:10,fontFamily:C.dt,color:C.red,fontWeight:700}}>REC</span>
+          </div>
+          <div style={{position:"absolute",top:8,right:10,fontSize:9,fontFamily:C.dt,color:C.dm}}>1920×1080 @ 60fps</div>
+          <div style={{position:"absolute",bottom:8,left:10,display:"flex",gap:14}}>
+            {[["SPD",f.speed,"m/s",C.gn],["LAT",f.ay,"G",C.cy],["LON",f.ax,"G",C.am],["μ%",f.fricUtil,"",+f.fricUtil>85?C.red:C.gn]].map(([l,v,u,c])=>(
+              <div key={l}><div style={{fontSize:7,color:C.dm,fontFamily:C.dt}}>{l}</div><div style={{fontSize:16,fontWeight:800,color:c,fontFamily:C.dt}}>{v||"—"}</div></div>))}
+          </div>
+          <div style={{position:"absolute",bottom:8,right:10}}><StatusDot ok={true}/><span style={{fontSize:8,fontFamily:C.dt,color:C.gn,marginLeft:3}}>TRACKING</span></div>
+        </div>
+        <div style={{padding:"6px 8px",background:"rgba(5,7,11,0.9)",borderTop:`1px solid ${C.b2}`}}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:3}}>
+            <Lbl color={C.cy}>FPV OVERLAY GRAPH</Lbl>
+            <button onClick={()=>setFpvExpanded(!fpvExpanded)} style={{background:`${fpvExpanded?C.red:C.cy}15`,border:`1px solid ${fpvExpanded?C.red:C.cy}30`,borderRadius:4,padding:"2px 10px",fontSize:9,color:fpvExpanded?C.red:C.cy,fontFamily:C.dt,cursor:"pointer",fontWeight:700}}>{fpvExpanded?"▲ Compact":"▼ Expand"}</button>
+          </div>
+          <GraphSlot id={99} history={history.current||[]} compact={true} tick={step}/>
+        </div>
       </div>
-      <Sec title="Tire Thermal (5-Node)"><GC style={{padding:6}}>
-        <ThermalQuintet data={thermal5} step={step%Math.max(1,thermal5.length)} size={fpvExpanded?72:88}/>
-      </GC></Sec>
-    </div>
 
-    {/* ═══ ROW 2: WAVELET + G-FORCE + E-DRIVE ════════════════════════ */}
-    <div style={{display:"grid",gridTemplateColumns:"1.2fr 0.6fr 0.6fr",gap:8,marginBottom:8}}>
-      <Sec title="MPC Wavelet (Db4 3-Level)"><GC style={{padding:6}}>
-        <WaveletHeatmap data={wavelets} width={340} height={160}/>
-      </GC></Sec>
-      <Sec title="Friction Circle"><GC style={{padding:4,display:"flex",justifyContent:"center"}}>
-        <GForceDiagram latG={+f.latG} lonG={+f.lonG} size={140}/>
-      </GC></Sec>
-      <Sec title="E-Drive"><EDrivePanel f={f}/></Sec>
-    </div>
+      {/* DRIVER INPUTS — 3 stacked line charts */}
+      <Box title="Driver Inputs">
+        <DriverInputsPanel history={history.current||[]} tick={step}/>
+      </Box>
 
-    {/* ═══ ROW 3: AL CONSTRAINTS + ENERGY FLOW ═══════════════════════ */}
-    <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:8}}>
+      {/* Track Map */}
+      <Box title="Track + Safety Tubes">
+        <TubeTrackMap track={track} tubes={tubes} step={step%Math.max(1,track.length)} width={320} height={340}/>
+      </Box>
+    </Row>
+
+    {/* ═══ ROW 2: THERMAL + ELLIPSES + WAVELET + EDRIVE ══════════════ */}
+    <Row cols="1fr 1fr 1.4fr 0.5fr" minH={260}>
+      <Box title="5-Node Thermal">
+        <ThermalQuintet data={thermal5} step={step%Math.max(1,thermal5.length)} size={80}/>
+      </Box>
+      <Box title="4-Corner Friction Ellipses">
+        <FourCornerEllipses f={f}/>
+      </Box>
+      <Box title="MPC Wavelet (Db4)">
+        <WaveletHeatmap data={wavelets} width={380} height={200}/>
+      </Box>
+      <div style={{display:"flex",flexDirection:"column",gap:4}}>
+        <Panel title="INV" color={C.cy}><MRow label="R" value={f.invTmpR||"—"} unit="°C" color={tc(+f.invTmpR,70,85)}/><MRow label="L" value={f.invTmpL||"—"} unit="°C" color={tc(+f.invTmpL,70,85)}/></Panel>
+        <Panel title="MOT" color={C.am}><MRow label="R" value={f.motTmpR||"—"} unit="°C" color={tc(+f.motTmpR,80,100)}/><MRow label="L" value={f.motTmpL||"—"} unit="°C" color={tc(+f.motTmpL,80,100)}/></Panel>
+        <Panel title="TV" color={C.pr}><MRow label="Tgt" value={f.tvTarget||"—"} unit="Nm"/><MRow label="Err" value={f.tvError||"—"} unit="Nm" color={Math.abs(+f.tvError)>10?C.am:C.gn}/></Panel>
+      </div>
+    </Row>
+
+    {/* ═══ ROW 3: STABILITY + DAMPERS + AERO + RADAR ═════════════════ */}
+    <Row cols="1fr 1.2fr 1fr 0.8fr" minH={240}>
+      <Box title="β-ψ̇ Phase Plane"><StabilityPhasePlane f={f}/></Box>
+      <Box title="Damper Saturation"><DamperBars f={f}/></Box>
+      <Box title="Aero Platform"><AeroPlatform f={f}/></Box>
+      <Box title="WMPC Cost Radar"><WMPCCostRadar f={f}/></Box>
+    </Row>
+
+    {/* ═══ ROW 4: AL CONSTRAINTS + ENERGY FLOW ═══════════════════════ */}
+    <Row cols="1fr 1fr" minH={220}>
       <Sec title="AL Constraint Monitor" right={<div style={{display:"flex",gap:4}}><Pill active={alView==="slack"} label="Slack" onClick={()=>setAlView("slack")} color={C.cy}/><Pill active={alView==="lambda"} label="λ" onClick={()=>setAlView("lambda")} color={C.am}/></div>}>
         <GC><ResponsiveContainer width="100%" height={160}><AreaChart data={alW} margin={{top:8,right:12,bottom:8,left:8}}>
           <CartesianGrid strokeDasharray="3 3" stroke={GS}/><XAxis dataKey="solve" {...AX}/><YAxis {...AX}/><Tooltip contentStyle={TT}/>
-          {alView==="slack"?[["grip",C.red],["steer",C.am],["ax",C.cy],["track",C.gn],["vx",C.pr]].map(([k,c])=><Area key={k} type="monotone" dataKey={k} stackId="1" fill={c} fillOpacity={.25} stroke={c} strokeWidth={1} name={k}/>)
-            :<Line type="monotone" dataKey="lambda_grip" stroke={C.am} strokeWidth={2} dot={false} name="λ_grip"/>}
-          <Legend wrapperStyle={{fontSize:7,fontFamily:C.hd}}/>
+          {alView==="slack"?[["grip",C.red],["steer",C.am],["ax",C.cy],["track",C.gn],["vx",C.pr]].map(([k,c])=><Area key={k} type="monotone" dataKey={k} stackId="1" fill={c} fillOpacity={.25} stroke={c} strokeWidth={1.5} name={k}/>)
+            :<Area type="monotone" dataKey="lambda_grip" stroke={C.am} fill={C.am} fillOpacity={.1} strokeWidth={2} name="λ_grip"/>}
+          <Legend wrapperStyle={{fontSize:9,fontFamily:C.hd}}/>
         </AreaChart></ResponsiveContainer>
-        <div style={{display:"flex",gap:8,padding:"3px 8px",borderTop:`1px solid ${C.b1}`}}>
+        <div style={{display:"flex",gap:10,padding:"4px 8px",borderTop:`1px solid ${C.b1}`}}>
           <Lbl color={(af.grip||1)<.05?C.red:C.gn}>Binding: {["grip","steer","ax","track","vx"].filter(k=>(af[k]||1)<.05).length}/5</Lbl>
-          <Lbl color={C.cy}>Iters: {af.iters||"—"}</Lbl><Lbl color={C.am}>λ: {af.lambda_grip||"—"}</Lbl>
+          <Lbl color={C.cy}>Iters: {af.iters||"—"}</Lbl><Lbl color={C.am}>ρ={f.alRho||"—"}</Lbl>
         </div></GC>
       </Sec>
-      <Sec title="Energy Flow (Port-Hamiltonian)"><GC>
+      <Sec title="Energy Flow (H = T + V + H_res)"><GC>
         <ResponsiveContainer width="100%" height={160}><AreaChart data={enW} margin={{top:8,right:12,bottom:8,left:8}}>
           <CartesianGrid strokeDasharray="3 3" stroke={GS}/><XAxis dataKey="t" {...AX}/><YAxis {...AX}/><Tooltip contentStyle={TT}/>
-          <Area type="monotone" dataKey="ke" stackId="1" fill={C.e_ke} fillOpacity={.25} stroke={C.e_ke} strokeWidth={1} name="KE"/>
-          <Area type="monotone" dataKey="pe_s" stackId="1" fill={C.e_spe} fillOpacity={.2} stroke={C.e_spe} strokeWidth={1} name="PE_s"/>
-          <Area type="monotone" dataKey="pe_arb" stackId="1" fill={C.e_arb} fillOpacity={.15} stroke={C.e_arb} strokeWidth={1} name="PE_arb"/>
-          <Area type="monotone" dataKey="h_net" stackId="1" fill={C.e_hnet} fillOpacity={.3} stroke={C.e_hnet} strokeWidth={1.5} name="H_net"/>
-          <Legend wrapperStyle={{fontSize:7,fontFamily:C.hd}}/>
+          <Area type="monotone" dataKey="ke" stackId="1" fill={C.e_ke} fillOpacity={.25} stroke={C.e_ke} strokeWidth={1.5} name="T_kin"/>
+          <Area type="monotone" dataKey="pe_s" stackId="1" fill={C.e_spe} fillOpacity={.2} stroke={C.e_spe} strokeWidth={1} name="V_struct"/>
+          <Area type="monotone" dataKey="h_net" stackId="1" fill={C.e_hnet} fillOpacity={.3} stroke={C.e_hnet} strokeWidth={2} name="H_res"/>
+          <Legend wrapperStyle={{fontSize:9,fontFamily:C.hd}}/>
         </AreaChart></ResponsiveContainer>
-        <div style={{display:"flex",justifyContent:"space-between",padding:"3px 8px",borderTop:`1px solid ${C.b1}`}}>
-          <div><Lbl>H=</Lbl><Val color={C.cy}>{ef.H||"—"}</Val><Vu>J</Vu></div>
-          <div><Lbl>dH/dt=</Lbl><Val color={+ef.dH>0?C.red:C.gn}>{ef.dH||"—"}</Val><Vu>W</Vu></div>
-          <div><Lbl>R=</Lbl><Val color={C.e_diss}>{ef.r_diss||"—"}</Val><Vu>W</Vu></div>
-        </div>
-      </GC></Sec>
-    </div>
+        <div style={{display:"flex",justifyContent:"space-between",padding:"4px 8px",borderTop:`1px solid ${C.b1}`}}>
+          <div><Lbl>H=</Lbl><Val color={C.cy}>{ef.H||f.Htotal||"—"}</Val><Vu>J</Vu></div>
+          <div><Lbl>dH/dt=</Lbl><Val color={+(ef.dH||f.dHdt)>0?C.red:C.gn}>{ef.dH||f.dHdt||"—"}</Val><Vu>W</Vu></div>
+          <div><Lbl>R=</Lbl><Val color={C.e_diss}>{ef.r_diss||f.Rdiss||"—"}</Val><Vu>W</Vu></div>
+          <div><Lbl>Q̇=</Lbl><Val color={C.e_therm}>{f.Qtherm||"—"}</Val><Vu>W</Vu></div>
+        </div></GC>
+      </Sec>
+    </Row>
 
-    {/* ═══ ROW 4: TWIN HEALTH ════════════════════════════════════════ */}
-    <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr 1fr 1.5fr",gap:5,marginBottom:8}}>
-      <Panel title="EKF" color={C.cy}><div style={{display:"flex",gap:4,alignItems:"center"}}><StatusDot ok={Math.abs(+f.ekfInnov)<0.03}/><Val color={C.cy}>{f.ekfInnov}</Val></div></Panel>
-      <Panel title="λ_μ" color={C.am} style={{textAlign:"center"}}><Val big color={C.am}>{f.lambda_mu}</Val></Panel>
-      <Panel title="WMPC" color={tc(+f.wmpcSolveMs,8,10)} style={{textAlign:"center"}}><Val big color={tc(+f.wmpcSolveMs,8,10)}>{f.wmpcSolveMs}</Val><Vu>ms</Vu></Panel>
-      <Panel title="H(q,p)" color={C.e_hnet} style={{textAlign:"center"}}><Val big color={C.e_hnet}>{f.hamiltonianJ}</Val><Vu>kJ</Vu></Panel>
-      <Panel title="CONSTRAINTS" color={C.red}><ConstraintBar alFrame={af}/></Panel>
-    </div>
+    {/* ═══ ROW 5: PACEJKA + TWIN HEALTH ══════════════════════════════ */}
+    <Row cols="1.3fr 1fr" minH={240}>
+      <Box title="Live Effective Pacejka — Thermal + GP ±2σ">
+        <LivePacejkaCurve f={f}/>
+      </Box>
+      <div style={{display:"flex",flexDirection:"column",gap:6}}>
+        <Sec title="Twin Health">
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:5}}>
+            <Panel title="EKF a_x" color={C.cy}><div style={{display:"flex",gap:4,alignItems:"center"}}><StatusDot ok={Math.abs(+f.ekfAx)<0.03}/><Val color={C.cy}>{f.ekfAx||"—"}</Val></div></Panel>
+            <Panel title="EKF ω_z" color={C.am}><div style={{display:"flex",gap:4,alignItems:"center"}}><StatusDot ok={Math.abs(+f.ekfWz)<0.03}/><Val color={C.am}>{f.ekfWz||"—"}</Val></div></Panel>
+            <Panel title="Conf." color={C.gn} style={{textAlign:"center"}}><Val big color={+f.modConf>90?C.gn:C.am}>{f.modConf||"—"}</Val><Vu>%</Vu></Panel>
+          </div>
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:5,marginTop:5}}>
+            <Panel title="JAX fwd" color={C.gn} style={{textAlign:"center"}}><Val color={C.gn}>{f.jaxFwdMs||"—"}</Val><Vu>ms</Vu></Panel>
+            <Panel title="JAX bwd" color={C.cy} style={{textAlign:"center"}}><Val color={C.cy}>{f.jaxBwdMs||"—"}</Val><Vu>ms</Vu></Panel>
+            <Panel title="CONSTR." color={C.red}>
+              <div style={{fontSize:8,fontFamily:C.dt}}>
+                {+f.fricUtil>95?<div style={{color:C.red}}>μ binding</div>:null}
+                {+f.passViol>1?<div style={{color:C.am}}>Passivity</div>:null}
+                {!+f.fricUtil&&!+f.passViol&&<span style={{color:C.gn}}>✓ Clear</span>}
+              </div>
+            </Panel>
+          </div>
+        </Sec>
+      </div>
+    </Row>
 
-    {/* ═══ ROW 5: CONFIGURABLE TIME-SERIES GRAPHS ════════════════════ */}
+    {/* ═══ ROW 6: CONFIGURABLE GRAPHS ════════════════════════════════ */}
     <Sec title="Configurable Telemetry Graphs">
-      <LiveGraphPanel history={history}/>
+      <LiveGraphPanel history={history} tick={step}/>
     </Sec>
   </div>);
 }
