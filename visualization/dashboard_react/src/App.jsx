@@ -55,7 +55,8 @@ import TelemetryModule from "./TelemetryModule.jsx";
 import SuspensionModule from "./SuspensionModule.jsx";
 import EnergyAuditModule from "./EnergyAuditModule.jsx";
 import TirePhysicsModule from "./TirePhysicsModule.jsx";
-
+import DriverCoachingModule from "./DriverCoachingModule.jsx";
+import EnduranceStrategyModule from "./EnduranceStrategyModule.jsx";
 
 // ═════════════════════════════════════════════════════════════════════════════
 // NAV CONFIGURATION
@@ -68,6 +69,8 @@ const NAV = [
   { key: "energy",     label: "Energy Audit",  icon: "⊕" },
   { key: "tire",       label: "Tire Physics",  icon: "⊗" },
   { key: "suspension", label: "Suspension",    icon: "△" },
+  { key: "coaching",   label: "Coaching",      icon: "◈" },
+  { key: "endurance",  label: "Endurance",     icon: "⏱" },
 ];
 
 
@@ -243,10 +246,13 @@ export default function App() {
             loadSens={loadSens}
           />
         );
+      case "coaching": return <DriverCoachingModule />;
+
+      case "endurance": return <EnduranceStrategyModule />;
 
       case "suspension":
         return <SuspensionModule data={susp} />;
-
+        
       default:
         return <OverviewModule pareto={pareto} conv={conv} />;
     }

@@ -68,7 +68,190 @@ const GRIDS=[
   {key:"g1",label:"Optimizer Core",icon:"◆"},{key:"g2",label:"Kinematic & Aero",icon:"△"},
   {key:"g3",label:"Contact Patch",icon:"◉"},{key:"g4",label:"Energy Flow",icon:"⬡"},
   {key:"g5",label:"WMPC Horizon",icon:"◈"},{key:"g6",label:"Twin Fidelity",icon:"⬢"},
+  {key:"g7",label:"Setup Delta",icon:"⟷"}, {key:"g8",label:"Param Sweep",icon:"〰"},
 ];
+function SetupDeltaTab({ pareto }) {
+  const [idxA, setIdxA] = React.useState(0);
+  const [idxB, setIdxB] = React.useState(Math.min(pareto.length - 1, 5));
+  const setupA = pareto[idxA];
+  const setupB = pareto[idxB];
+  if (!setupA || !setupB) return null;
+
+  const selStyle = {
+    background: C.bg, border: `1px solid ${C.b1}`,
+    borderRadius: 4, padding: "4px 8px", fontSize: 10, fontFamily: C.dt, marginLeft: 8,
+  };
+
+  return (
+    <div>
+      <div style={{ display: "flex", gap: 16, marginBottom: 14, alignItems: "center" }}>
+        <div>
+          <Lbl>SETUP A</Lbl>
+          <select value={idxA} onChange={e => setIdxA(+e.target.value)} style={{ ...selStyle, color: C.cy }}>
+            {pareto.map((p, i) => <option key={i} value={i}>#{i} (grip: {p.grip.toFixed(3)})</option>)}
+          </select>
+        </div>
+        <span style={{ color: C.dm, fontSize: 16 }}>⟷</span>
+        <div>
+          <Lbl>SETUP B</Lbl>
+          <select value={idxB} onChange={e => setIdxB(+e.target.value)} style={{ ...selStyle, color: C.am }}>
+            {pareto.map((p, i) => <option key={i} value={i}>#{i} (grip: {p.grip.toFixed(3)})</option>)}
+          </select>
+        </div>
+      </div>
+
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 10, marginBottom: 14 }}>
+        <KPI label="Grip A" value={setupA.grip.toFixed(4)} sub={`gen ${setupA.gen}`} sentiment="neutral" delay={0} />
+        <KPI label="Grip B" value={setupB.grip.toFixed(4)} sub={`gen ${setupB.gen}`} sentiment="neutral" delay={1} />
+        <KPI label="ΔGrip" value={(setupB.grip - setupA.grip).toFixed(4)} sub={setupB.grip > setupA.grip ? "B is better" : "A is better"} sentiment={setupB.grip > setupA.grip ? "positive" : "negative"} delay={2} />
+        <KPI label="ΔStability" value={(setupB.stability - setupA.stability).toFixed(2)} sub="rad/s" sentiment={Math.abs(setupB.stability - setupA.stability) < 0.5 ? "positive" : "amber"} delay={3} />
+      </div>
+
+      <GC style={{ padding: "12px 14px" }}>
+        <div style={{ fontSize: 9, fontWeight: 700, letterSpacing: 1.8, color: C.dm, fontFamily: C.dt, marginBottom: 10 }}>
+          28-PARAMETER DELTA TABLE
+        </div>
+        <div style={{ display: "grid", gridTemplateColumns: "140px 90px 90px 90px 70px", gap: 0, fontSize: 8, fontFamily: C.dt }}>
+          {["Parameter", "Setup A", "Setup B", "Δ Absolute", "Δ %"].map(h => (
+            <div key={h} style={{ color: C.dm, fontWeight: 700, letterSpacing: 1, padding: "6px 4px", borderBottom: `1px solid ${C.b1}` }}>{h}</div>
+          ))}
+          {PN.map((name, i) => {
+            const vA = setupA.params?.[i] ?? 0;
+            const vB = setupB.params?.[i] ?? 0;
+            const delta = vB - vA;
+            const pctDelta = vA !== 0 ? (delta / vA) * 100 : 0;
+            const sig = Math.abs(pctDelta) > 10;
+            return (
+              <React.Fragment key={name}>
+                <div style={{ color: sig ? C.cy : C.br, padding: "4px", borderBottom: `1px solid ${C.b1}08` }}>{name}</div>
+                <div style={{ color: C.br, padding: "4px", borderBottom: `1px solid ${C.b1}08` }}>{vA.toFixed(4)}</div>
+                <div style={{ color: C.br, padding: "4px", borderBottom: `1px solid ${C.b1}08` }}>{vB.toFixed(4)}</div>
+                <div style={{ color: delta > 0 ? C.gn : delta < 0 ? C.red : C.dm, fontWeight: 600, padding: "4px", borderBottom: `1px solid ${C.b1}08` }}>
+                  {delta > 0 ? "+" : ""}{delta.toFixed(4)}
+                </div>
+                <div style={{ color: sig ? C.am : C.dm, padding: "4px", borderBottom: `1px solid ${C.b1}08` }}>
+                  {pctDelta.toFixed(1)}%
+                </div>
+              </React.Fragment>
+            );
+          })}
+        </div>
+      </GC>
+    </div>
+  );
+}
+function ParamSweepTab({ pareto, sens }) {
+  const ax = (props) => ({ tick: { fontSize: 9, fill: C.dm, fontFamily: C.dt }, stroke: C.b1, ...props });
+  const bestSetup = pareto.reduce((best, p) => p.grip > best.grip ? p : best, pareto[0]);
+  const [sweepParam, setSweepParam] = React.useState(0);
+ 
+  // Generate sweep: vary one param from 0→1 in 50 steps, hold others at best
+  const sweepData = React.useMemo(() => {
+    if (!bestSetup?.params) return [];
+    const data = [];
+    for (let i = 0; i < 50; i++) {
+      const val = i / 49;
+      // Surrogate model: grip ≈ bestGrip + sensitivity * (val - bestVal) + curvature * (val - bestVal)²
+      const bestVal = bestSetup.params[sweepParam] || 0.5;
+      const delta = val - bestVal;
+      const sensVal = sens?.[sweepParam]?.dGrip || 0;
+      const sensStab = sens?.[sweepParam]?.dStab || 0;
+      // Quadratic response surface (convex near optimum)
+      const grip = bestSetup.grip + sensVal * delta * 8 - Math.abs(sensVal) * delta * delta * 40;
+      const stability = (bestSetup.stability || 2.5) + sensStab * delta * 5 + 0.8 * delta * delta * 10;
+      data.push({
+        val: +val.toFixed(3),
+        grip: +grip.toFixed(4),
+        stability: +stability.toFixed(3),
+        delta: +(val - bestVal).toFixed(3),
+        isBest: Math.abs(val - bestVal) < 0.015,
+      });
+    }
+    return data;
+  }, [bestSetup, sweepParam, sens]);
+ 
+  const bestVal = bestSetup?.params?.[sweepParam] || 0.5;
+ 
+  return (
+    <div>
+      {/* Param selector */}
+      <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 14 }}>
+        <Lbl>SWEEP PARAMETER</Lbl>
+        <select
+          value={sweepParam}
+          onChange={e => setSweepParam(+e.target.value)}
+          style={{
+            background: C.bg, color: C.cy, border: `1px solid ${C.b1}`,
+            borderRadius: 4, padding: "6px 12px", fontSize: 11, fontFamily: C.dt,
+          }}
+        >
+          {PN.map((name, i) => (
+            <option key={i} value={i}>{name} {PU[i] ? `[${PU[i]}]` : ""}</option>
+          ))}
+        </select>
+        <div style={{ flex: 1 }} />
+        <div style={{ fontSize: 9, color: C.dm, fontFamily: C.dt }}>
+          Current best: <span style={{ color: C.gn, fontWeight: 700 }}>{bestVal.toFixed(4)}</span>
+          {" · "}Sensitivity: <span style={{ color: (sens?.[sweepParam]?.dGrip || 0) > 0 ? C.gn : C.red, fontWeight: 700 }}>
+            {(sens?.[sweepParam]?.dGrip || 0) > 0 ? "+" : ""}{(sens?.[sweepParam]?.dGrip || 0).toFixed(3)}
+          </span>
+        </div>
+      </div>
+ 
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
+        {/* Grip response */}
+        <Sec title={`Grip Response — ${PN[sweepParam]}`}>
+          <GC><ResponsiveContainer width="100%" height={280}>
+            <ComposedChart data={sweepData} margin={{ top: 8, right: 16, bottom: 24, left: 12 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke={GS} />
+              <XAxis dataKey="val" {...ax()} label={{ value: `${PN[sweepParam]} [normalized]`, position: "bottom", fill: C.dm, fontSize: 9 }} />
+              <YAxis {...ax()} domain={["auto", "auto"]} label={{ value: "Grip [G]", angle: -90, position: "insideLeft", fill: C.dm, fontSize: 9 }} />
+              <Tooltip contentStyle={TT} />
+              <ReferenceLine x={bestVal} stroke={C.gn} strokeDasharray="4 2" label={{ value: "OPTIMAL", fill: C.gn, fontSize: 7 }} />
+              <Area dataKey="grip" stroke={C.cy} fill={`${C.cy}12`} strokeWidth={2} dot={false} name="Grip [G]" />
+            </ComposedChart>
+          </ResponsiveContainer></GC>
+        </Sec>
+ 
+        {/* Stability response */}
+        <Sec title={`Stability Response — ${PN[sweepParam]}`}>
+          <GC><ResponsiveContainer width="100%" height={280}>
+            <ComposedChart data={sweepData} margin={{ top: 8, right: 16, bottom: 24, left: 12 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke={GS} />
+              <XAxis dataKey="val" {...ax()} label={{ value: `${PN[sweepParam]} [normalized]`, position: "bottom", fill: C.dm, fontSize: 9 }} />
+              <YAxis {...ax()} domain={["auto", "auto"]} label={{ value: "Stability [rad/s]", angle: -90, position: "insideLeft", fill: C.dm, fontSize: 9 }} />
+              <Tooltip contentStyle={TT} />
+              <ReferenceLine x={bestVal} stroke={C.gn} strokeDasharray="4 2" />
+              <ReferenceLine y={5.0} stroke={C.red} strokeDasharray="4 2" label={{ value: "5.0 cap", fill: C.red, fontSize: 7 }} />
+              <Area dataKey="stability" stroke={C.am} fill={`${C.am}12`} strokeWidth={2} dot={false} name="Stability [rad/s]" />
+            </ComposedChart>
+          </ResponsiveContainer></GC>
+        </Sec>
+      </div>
+ 
+      {/* Dual objective overlay */}
+      <Sec title="Grip vs Stability Trade-off (dual axis)">
+        <GC><ResponsiveContainer width="100%" height={260}>
+          <ComposedChart data={sweepData} margin={{ top: 8, right: 40, bottom: 24, left: 12 }}>
+            <CartesianGrid strokeDasharray="3 3" stroke={GS} />
+            <XAxis dataKey="val" {...ax()} label={{ value: `${PN[sweepParam]} [normalized]`, position: "bottom", fill: C.dm, fontSize: 9 }} />
+            <YAxis yAxisId="g" {...ax()} label={{ value: "Grip [G]", angle: -90, position: "insideLeft", fill: C.dm, fontSize: 9 }} />
+            <YAxis yAxisId="s" orientation="right" {...ax()} label={{ value: "Stab [rad/s]", angle: 90, position: "insideRight", fill: C.dm, fontSize: 9 }} />
+            <Tooltip contentStyle={TT} />
+            <ReferenceLine x={bestVal} stroke={C.gn} strokeDasharray="4 2" label={{ value: "BEST", fill: C.gn, fontSize: 8 }} />
+            <Line yAxisId="g" dataKey="grip" stroke={C.cy} strokeWidth={2} dot={false} name="Grip" />
+            <Line yAxisId="s" dataKey="stability" stroke={C.am} strokeWidth={2} dot={false} name="Stability" />
+            <Legend wrapperStyle={{ fontSize: 9, fontFamily: C.hd }} />
+          </ComposedChart>
+        </ResponsiveContainer></GC>
+      </Sec>
+ 
+      <Note>
+        <strong style={{ color: C.cy }}>How to read:</strong> The sweep varies <strong style={{ color: C.cy }}>{PN[sweepParam]}</strong> from 0→1 (normalized bounds) while holding all other 27 parameters at their Pareto-optimal values. The green reference line marks the current best. Flat curves = insensitive parameter (safe to ignore). Steep curves with cliff edges = critical parameter (small change = large grip/stability shift). The quadratic response surface is a local approximation — actual landscape may have additional local optima.
+      </Note>
+    </div>
+  );
+}
 
 export default function SetupModule({pareto,conv,sens,track}){
   const[grid,setGrid]=useState("g1");
@@ -273,6 +456,8 @@ export default function SetupModule({pareto,conv,sens,track}){
           <Sec title="Real vs Sim PSD"><GC><ResponsiveContainer width="100%" height={250}><LineChart data={psd} margin={{top:10,right:20,bottom:20,left:10}}><CartesianGrid strokeDasharray="3 3" stroke={GS}/><XAxis dataKey="freq" {...ax()}/><YAxis {...ax()}/><Tooltip contentStyle={TT}/><Line type="monotone" dataKey="real" stroke={C.am} strokeWidth={1.5} dot={false} name="Real"/><Line type="monotone" dataKey="sim" stroke={C.cy} strokeWidth={1.5} dot={false} name="Sim" strokeDasharray="4 2"/><Legend wrapperStyle={{fontSize:9,fontFamily:C.hd}}/></LineChart></ResponsiveContainer></GC></Sec>
         </div>
       </>)}
+      {grid==="g7"&&(<SetupDeltaTab pareto={pareto}/>)}
+      {grid==="g8"&&(<ParamSweepTab pareto={pareto} sens={sens}/>)}
     </FadeSlide>
   </>);
 }

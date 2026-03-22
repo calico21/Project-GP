@@ -40,6 +40,7 @@ const TABS = [
   { key: "dHdt",        label: "dH/dt Budget" },
   { key: "dissipation", label: "R_net Matrix" },
   { key: "budget",      label: "Energy Budget" },
+  { key: "passivity",   label: "Passivity Monitor" },
 ];
 
 // ─── KPI computation ─────────────────────────────────────────────────────────
@@ -280,6 +281,62 @@ function BudgetTab({ energy }) {
 // ═════════════════════════════════════════════════════════════════════════════
 // MAIN MODULE EXPORT
 // ═════════════════════════════════════════════════════════════════════════════
+function PassivityTab({ energy }) {
+  const dt = energy.length > 1 ? energy[1].t - energy[0].t : 0.02;
+  const sparse = useMemo(() => energy.filter((_, i) => i % 2 === 0), [energy]);
+
+  const timeline = useMemo(() => {
+    let cumV = 0, cumD = 0;
+    return sparse.map(e => {
+      if (e.dH > 0) cumV += e.dH * dt; else cumD += Math.abs(e.dH) * dt;
+      return { t: e.t, dH: e.dH, cumViolation: +cumV.toFixed(2), cumDissipation: +cumD.toFixed(2),
+        ratio: cumD > 0 ? +(cumV / cumD * 100).toFixed(2) : 0 };
+    });
+  }, [sparse, dt]);
+
+  const totalVTime = energy.filter(e => e.dH > 0).length * dt;
+  const totalTime = energy.length * dt;
+  const violPct = (totalVTime / totalTime) * 100;
+  const peakInj = Math.max(0, ...energy.map(e => e.dH));
+  const cumInj = timeline[timeline.length - 1]?.cumViolation || 0;
+
+  return (
+    <div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 10, marginBottom: 14 }}>
+        <KPI label="Violation Time" value={`${totalVTime.toFixed(2)}s`} sub={`${violPct.toFixed(1)}% of run`} sentiment={violPct < 5 ? "positive" : violPct < 15 ? "amber" : "negative"} delay={0} />
+        <KPI label="Peak Injection" value={`${peakInj.toFixed(1)} W`} sub="max dH/dt > 0" sentiment={peakInj < 5 ? "positive" : "amber"} delay={1} />
+        <KPI label="Cum. Phantom Energy" value={`${cumInj.toFixed(1)} J`} sub="total injected" sentiment={cumInj < 10 ? "positive" : "negative"} delay={2} />
+        <KPI label="Violation / Dissipation" value={`${timeline[timeline.length - 1]?.ratio || 0}%`} sub="energy ratio" sentiment={timeline[timeline.length - 1]?.ratio < 5 ? "positive" : "amber"} delay={3} />
+        <KPI label="H_net Quality" value={violPct < 5 ? "GOOD" : violPct < 15 ? "WARN" : "RETRAIN"} sub="training assessment" sentiment={violPct < 5 ? "positive" : violPct < 15 ? "amber" : "negative"} delay={4} />
+      </div>
+
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+        <Sec title="dH/dt Timeline — Violations Highlighted">
+          <GC><ResponsiveContainer width="100%" height={220}>
+            <ComposedChart data={timeline}><CartesianGrid strokeDasharray="3 3" stroke={GS}/>
+              <XAxis dataKey="t" {...AX}/><YAxis {...AX}/><Tooltip contentStyle={TT}/>
+              <ReferenceArea y1={0} y2={100} fill={C.red} fillOpacity={0.03}/>
+              <ReferenceArea y1={-100} y2={0} fill={C.gn} fillOpacity={0.03}/>
+              <ReferenceLine y={0} stroke={C.gn} strokeWidth={2}/>
+              <Line dataKey="dH" stroke={C.cy} strokeWidth={1} dot={false} name="dH/dt [W]"/>
+              <Legend wrapperStyle={{ fontSize: 8, fontFamily: C.hd }}/>
+            </ComposedChart>
+          </ResponsiveContainer></GC>
+        </Sec>
+        <Sec title="Cumulative Phantom Energy [J]">
+          <GC><ResponsiveContainer width="100%" height={220}>
+            <AreaChart data={timeline}><CartesianGrid strokeDasharray="3 3" stroke={GS}/>
+              <XAxis dataKey="t" {...AX}/><YAxis {...AX}/><Tooltip contentStyle={TT}/>
+              <Area dataKey="cumViolation" stroke={C.red} fill={`${C.red}15`} strokeWidth={1.5} dot={false} name="Injected [J]"/>
+              <Area dataKey="cumDissipation" stroke={C.gn} fill={`${C.gn}08`} strokeWidth={1} dot={false} name="Dissipated [J]"/>
+              <Legend wrapperStyle={{ fontSize: 8, fontFamily: C.hd }}/>
+            </AreaChart>
+          </ResponsiveContainer></GC>
+        </Sec>
+      </div>
+    </div>
+  );
+}
 
 export default function EnergyAuditModule({ energy, landscape, rMatrix }) {
   const [tab, setTab] = useState("landscape");
@@ -347,6 +404,7 @@ export default function EnergyAuditModule({ energy, landscape, rMatrix }) {
       {tab === "dHdt"        && <DHdtTab energy={energy} />}
       {tab === "dissipation" && <DissipationTab rMatrix={rMatrix} />}
       {tab === "budget"      && <BudgetTab energy={energy} />}
+      {tab === "passivity"   && <PassivityTab energy={energy} />}
     </div>
   );
 }

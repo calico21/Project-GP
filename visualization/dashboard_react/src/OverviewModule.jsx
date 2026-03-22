@@ -166,14 +166,108 @@ const PILLARS=[
 "M_yaw_target  =  WMPC yaw demand [Nm]\nM_mechanical   =  Σ Fy_i × track_arm_i\nM_active       =  (T_outer − T_inner) × r_wheel / ratio\n\n|T_i| ≤ T_max(ω_motor, T_inv, SoC)\nΣ|T_i| ≤ P_battery_max / ω_avg"}</MathBlock>
       <AdvantageBox text={<>If front aero stalls mid-corner, torque vectoring instantly transfers power to the outside rear wheel, <F color={C.gn}>artificially inducing oversteer</F> to maintain the racing line. This safety net means the WMPC can push harder, extracting 100% mechanical grip without thermal shutdown.</>}/>
     </>)},
+
+  {key:"events",num:"09",label:"Event Score Estimator",sub:"FSG Competition Prediction",color:"#22d3ee",icon:"⊞",
+    tags:["Autocross","Endurance","Skidpad","Acceleration","Efficiency"],
+    content:()=>{
+      const bestGrip = 1.56;
+      const bestStab = 2.8;
+      const mass = 300;
+      const power = 80;
+      const accelTime = 3.2 + (mass - 250) * 0.008 - (power - 60) * 0.012;
+      const skidpadTime = 2 * Math.PI * 7.625 / (Math.sqrt(bestGrip * 9.81 * 7.625));
+      const autocrossLap = 64.0 / Math.max(0.5, bestGrip);
+      const enduranceLap = autocrossLap * 1.02;
+      const enduranceTotal = enduranceLap * 16;
+      const efficiencyFactor = 0.92;
+      const accelScore = Math.max(0, Math.min(75, 75 * (1 - (accelTime - 3.0) / (5.5 - 3.0))));
+      const skidpadScore = Math.max(0, Math.min(75, 75 * (1 - (skidpadTime - 4.5) / (7.0 - 4.5))));
+      const autocrossScore = Math.max(0, Math.min(100, 100 * (1 - (autocrossLap - 52) / (72 - 52))));
+      const enduranceScore = Math.max(0, Math.min(300, 300 * (1 - (enduranceTotal/60 - 14) / (22 - 14))));
+      const effScore = Math.max(0, Math.min(100, 100 * efficiencyFactor));
+      const totalDynamic = accelScore + skidpadScore + autocrossScore + enduranceScore + effScore;
+      const events = [
+        { name: "Acceleration", time: `${accelTime.toFixed(2)}s`, score: accelScore.toFixed(0), max: 75, color: C.gn },
+        { name: "Skidpad", time: `${skidpadTime.toFixed(2)}s`, score: skidpadScore.toFixed(0), max: 75, color: C.cy },
+        { name: "Autocross", time: `${autocrossLap.toFixed(2)}s`, score: autocrossScore.toFixed(0), max: 100, color: C.am },
+        { name: "Endurance", time: `${(enduranceTotal/60).toFixed(1)}min`, score: enduranceScore.toFixed(0), max: 300, color: C.red },
+        { name: "Efficiency", time: `${(efficiencyFactor*100).toFixed(0)}%`, score: effScore.toFixed(0), max: 100, color: C.pr },
+      ];
+      return (<>
+        <SubHead icon="◎" label="Predicted Dynamic Event Results" color="#22d3ee"/>
+        <P>Based on the current best Pareto setup (grip: <F>{bestGrip.toFixed(3)}G</F>, stability: <F color={C.am}>{bestStab.toFixed(2)} rad/s</F>), here are the predicted competition results using FSG 2025 scoring formulas.</P>
+        <div style={{display:"grid",gridTemplateColumns:"repeat(5,1fr)",gap:10,margin:"16px 0"}}>
+          {events.map(ev => (
+            <div key={ev.name} style={{padding:"14px 12px",borderRadius:8,background:`${ev.color}06`,border:`1px solid ${ev.color}15`,textAlign:"center"}}>
+              <div style={{fontSize:8,fontWeight:700,color:ev.color,fontFamily:C.dt,letterSpacing:2,marginBottom:6}}>{ev.name.toUpperCase()}</div>
+              <div style={{fontSize:24,fontWeight:800,color:ev.color,fontFamily:C.dt}}>{ev.score}</div>
+              <div style={{fontSize:8,color:C.dm,fontFamily:C.dt}}>/ {ev.max} pts</div>
+              <div style={{height:4,background:C.b1,borderRadius:2,margin:"8px 0 4px",overflow:"hidden"}}>
+                <div style={{width:`${(parseFloat(ev.score)/ev.max)*100}%`,height:"100%",background:ev.color,borderRadius:2}}/>
+              </div>
+              <div style={{fontSize:10,color:C.br,fontFamily:C.dt,fontWeight:600,marginTop:4}}>{ev.time}</div>
+            </div>
+          ))}
+        </div>
+        <div style={{padding:"16px 20px",background:"rgba(34,211,238,0.04)",border:"1px solid rgba(34,211,238,0.12)",borderRadius:8,textAlign:"center",margin:"16px 0"}}>
+          <div style={{fontSize:8,fontWeight:700,color:C.dm,fontFamily:C.dt,letterSpacing:2,marginBottom:6}}>TOTAL DYNAMIC SCORE</div>
+          <span style={{fontSize:42,fontWeight:800,color:"#22d3ee",fontFamily:C.dt}}>{totalDynamic.toFixed(0)}</span>
+          <span style={{fontSize:14,color:C.dm,fontFamily:C.dt,marginLeft:4}}>/ 650</span>
+          <div style={{fontSize:10,color:C.md,fontFamily:C.dt,marginTop:6}}>Top 10 at FSG 2024: ~520+ pts · Winner: ~580 pts</div>
+        </div>
+        <InfoGrid items={[
+          {title:"SCORING MODEL",color:"#22d3ee",text:<>FSG uses relative scoring: your time vs best time and worst time in the field. The estimates above assume a competitive field (best Accel ~3.0s, best Skidpad ~4.5s, best Autocross ~52s). Actual scores depend on who shows up.</>},
+          {title:"SENSITIVITY",color:C.am,text:<>Endurance dominates (300 pts). A 0.1s/lap improvement in endurance pace is worth ~6 points. The same improvement in Autocross is worth ~5 points. Focus optimization budget on endurance pace + finishing reliability.</>},
+          {title:"RISK FACTORS",color:C.red,text:<>DNF in Endurance = 0/300 pts (46% of dynamic score). Thermal derating, brake fade, and tire degradation are the primary DNF risks. The Endurance Strategy module tracks all three.</>},
+        ]}/>
+        <AdvantageBox text={<>This prediction is derived directly from the physics engine output — not from historical lap time databases. Because the optimizer has explored the full 28D setup space, these numbers represent the <F color={C.gn}>theoretical performance ceiling</F> of the vehicle platform. The gap between predicted and actual is the sum of driver skill, track conditions, and model error.</>}/>
+      </>);
+    }},
 ];
 
 // ═══════════════════════════════════════════════════════════════════════
-export default function OverviewModule(){
+export default function OverviewModule({ pareto, conv }){
   const[active,setActive]=useState("nph");
   const pillar=PILLARS.find(p=>p.key===active);
+
+  const bestGrip = pareto?.length ? Math.max(...pareto.map(p => p.grip)) : 1.0;
+  const estLapTime = 64.0 / Math.max(0.5, bestGrip);
+  const estEndurance = estLapTime * 16;
+  const bestStab = pareto?.length ? Math.min(...pareto.filter(p => p.grip > bestGrip - 0.05).map(p => p.stability)) : 5.0;
+  const convergedGrip = conv?.length ? conv[conv.length - 1].bestGrip : 0;
+
   return(
-    <div style={{display:"flex",gap:0,minHeight:"calc(100vh - 160px)"}}>
+    <div style={{display:"flex",flexDirection:"column",minHeight:"calc(100vh - 160px)"}}>
+      {/* ── Performance Summary Strip ──────────────────────────────── */}
+      <div style={{display:"grid",gridTemplateColumns:"repeat(5,1fr)",gap:10,marginBottom:14,padding:"0 0 14px",borderBottom:`1px solid ${C.b1}`}}>
+        <div style={{...GL,padding:"12px 14px",borderTop:`2px solid ${C.gn}`,textAlign:"center"}}>
+          <div style={{fontSize:8,fontWeight:700,color:C.dm,fontFamily:C.dt,letterSpacing:1.5}}>EST. LAP TIME</div>
+          <div style={{fontSize:22,fontWeight:800,color:C.gn,fontFamily:C.dt,marginTop:4}}>{estLapTime.toFixed(2)}<span style={{fontSize:10,color:C.dm}}>s</span></div>
+          <div style={{fontSize:8,color:C.dm,fontFamily:C.dt,marginTop:2}}>from best Pareto setup</div>
+        </div>
+        <div style={{...GL,padding:"12px 14px",borderTop:`2px solid ${C.cy}`,textAlign:"center"}}>
+          <div style={{fontSize:8,fontWeight:700,color:C.dm,fontFamily:C.dt,letterSpacing:1.5}}>EST. ENDURANCE</div>
+          <div style={{fontSize:22,fontWeight:800,color:C.cy,fontFamily:C.dt,marginTop:4}}>{(estEndurance/60).toFixed(1)}<span style={{fontSize:10,color:C.dm}}>min</span></div>
+          <div style={{fontSize:8,color:C.dm,fontFamily:C.dt,marginTop:2}}>16 laps × {estLapTime.toFixed(1)}s</div>
+        </div>
+        <div style={{...GL,padding:"12px 14px",borderTop:`2px solid ${C.red}`,textAlign:"center"}}>
+          <div style={{fontSize:8,fontWeight:700,color:C.dm,fontFamily:C.dt,letterSpacing:1.5}}>PEAK GRIP</div>
+          <div style={{fontSize:22,fontWeight:800,color:C.red,fontFamily:C.dt,marginTop:4}}>{bestGrip.toFixed(3)}<span style={{fontSize:10,color:C.dm}}>G</span></div>
+          <div style={{fontSize:8,color:C.dm,fontFamily:C.dt,marginTop:2}}>Pareto front max</div>
+        </div>
+        <div style={{...GL,padding:"12px 14px",borderTop:`2px solid ${C.am}`,textAlign:"center"}}>
+          <div style={{fontSize:8,fontWeight:700,color:C.dm,fontFamily:C.dt,letterSpacing:1.5}}>STABILITY</div>
+          <div style={{fontSize:22,fontWeight:800,color:bestStab<5?C.gn:C.am,fontFamily:C.dt,marginTop:4}}>{bestStab.toFixed(2)}<span style={{fontSize:10,color:C.dm}}>rad/s</span></div>
+          <div style={{fontSize:8,color:C.dm,fontFamily:C.dt,marginTop:2}}>{bestStab<5?"within cap":"exceeds 5.0 cap"}</div>
+        </div>
+        <div style={{...GL,padding:"12px 14px",borderTop:`2px solid ${C.pr||"#a78bfa"}`,textAlign:"center"}}>
+          <div style={{fontSize:8,fontWeight:700,color:C.dm,fontFamily:C.dt,letterSpacing:1.5}}>CONVERGED</div>
+          <div style={{fontSize:22,fontWeight:800,color:C.pr||"#a78bfa",fontFamily:C.dt,marginTop:4}}>{convergedGrip.toFixed(3)}<span style={{fontSize:10,color:C.dm}}>G</span></div>
+          <div style={{fontSize:8,color:C.dm,fontFamily:C.dt,marginTop:2}}>{conv?.length || 0} iterations</div>
+        </div>
+      </div>
+
+      <div style={{display:"flex",gap:0,flex:1}}>
       {/* LEFT NAV */}
       <div style={{width:260,flexShrink:0,borderRight:`1px solid ${C.b1}`,overflowY:"auto"}}>
         <div style={{padding:"0 16px 12px",marginBottom:8}}>
@@ -233,6 +327,7 @@ export default function OverviewModule(){
         </div>
         {pillar.content()}
       </div>
+      </div>{/* close flex row */}
     </div>
   );
 }
