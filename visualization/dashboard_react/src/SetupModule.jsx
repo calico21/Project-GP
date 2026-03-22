@@ -238,7 +238,7 @@ function ParamSweepTab({ pareto, sens }) {
             <YAxis yAxisId="g" {...ax()} label={{ value: "Grip [G]", angle: -90, position: "insideLeft", fill: C.dm, fontSize: 9 }} />
             <YAxis yAxisId="s" orientation="right" {...ax()} label={{ value: "Stab [rad/s]", angle: 90, position: "insideRight", fill: C.dm, fontSize: 9 }} />
             <Tooltip contentStyle={TT} />
-            <ReferenceLine x={bestVal} stroke={C.gn} strokeDasharray="4 2" label={{ value: "BEST", fill: C.gn, fontSize: 8 }} />
+            <ReferenceLine yAxisId="g" x={bestVal} stroke={C.gn} strokeDasharray="4 2" label={{ value: "BEST", fill: C.gn, fontSize: 8 }} />
             <Line yAxisId="g" dataKey="grip" stroke={C.cy} strokeWidth={2} dot={false} name="Grip" />
             <Line yAxisId="s" dataKey="stability" stroke={C.am} strokeWidth={2} dot={false} name="Stability" />
             <Legend wrapperStyle={{ fontSize: 9, fontFamily: C.hd }} />
