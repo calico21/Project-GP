@@ -1,0 +1,34 @@
+
+============================================================
+PHASE 4: DYNAMIC AI SETUP DISCOVERY (MORL-SB-TRPO)
+============================================================
+[VehicleDynamics] H_net train scale (diagnostic): 14.3849 J  [NOT applied to architecture]
+[VehicleDynamics] Loaded h_net.bytes
+[VehicleDynamics] Loaded r_net.bytes
+
+[MORL-SB-TRPO] Initialising 28-dim Pareto Policy Ensemble…
+[SB-TRPO] Compiling 46-DOF physics gradients via XLA…
+[SB-TRPO] dim=28 | KL_threshold=0.00935 | Chebyshev N=20
+   [DIAG] Soft grip: 1.6161 G | Hard grip: 1.1117 G
+   Grip gradient norm: 0.719628
+   [OK] Gradient flow confirmed.
+
+[Phase 0] ARD-BO cold-start on 28-dim space (10 init + 30 EI)…
+   [BO] Phase 0a (10 evals): best = 1.4340 G
+   [BO] Phase 0b iter  5/30: best = 1.4447 G | mean ls_0: 1.801 ls_2: 1.172
+   [BO] Phase 0b iter 10/30: best = 1.5119 G | mean ls_0: 1.181 ls_2: 1.412
+   [BO] Phase 0b iter 15/30: best = 1.5119 G | mean ls_0: 1.427 ls_2: 1.007
+   [BO] Phase 0b iter 20/30: best = 1.5460 G | mean ls_0: 1.881 ls_2: 0.896
+   [BO] Phase 0b iter 25/30: best = 1.5460 G | mean ls_0: 2.000 ls_2: 0.985
+   [BO] Phase 0b iter 30/30: best = 1.5460 G | mean ls_0: 2.000 ls_2: 0.999
+   [BO] 5 diverse basins found. Top grips: ['1.5460G', '1.5119G', '1.5087G', '1.5030G', '1.4840G']
+[Phase 0] Seeded 5 BO basins into ensemble.
+[SB-TRPO] Running feasibility pre-check…
+   [DIAG] Chebyshev omegas: 8/20 members in high-grip region [0.7,1.0]
+   [DIAG] Stability cap: 5.0 rad/s
+   [DIAG] dim=28 KL_threshold=0.00935
+[SB-TRPO] i=   0 | Safe: 20/20 | Valid: 20/20 | Grip: 1.5463 G | log_std: -0.995 | Trust: off
+[SB-TRPO] i=   1 | Safe: 20/20 | Valid: 20/20 | Grip: 1.5465 G | log_std: -0.990 | Trust: off
+[SB-TRPO] i=   2 | Safe: 20/20 | Valid: 20/20 | Grip: 1.5465 G | log_std: -0.985 | Trust: off
+[SB-TRPO] i=   3 | Safe: 20/20 | Valid: 20/20 | Grip: 1.5465 G | log_std: -0.980 | Trust: off
+[SB-TRPO] i=   4 | Safe: 20/20 | Valid: 20/20 | Grip: 1.5464 G | log_std: -0.975 | Trust: off

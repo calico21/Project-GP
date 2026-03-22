@@ -1,0 +1,110 @@
+_wandb:
+    value:
+        cli_version: 0.25.0
+        e:
+            ncd4j8ktark867aw57wwcdhkdo2af79w:
+                args:
+                    - --mode
+                    - setup
+                    - --iterations
+                    - "400"
+                codePath: main.py
+                codePathLocal: main.py
+                cpu_count: 8
+                cpu_count_logical: 16
+                cudaVersion: "13.0"
+                disk:
+                    /:
+                        total: "1081101176832"
+                        used: "50958733312"
+                email: alexrevillaperez@gmail.com
+                executable: /home/alexr/project_gp_env/bin/python
+                git:
+                    commit: 0d40811966c08734ded8aa42249fa7395a5f6f8f
+                    remote: https://github.com/calico21/Project-GP.git
+                gpu: NVIDIA GeForce RTX 4060 Laptop GPU
+                gpu_count: 1
+                gpu_nvidia:
+                    - architecture: Ada
+                      memoryTotal: "8585740288"
+                      name: NVIDIA GeForce RTX 4060 Laptop GPU
+                      uuid: GPU-ba169738-654c-63ce-1cac-81f601baa2e5
+                host: ALEXRP
+                memory:
+                    total: "25199550464"
+                os: Linux-6.6.87.2-microsoft-standard-WSL2-x86_64-with-glibc2.39
+                program: /home/alexr/FS_Driver_Setup_Optimizer/main.py
+                python: CPython 3.12.3
+                root: /home/alexr/FS_Driver_Setup_Optimizer
+                startedAt: "2026-03-22T10:44:12.005498Z"
+                writerId: ncd4j8ktark867aw57wwcdhkdo2af79w
+        m: []
+        python_version: 3.12.3
+        t:
+            "1":
+                - 12
+                - 45
+            "2":
+                - 12
+                - 45
+            "3":
+                - 2
+                - 13
+                - 16
+                - 62
+            "4": 3.12.3
+            "5": 0.25.0
+            "12": 0.25.0
+            "13": linux-x86_64
+        visualize:
+            Pareto_Scatter:
+                panel_config:
+                    fieldSettings:
+                        x: Grip_G
+                        "y": Stability_Overshoot
+                    panelDefId: wandb/scatter/v0
+                    stringSettings:
+                        title: 'Pareto Front: Grip vs Stability (coloured by Generation)'
+                    transform:
+                        name: tableWithLeafColNames
+                    userQuery:
+                        queryFields:
+                            - args:
+                                - name: runSets
+                                  value: ${runSets}
+                              fields:
+                                - fields: []
+                                  name: id
+                                - fields: []
+                                  name: name
+                                - fields: []
+                                  name: _defaultColorIndex
+                                - args:
+                                    - name: tableKey
+                                      value: Pareto_Scatter_table
+                                  fields: []
+                                  name: summaryTable
+                              name: runSets
+                panel_type: Vega2
+bo_n_init:
+    value: 5
+bo_n_iters:
+    value: 25
+ensemble_size:
+    value: 20
+horizon:
+    value: 128
+iterations:
+    value: 400
+kl_lag_horizon:
+    value: 10
+log:
+    value: null
+mode:
+    value: setup
+n_restart:
+    value: 5
+restart_interval:
+    value: 200
+stability_max:
+    value: 5

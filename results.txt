@@ -1,3 +1,5 @@
+(project_gp_env) alexr@ALEXRP:~/FS_Driver_Setup_Optimizer$ python sanity_checks.py
+
 ############################################################
  PROJECT-GP DIGITAL TWIN: PRE-FLIGHT SANITY CHECKS
 ############################################################
@@ -15,62 +17,50 @@ Training H_net and R_net for 2000 epochs (synthetic chassis flex)...
    [Neural Physics] H target scale: 14.3849 J  | R target scale: 76.8194
 
 [Neural Physics] Training H_net (Energy Landscape Residual)...
-  [Config] Epochs: 3500 | AdamW | weight_decay: 1e-4
+  [Config] Epochs: 2500 | AdamW | weight_decay: 1e-4
   [P5 SE(3)] 29 bilateral-symmetric features
   [GP-vX2] setup-dependent target: V_spring_dev + V_arb + V_torsion
   Phase 1 (ep 1→2500): PURE MSE.
-  Phase 2 (ep 2501→3500): MSE + PhantomRate@z_eq [α=3.0] + squared-hinge passivity [α=25.0]
-  Epoch  200 | Loss: 420645.250000 | lr: 9.84e-04 | Phase 1 (MSE)
-  Epoch  400 | Loss: 211163.984375 | lr: 9.39e-04 | Phase 1 (MSE)
-  Epoch  600 | Loss: 53479.382812 | lr: 8.66e-04 | Phase 1 (MSE)
-  Epoch  800 | Loss: 18336.445312 | lr: 7.70e-04 | Phase 1 (MSE)
-  Epoch 1000 | Loss: 9576.191406 | lr: 6.58e-04 | Phase 1 (MSE)
-  Epoch 1200 | Loss: 5747.214355 | lr: 5.36e-04 | Phase 1 (MSE)
-  Epoch 1400 | Loss: 3974.101074 | lr: 4.12e-04 | Phase 1 (MSE)
-  Epoch 1600 | Loss: 3042.971680 | lr: 2.94e-04 | Phase 1 (MSE)
-  Epoch 1800 | Loss: 2521.824219 | lr: 1.89e-04 | Phase 1 (MSE)
-  Epoch 2000 | Loss: 2242.979248 | lr: 1.05e-04 | Phase 1 (MSE)
-  Epoch 2200 | Loss: 2108.439453 | lr: 4.48e-05 | Phase 1 (MSE)
-  Epoch 2400 | Loss: 2056.376221 | lr: 1.39e-05 | Phase 1 (MSE)
-
-  [Phase 2 START] Epoch 2501: fresh Adam (LR=5e-4). PhantomRate@z_eq (α=3.0) + squared-hinge passivity (α=25.0).
-  Epoch 2600 | MSE: 285625.437500 | PhRate@z_eq: 16.3957 | Violation: 10530.64 J/s | PhScale: 500.00 | PassScale: 179.589 | lr: 4.89e-05 | Phase 2 (10%)
-  Epoch 2800 | MSE: 383311.812500 | PhRate@z_eq: 7.0859 | Violation: 2089.36 J/s | PhScale: 500.00 | PassScale: 500.000 | lr: 4.07e-05 | Phase 2 (30%)
-  Epoch 3000 | MSE: 397868.343750 | PhRate@z_eq: 5.4801 | Violation: 1258.42 J/s | PhScale: 500.00 | PassScale: 500.000 | lr: 2.75e-05 | Phase 2 (50%)
-  Epoch 3200 | MSE: 402403.281250 | PhRate@z_eq: 4.8887 | Violation: 1012.57 J/s | PhScale: 500.00 | PassScale: 500.000 | lr: 1.43e-05 | Phase 2 (70%)
-  Epoch 3400 | MSE: 404303.718750 | PhRate@z_eq: 4.5692 | Violation: 916.92 J/s | PhScale: 500.00 | PassScale: 500.000 | lr: 6.10e-06 | Phase 2 (90%)
+  Phase 2 (ep 2501→2500): AL-constrained MSE | PhantomRate [α=3.0] | passivity via Augmented Lagrangian (ρ_init=1e-03)
+  Epoch  200 | Loss: 1.894637 | lr: 9.84e-04 | Phase 1 (MSE)
+  Epoch  400 | Loss: 0.969628 | lr: 9.39e-04 | Phase 1 (MSE)
+  Epoch  600 | Loss: 0.229985 | lr: 8.66e-04 | Phase 1 (MSE)
+  Epoch  800 | Loss: 0.068883 | lr: 7.70e-04 | Phase 1 (MSE)
+  Epoch 1000 | Loss: 0.031064 | lr: 6.58e-04 | Phase 1 (MSE)
+  Epoch 1200 | Loss: 0.017914 | lr: 5.36e-04 | Phase 1 (MSE)
+  Epoch 1400 | Loss: 0.012180 | lr: 4.12e-04 | Phase 1 (MSE)
+  Epoch 1600 | Loss: 0.009370 | lr: 2.94e-04 | Phase 1 (MSE)
+  Epoch 1800 | Loss: 0.007880 | lr: 1.89e-04 | Phase 1 (MSE)
+  Epoch 2000 | Loss: 0.007085 | lr: 1.05e-04 | Phase 1 (MSE)
+  Epoch 2200 | Loss: 0.006698 | lr: 4.48e-05 | Phase 1 (MSE)
+  Epoch 2400 | Loss: 0.006548 | lr: 1.39e-05 | Phase 1 (MSE)
 
 [Neural Physics] Training R_net (Dissipation Matrix Residual)...
-  Epoch  200 | MSE Loss: 0.367966 | lr: 9.92e-04
-  Epoch  400 | MSE Loss: 0.363072 | lr: 9.68e-04
-  Epoch  600 | MSE Loss: 0.354235 | lr: 9.30e-04
-  Epoch  800 | MSE Loss: 0.117274 | lr: 8.78e-04
-  Epoch 1000 | MSE Loss: 0.110509 | lr: 8.14e-04
+  Epoch  200 | MSE Loss: 0.367977 | lr: 9.84e-04
+  Epoch  400 | MSE Loss: 0.363171 | lr: 9.39e-04
+  Epoch  600 | MSE Loss: 0.355361 | lr: 8.66e-04
+  Epoch  800 | MSE Loss: 0.125761 | lr: 7.70e-04
+  Epoch 1000 | MSE Loss: 0.111590 | lr: 6.58e-04
   [R Phase 2] Epoch 1001: fresh Adam, LR 5e-4.
-  Epoch 1200 | MSE Loss: 0.108493 | lr: 4.93e-04 | R Phase 2
-  Epoch 1400 | MSE Loss: 0.105928 | lr: 4.72e-04 | R Phase 2
-  Epoch 1600 | MSE Loss: 0.102792 | lr: 4.39e-04 | R Phase 2
-  Epoch 1800 | MSE Loss: 0.098881 | lr: 3.96e-04 | R Phase 2
-  Epoch 2000 | MSE Loss: 0.094558 | lr: 3.45e-04 | R Phase 2
-  Epoch 2200 | MSE Loss: 0.089196 | lr: 2.89e-04 | R Phase 2
-  Epoch 2400 | MSE Loss: 0.078557 | lr: 2.33e-04 | R Phase 2
-  Epoch 2600 | MSE Loss: 0.068032 | lr: 1.79e-04 | R Phase 2
-  Epoch 2800 | MSE Loss: 0.058901 | lr: 1.32e-04 | R Phase 2
-  Epoch 3000 | MSE Loss: 0.054380 | lr: 9.30e-05 | R Phase 2
-  Epoch 3200 | MSE Loss: 0.052332 | lr: 6.58e-05 | R Phase 2
-  Epoch 3400 | MSE Loss: 0.051081 | lr: 5.18e-05 | R Phase 2
+  Epoch 1200 | MSE Loss: 0.108756 | lr: 4.81e-04 | R Phase 2
+  Epoch 1400 | MSE Loss: 0.105661 | lr: 4.26e-04 | R Phase 2
+  Epoch 1600 | MSE Loss: 0.102210 | lr: 3.45e-04 | R Phase 2
+  Epoch 1800 | MSE Loss: 0.098543 | lr: 2.51e-04 | R Phase 2
+  Epoch 2000 | MSE Loss: 0.095323 | lr: 1.62e-04 | R Phase 2
+  Epoch 2200 | MSE Loss: 0.092905 | lr: 9.30e-05 | R Phase 2
+  Epoch 2400 | MSE Loss: 0.091270 | lr: 5.49e-05 | R Phase 2
 [VehicleDynamics] H_net train scale (diagnostic): 14.3849 J  [NOT applied to architecture]
 [VehicleDynamics] Loaded h_net.bytes
 [VehicleDynamics] Loaded r_net.bytes
 
-[Neural Physics] Passive energy injection: ✓ PASS  (-5.7 mJ < 100 mJ budget)
-[Neural Physics] FiLM sensitivity: std(H | varied_setup) = 0.9552 J  (threshold: 0.7192 J)  ✓ PASS — FiLM active
+[Neural Physics] Passive energy injection: ✓ PASS  (-31.5 mJ < 100 mJ budget)
+[Neural Physics] FiLM sensitivity: std(H | varied_setup) = 1.5675 J  (threshold: 0.7192 J)  ✓ PASS — FiLM active
 
 [Neural Physics] Pre-training complete!
 Scale factors:  h_scale=14.3849 J  |  r_scale=76.8194
 [Neural Physics] Weights saved → /home/alexr/FS_Driver_Setup_Optimizer/models/h_net.bytes
 [Neural Physics] Scale saved   → /home/alexr/FS_Driver_Setup_Optimizer/models/h_net_scale.txt  (14.3849 J)
-[Neural Physics] LAST_TRAIN_MSE=404865.468750  LAST_PHRATE=4.4997
+[Neural Physics] LAST_TRAIN_MSE=0.006515  LAST_PHRATE=nan
 [PASS] Weights saved → /home/alexr/FS_Driver_Setup_Optimizer/models/h_net.bytes
 [PASS] Scale saved   → /home/alexr/FS_Driver_Setup_Optimizer/models/h_net_scale.txt  (14.38 J)
 [PASS] Test 2 will load passivity-trained H_net from disk.
@@ -84,7 +74,7 @@ Instantiating DifferentiableMultiBodyVehicle...
 [VehicleDynamics] Loaded r_net.bytes
 
   ── Passive energy budget check (u=[0,0]) ──
-  > Passive ΔKE: -8.58 mJ  (budget: 150 mJ)
+  > Passive ΔKE: -2.86 mJ  (budget: 150 mJ)
 [PASS] Energy budget satisfied — H_net is passive.
 
   ── Active forward pass (u=[0.2, 1000]) ──
@@ -101,37 +91,31 @@ Solving MPC for constant curvature (R=20m). Expected physical limit ~16.6 m/s (P
 [VehicleDynamics] H_net train scale (diagnostic): 14.3849 J  [NOT applied to architecture]
 [VehicleDynamics] Loaded h_net.bytes
 [VehicleDynamics] Loaded r_net.bytes
-   [DEBUG] 200-step rollout clean. Final vx=19.230 m/s — physics is stable.
+   [DEBUG] 200-step rollout clean. Final vx=19.179 m/s — physics is stable.
 [VehicleDynamics] H_net train scale (diagnostic): 14.3849 J  [NOT applied to architecture]
 [VehicleDynamics] Loaded h_net.bytes
 [VehicleDynamics] Loaded r_net.bytes
 [Diff-WMPC] Built canonical 28-param setup (k_f=35030, arb_f=200)
 [Diff-WMPC] Physics P-ctrl warm start (N=64, Kp=6000 N/(m/s)).
-[Diff-WMPC] AL iter 1/5 — ρ=500.0, λ_max=0.000
+[Diff-WMPC] AL iter 1/5 — ρ=10.0, λ_max=0.000
 [Diff-WMPC] Optimising 3-level Db4 basis over N=64 via L-BFGS-B…
-[Diff-WMPC] NaN #1 (AL iter 0): warm-start fallback
-[Diff-WMPC] Constraint max violation: 0.3181 (0=feasible). Updated λ_max=159.034
-[Diff-WMPC] AL iter 2/5 — ρ=500.0, λ_max=159.034
+[Diff-WMPC] Constraint max violation: 0.0894 (0=feasible). Updated λ_max=0.894
+[Diff-WMPC] AL iter 2/5 — ρ=40.0, λ_max=0.894
 [Diff-WMPC] Optimising 3-level Db4 basis over N=64 via L-BFGS-B…
-[Diff-WMPC] NaN #1 (AL iter 1): warm-start fallback
-[Diff-WMPC] Constraint max violation: 0.3181 (0=feasible). Updated λ_max=318.068
-[Diff-WMPC] AL iter 3/5 — ρ=500.0, λ_max=318.068
+[Diff-WMPC] Constraint max violation: 0.0568 (0=feasible). Updated λ_max=3.168
+[Diff-WMPC] AL iter 3/5 — ρ=150.0, λ_max=3.168
 [Diff-WMPC] Optimising 3-level Db4 basis over N=64 via L-BFGS-B…
-[Diff-WMPC] NaN #1 (AL iter 2): warm-start fallback
-[Diff-WMPC] Constraint max violation: 0.3181 (0=feasible). Updated λ_max=477.102
-[Diff-WMPC] AL iter 4/5 — ρ=500.0, λ_max=477.102
+[Diff-WMPC] Constraint max violation: 0.0568 (0=feasible). Updated λ_max=11.695
+[Diff-WMPC] AL iter 4/5 — ρ=500.0, λ_max=11.695
 [Diff-WMPC] Optimising 3-level Db4 basis over N=64 via L-BFGS-B…
-[Diff-WMPC] NaN #1 (AL iter 3): warm-start fallback
-[Diff-WMPC] Constraint max violation: 0.3181 (0=feasible). Updated λ_max=636.135
-[Diff-WMPC] AL iter 5/5 — ρ=500.0, λ_max=636.135
+[Diff-WMPC] Constraint max violation: 0.0568 (0=feasible). Updated λ_max=40.118
+[Diff-WMPC] AL iter 5/5 — ρ=500.0, λ_max=40.118
 [Diff-WMPC] Optimising 3-level Db4 basis over N=64 via L-BFGS-B…
-[Diff-WMPC] NaN #1 (AL iter 4): warm-start fallback
-[Diff-WMPC] Constraint max violation: 0.3181 (0=feasible). Updated λ_max=795.169
-[Diff-WMPC] L-BFGS-B converged: CONVERGENCE: RELATIVE REDUCTION OF F <= FACTR*EPSMCH (nit=1, nfev=16)
-[Diff-WMPC] Friction circle: 51.6% inside μ=1.4 (max G_combined=1.148)
-[Diff-WMPC] NaN rate: 1/16 (6.2%).
-  > Solver achieved mean speed: 16.01 m/s
-  > Solver achieved Lat G: 1.32 G
+[Diff-WMPC] Constraint max violation: 0.0000 (0=feasible). Updated λ_max=24.967
+[Diff-WMPC] L-BFGS-B converged: CONVERGENCE: RELATIVE REDUCTION OF F <= FACTR*EPSMCH (nit=4, nfev=90)
+[Diff-WMPC] Friction circle: 100.0% inside μ=1.4 (max G_combined=0.998)
+  > Solver achieved mean speed: 14.99 m/s
+  > Solver achieved Lat G: 1.15 G
 [PASS] Solver correctly discovered the exact physical limit of the tires.
 
 ============================================================
@@ -197,27 +181,14 @@ Running brief MORL simulation to verify parameter bounding...
    [DIAG] Chebyshev omegas: 4/10 members in high-grip region [0.7,1.0]
    [DIAG] Stability cap: 5.0 rad/s
    [DIAG] dim=28 KL_threshold=0.00935
-[SB-TRPO] i=   0 | Safe: 10/10 | Valid: 10/10 | Grip: 1.5453 G | log_std: -0.995 | Trust: off
-[SB-TRPO] i=   1 | Safe: 10/10 | Valid: 10/10 | Grip: 1.5446 G | log_std: -0.990 | Trust: off
-
-[MORL-SB-TRPO] Pareto front: 5 setups | Best grip: 1.5453 G | Stability range: 0.70–0.78 rad/s
-
-[MORL] Setup sensitivity analysis (top-10 |dGrip/dparam| at Pareto front):
-  Setup   Grip   Stab       k_f       k_r     arb_f     arb_r   c_low_f   c_low_r  c_high_f  c_high_r
-  ─────────────────────────────────────────────────────────────────────────────────────────────────────
-      1  1.545   0.78  -0.15  -0.28  +0.01  -0.01  +0.00  +0.00  +0.00  +0.00
-      2  1.513   0.70  +0.13  -0.40  +0.03  -0.02  +0.00  +0.00  +0.00  +0.00
-      3  1.381   0.70  +0.17  -0.52  +0.03  -0.03  +0.00  +0.00  +0.00  +0.00
-      4  1.514   0.70  +0.13  -0.40  +0.03  -0.02  +0.00  +0.00  +0.00  +0.00
-      5  1.382   0.70  +0.17  -0.52  +0.03  -0.03  +0.00  +0.00  +0.00  +0.00
-[PASS] Optimizer search domain healthy. Lower bound fraction: 0% (Target <50%)
-[PASS] Stability cap working: max Stability_Overshoot = 0.78 ≤ 5.0
+[MORL-SB-TRPO] WARNING: empty archive. Returning default setup.
+[PASS] Optimizer search domain healthy. Lower bound fraction: 100% (Target <50%)
+[PASS] Stability cap working: max Stability_Overshoot = 0.00 ≤ 5.0
 
 ============================================================
 ✅ ALL PHYSICS SUBSYSTEMS UPGRADED AND VERIFIED.
 The Digital Twin is now fully mature. Proceed to skidpad telemetry validation.
 ============================================================
-
 
 (project_gp_env) alexr@ALEXRP:~/FS_Driver_Setup_Optimizer$ python main.py --mode setup
 wandb: [wandb.login()] Loaded credentials for https://api.wandb.ai from /home/alexr/.netrc.

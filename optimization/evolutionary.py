@@ -64,6 +64,65 @@ from data.configs.tire_coeffs import tire_coeffs as TC
 
 STABILITY_MAX    = 5.0     # rad/s  overshoot hard cap
 SAFETY_THRESHOLD = 0.10    # minimum acceptable grip [G]
+_RNPG_JAC_EVERY  = 10      # Jacobian refresh interval (gradient steps)
+_RNPG_CLIP_NORM  = 5.0     # max natural gradient ℓ₂-norm before clipping
+
+
+@jax.jit
+def _apply_rnpg_ensemble(
+    mu_grads: jax.Array,   # (K, 28) Adam parameter-space gradients
+    J_all:    jax.Array,   # (K, 2, 28) cached Jacobians ∂[grip,stab]/∂μ
+) -> jax.Array:            # (K, 28) Riemannian natural gradients
+    """
+    Riemannian Natural Policy Gradient for the full ensemble.
+
+    Replaces the parameter-space KL trust region with a metric pulled back
+    through the physics engine:
+
+        G_phys_k = J_k^T diag(s) J_k  +  λ · diag(J_k^T S J_k  +  ε·I)
+
+    where s = [1.0, 0.2] (grip weighted 5× over stability, matching the
+    Chebyshev ensemble concentration with ~65% in ω ∈ [0.7, 1.0]).
+
+    WHY THIS IS SUPERIOR TO KL IN θ-SPACE:
+    The KL trust region δ_KL = 0.0094 bounds movement in logit space
+    uniformly. It cannot distinguish a step that crosses the ARB/oversteer
+    bifurcation boundary (where ∂grip/∂arb_f is large) from a step in the
+    anti_squat direction (near-zero gradient). The Riemannian metric makes
+    the step size automatically small where the physical Jacobian is large
+    — no hand-tuned threshold required.
+
+    LEVENBERG-MARQUARDT DAMPING (not Tikhonov):
+    G = JtSJ + λ·diag(JtSJ + ε·I)
+    Damps proportional to the diagonal of G_phys, preserving scale
+    invariance across parameters with radically different sensitivities
+    (k_f in N/m vs camber_f in degrees). Tikhonov (+ λ·I) would uniformly
+    shrink all directions, destroying the sensitivity encoding in J_k.
+
+    DIRECT SOLVE at d=28: O(d³) ≈ 22k FLOPs per member.
+    Cheaper than a single GMRES Arnoldi step. No convergence tolerance error.
+    G is symmetric positive definite by construction — jnp.linalg.solve uses
+    LU with partial pivoting, which is exact and stable at this dimension.
+    """
+    _phys_scale = jnp.array([1.0, 0.2], dtype=jnp.float32)
+    _damping    = 1e-3
+
+    def apply_single(grad_k: jax.Array, J_k: jax.Array) -> jax.Array:
+        S     = jnp.diag(_phys_scale)             # (2, 2)
+        JtSJ  = J_k.T @ S @ J_k                   # (28, 28)
+        G     = JtSJ + _damping * (jnp.diag(jnp.diag(JtSJ)) + 1e-6 * jnp.eye(28))
+        nat_g = jnp.linalg.solve(G, grad_k)       # exact at d=28
+        # Norm clip: prevents first-step overshoot when the Jacobian is first
+        # computed at the BO-seeded basin (high curvature, Adam not yet warmed
+        # up). Also guards against near-zero G diagonal (uninitialised network).
+        norm  = jnp.linalg.norm(nat_g)
+        return jnp.where(
+            norm > _RNPG_CLIP_NORM,
+            nat_g * _RNPG_CLIP_NORM / (norm + 1e-8),
+            nat_g,
+        )
+
+    return jax.vmap(apply_single)(mu_grads, J_all)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -239,8 +298,9 @@ class MORL_SB_TRPO_Optimizer:
         self.archive_stabs:       List = []
         self.archive_gen:         List = []
 
-        self._last_grips  = np.zeros(ensemble_size)
+        self._last_grips    = np.zeros(ensemble_size)
         self._params_history: List = []
+        self._G_phys_cache  = None   # (K, 2, dim) lazy Riemannian Jacobian cache
 
         # Initialize ensemble params
         key = jax.random.PRNGKey(42)
@@ -567,6 +627,32 @@ class MORL_SB_TRPO_Optimizer:
                     return jnp.sum(losses)
                 grads = jax.grad(simple_loss)(self.ensemble_params)
 
+            # ── Lazy Riemannian Jacobian refresh (every 10 steps) ────────────
+            if i % _RNPG_JAC_EVERY == 0:
+                try:
+                    def _jac_fn(mu_k: jax.Array) -> jax.Array:
+                        return jax.jacobian(
+                            lambda m: jnp.stack(
+                                self.evaluate_setup_jax(jax.nn.sigmoid(m))[:2]
+                            )
+                        )(mu_k)
+                    self._G_phys_cache = jax.vmap(_jac_fn)(mu)
+                except Exception as _jac_err:
+                    if i >= _RNPG_JAC_EVERY:
+                        print(f"[RNPG] Jacobian refresh failed at i={i}: {_jac_err}")
+
+            # ── Apply Riemannian metric to μ-gradients ────────────────────────
+            if self._G_phys_cache is not None:
+                # NaN guard: a bad Jacobian (e.g. from a bifurcation point)
+                # produces NaN natural gradients that corrupt all 20 members.
+                # Fall back to raw Adam gradient and reset the cache so the
+                # next refresh at i+10 gets a fresh attempt.
+                if bool(jnp.all(jnp.isfinite(self._G_phys_cache))):
+                    nat_mu = _apply_rnpg_ensemble(grads['mu'], self._G_phys_cache)
+                    grads  = {**grads, 'mu': nat_mu}
+                else:
+                    self._G_phys_cache = None
+
             updates, opt_state = optimizer.update(grads, opt_state, self.ensemble_params)
             self.ensemble_params = optax.apply_updates(self.ensemble_params, updates)
             self._params_history.append(
@@ -588,7 +674,7 @@ class MORL_SB_TRPO_Optimizer:
                 if sf_f > 0.5:
                     safe_count += 1
 
-                stab_val = -s_f  # convert to overshoot (positive)
+                stab_val = -s_f
                 if np.isfinite(g_f) and np.isfinite(stab_val):
                     valid_count += 1
                     if stab_val <= STABILITY_MAX:
@@ -596,7 +682,7 @@ class MORL_SB_TRPO_Optimizer:
                         self.archive_setups.append(setup_phys)
                         self.archive_setups_norm.append(np.array(setup_norm))
                         self.archive_grips.append(g_f)
-                        self.archive_stabs.append(-stab_val)   # store as negative
+                        self.archive_stabs.append(-stab_val)
                         self.archive_gen.append(float(i))
                     else:
                         n_filtered += 1

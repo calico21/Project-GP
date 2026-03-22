@@ -160,7 +160,7 @@ def execute_morl_setup(wandb_run=None, iterations=1000):
     print("PHASE 4: DYNAMIC AI SETUP DISCOVERY (MORL-SB-TRPO)")
     print("=" * 60)
 
-    optimizer = MORL_SB_TRPO_Optimizer(ensemble_size=20, dim=8)
+    optimizer = MORL_SB_TRPO_Optimizer(ensemble_size=20, dim=28)
 
     # P27: pass wandb_run into run() so per-iter diagnostics are logged there
     pareto_setups, pareto_grips, pareto_stabs, pareto_gen = optimizer.run(

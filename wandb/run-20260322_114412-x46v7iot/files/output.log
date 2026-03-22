@@ -1,0 +1,39 @@
+
+============================================================
+PHASE 4: DYNAMIC AI SETUP DISCOVERY (MORL-SB-TRPO)
+============================================================
+/home/alexr/FS_Driver_Setup_Optimizer/main.py:163: UserWarning: [MORL] dim=8 requested but canonical dim=28. Upgrading to 28.
+  optimizer = MORL_SB_TRPO_Optimizer(ensemble_size=20, dim=8)
+[VehicleDynamics] H_net train scale (diagnostic): 14.3849 J  [NOT applied to architecture]
+[VehicleDynamics] Loaded h_net.bytes
+[VehicleDynamics] Loaded r_net.bytes
+
+[MORL-SB-TRPO] Initialising 28-dim Pareto Policy Ensemble…
+[SB-TRPO] Compiling 46-DOF physics gradients via XLA…
+[SB-TRPO] dim=28 | KL_threshold=0.00935 | Chebyshev N=20
+   [DIAG] Soft grip: 1.6161 G | Hard grip: 1.1117 G
+   Grip gradient norm: 0.719628
+   [OK] Gradient flow confirmed.
+
+[Phase 0] ARD-BO cold-start on 28-dim space (10 init + 30 EI)…
+   [BO] Phase 0a (10 evals): best = 1.4340 G
+   [BO] Phase 0b iter  5/30: best = 1.4447 G | mean ls_0: 1.801 ls_2: 1.172
+   [BO] Phase 0b iter 10/30: best = 1.5119 G | mean ls_0: 1.181 ls_2: 1.412
+   [BO] Phase 0b iter 15/30: best = 1.5119 G | mean ls_0: 1.427 ls_2: 1.007
+   [BO] Phase 0b iter 20/30: best = 1.5460 G | mean ls_0: 1.881 ls_2: 0.896
+   [BO] Phase 0b iter 25/30: best = 1.5460 G | mean ls_0: 2.000 ls_2: 0.985
+   [BO] Phase 0b iter 30/30: best = 1.5460 G | mean ls_0: 2.000 ls_2: 0.999
+   [BO] 5 diverse basins found. Top grips: ['1.5460G', '1.5119G', '1.5087G', '1.5030G', '1.4840G']
+[Phase 0] Seeded 5 BO basins into ensemble.
+[SB-TRPO] Running feasibility pre-check…
+   [DIAG] Chebyshev omegas: 8/20 members in high-grip region [0.7,1.0]
+   [DIAG] Stability cap: 5.0 rad/s
+   [DIAG] dim=28 KL_threshold=0.00935
+[P24] Restart at iter 200: bottom 5 members → unexplored dim: 'c_low_f'
+[MORL-SB-TRPO] WARNING: empty archive. Returning default setup.
+
+[MORL-SB-TRPO] Pareto front discovery complete:
+ k_f  k_r  arb_f  arb_r  c_low_f  c_low_r  c_high_f  c_high_r  v_knee_f  v_knee_r  rebound_ratio_f  rebound_ratio_r  h_ride_f  h_ride_r  camber_f  camber_r  toe_f  toe_r  castor_f  anti_squat  anti_dive_f  anti_dive_r  anti_lift  diff_lock_ratio  brake_bias_f  h_cg  bump_steer_f  bump_steer_r  Lat_G_Score  Stability_Overshoot  Generation
+ 0.0  0.0    0.0    0.0      0.0      0.0       0.0       0.0       0.0       0.0              0.0              0.0       0.0       0.0       0.0       0.0    0.0    0.0       0.0         0.0          0.0          0.0        0.0              0.0           0.0   0.0           0.0           0.0          0.0                  0.0           0
+
+[Success] Pareto array saved to /home/alexr/FS_Driver_Setup_Optimizer/morl_pareto_front.csv
