@@ -396,7 +396,7 @@ const AZ_TABS = [
   { key: "fidelity",  label: "Fidelity" },
 ];
 
-function AnalyzeMode({ track, tireTemps, thermal5, tubes, energy }) {
+function AnalyzeMode({ track, tireTemps, thermal5, tubes, energy, alData }) {
   const [ws, setWs] = useState("overview");
 
   const lapDelta  = useMemo(() => track ? gLapDelta?.(track) || [] : [],  [track]);

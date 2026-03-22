@@ -39,10 +39,11 @@ import { SelectionProvider } from "./context/SelectionContext.jsx";
 // Original v3 generators (keep for backward compat where modules still use them)
 import { gP, gCV, gTK, gTT, gSN, gSU } from "./data.js";
 
-// v4 enhanced/new generators
+// v4 enhanced/new generators (gEnergyBudgetPH and gWaveletCoeffsMPC are renamed
+// to avoid collision with the existing gEnergyBudget(track) and gWaveletCoeffs())
 import {
   gP4, gCV4, gSN4,
-  gThermal5, gEnergyBudget, gALConstraints, gWaveletCoeffs,
+  gThermal5, gEnergyBudgetPH, gALConstraints, gWaveletCoeffsMPC,
   gTubePoints, gHnetLandscape, gRMatrix,
   gGPEnvelope, gHysteresis, gLoadSensitivity, gEpisodes,
 } from "./data.js";
@@ -184,9 +185,9 @@ export default function App() {
 
   // ── v4 new data ───────────────────────────────────────────────────────────
   const thermal5  = useMemo(() => gThermal5(),    []);
-  const energy    = useMemo(() => gEnergyBudget(),[]);
+  const energy    = useMemo(() => gEnergyBudgetPH(),[]);
   const alData    = useMemo(() => gALConstraints(),[]);
-  const wavelets  = useMemo(() => gWaveletCoeffs(),[]);
+  const wavelets  = useMemo(() => gWaveletCoeffsMPC(),[]);
   const tubes     = useMemo(() => gTubePoints(track), [track]);
   const landscape = useMemo(() => gHnetLandscape(),[]);
   const rMatrix   = useMemo(() => gRMatrix(),     []);
