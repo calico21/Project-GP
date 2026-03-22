@@ -32,3 +32,10 @@ PHASE 4: DYNAMIC AI SETUP DISCOVERY (MORL-SB-TRPO)
 [SB-TRPO] i=   2 | Safe: 20/20 | Valid: 20/20 | Grip: 1.5465 G | log_std: -0.985 | Trust: off
 [SB-TRPO] i=   3 | Safe: 20/20 | Valid: 20/20 | Grip: 1.5465 G | log_std: -0.980 | Trust: off
 [SB-TRPO] i=   4 | Safe: 20/20 | Valid: 20/20 | Grip: 1.5464 G | log_std: -0.975 | Trust: off
+[SB-TRPO] i=  20 | Safe: 20/20 | Valid: 20/20 | Grip: 1.5446 G | log_std: -0.975 | Trust: ON
+[SB-TRPO] i=  40 | Safe: 20/20 | Valid: 20/20 | Grip: 1.5449 G | log_std: -0.968 | Trust: ON
+[SB-TRPO] i=  60 | Safe: 20/20 | Valid: 20/20 | Grip: 1.5442 G | log_std: -0.965 | Trust: ON
+[SB-TRPO] i=  80 | Safe: 20/20 | Valid: 20/20 | Grip: 1.5443 G | log_std: -0.965 | Trust: ON
+[SB-TRPO] i= 100 | Safe: 20/20 | Valid: 20/20 | Grip: 1.5432 G | log_std: -0.964 | Trust: ON
+[SB-TRPO] i= 120 | Safe: 20/20 | Valid: 20/20 | Grip: 1.5462 G | log_std: -0.964 | Trust: ON
+[SB-TRPO] i= 140 | Safe: 20/20 | Valid: 20/20 | Grip: 1.5426 G | log_std: -0.964 | Trust: ON
