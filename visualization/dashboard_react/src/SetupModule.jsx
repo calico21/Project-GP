@@ -144,50 +144,34 @@ function ParamSweepTab({ pareto, sens }) {
   const ax = (props) => ({ tick: { fontSize: 9, fill: C.dm, fontFamily: C.dt }, stroke: C.b1, ...props });
   const bestSetup = pareto.reduce((best, p) => p.grip > best.grip ? p : best, pareto[0]);
   const [sweepParam, setSweepParam] = React.useState(0);
- 
-  // Generate sweep: vary one param from 0→1 in 50 steps, hold others at best
+
   const sweepData = React.useMemo(() => {
     if (!bestSetup?.params) return [];
     const data = [];
     for (let i = 0; i < 50; i++) {
       const val = i / 49;
-      // Surrogate model: grip ≈ bestGrip + sensitivity * (val - bestVal) + curvature * (val - bestVal)²
       const bestVal = bestSetup.params[sweepParam] || 0.5;
       const delta = val - bestVal;
       const sensVal = sens?.[sweepParam]?.dGrip || 0;
       const sensStab = sens?.[sweepParam]?.dStab || 0;
-      // Quadratic response surface (convex near optimum)
       const grip = bestSetup.grip + sensVal * delta * 8 - Math.abs(sensVal) * delta * delta * 40;
       const stability = (bestSetup.stability || 2.5) + sensStab * delta * 5 + 0.8 * delta * delta * 10;
-      data.push({
-        val: +val.toFixed(3),
-        grip: +grip.toFixed(4),
-        stability: +stability.toFixed(3),
-        delta: +(val - bestVal).toFixed(3),
-        isBest: Math.abs(val - bestVal) < 0.015,
-      });
+      data.push({ val: +val.toFixed(3), grip: +grip.toFixed(4), stability: +stability.toFixed(3) });
     }
     return data;
   }, [bestSetup, sweepParam, sens]);
- 
+
   const bestVal = bestSetup?.params?.[sweepParam] || 0.5;
- 
+
   return (
     <div>
-      {/* Param selector */}
       <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 14 }}>
         <Lbl>SWEEP PARAMETER</Lbl>
-        <select
-          value={sweepParam}
-          onChange={e => setSweepParam(+e.target.value)}
-          style={{
-            background: C.bg, color: C.cy, border: `1px solid ${C.b1}`,
-            borderRadius: 4, padding: "6px 12px", fontSize: 11, fontFamily: C.dt,
-          }}
-        >
-          {PN.map((name, i) => (
-            <option key={i} value={i}>{name} {PU[i] ? `[${PU[i]}]` : ""}</option>
-          ))}
+        <select value={sweepParam} onChange={e => setSweepParam(+e.target.value)} style={{
+          background: C.bg, color: C.cy, border: `1px solid ${C.b1}`,
+          borderRadius: 4, padding: "6px 12px", fontSize: 11, fontFamily: C.dt,
+        }}>
+          {PN.map((name, i) => <option key={i} value={i}>{name} {PU[i] ? `[${PU[i]}]` : ""}</option>)}
         </select>
         <div style={{ flex: 1 }} />
         <div style={{ fontSize: 9, color: C.dm, fontFamily: C.dt }}>
@@ -197,26 +181,24 @@ function ParamSweepTab({ pareto, sens }) {
           </span>
         </div>
       </div>
- 
+
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
-        {/* Grip response */}
         <Sec title={`Grip Response — ${PN[sweepParam]}`}>
           <GC><ResponsiveContainer width="100%" height={280}>
-            <ComposedChart data={sweepData} margin={{ top: 8, right: 16, bottom: 24, left: 12 }}>
+            <AreaChart data={sweepData} margin={{ top: 8, right: 16, bottom: 24, left: 12 }}>
               <CartesianGrid strokeDasharray="3 3" stroke={GS} />
               <XAxis dataKey="val" {...ax()} label={{ value: `${PN[sweepParam]} [normalized]`, position: "bottom", fill: C.dm, fontSize: 9 }} />
               <YAxis {...ax()} domain={["auto", "auto"]} label={{ value: "Grip [G]", angle: -90, position: "insideLeft", fill: C.dm, fontSize: 9 }} />
               <Tooltip contentStyle={TT} />
               <ReferenceLine x={bestVal} stroke={C.gn} strokeDasharray="4 2" label={{ value: "OPTIMAL", fill: C.gn, fontSize: 7 }} />
               <Area dataKey="grip" stroke={C.cy} fill={`${C.cy}12`} strokeWidth={2} dot={false} name="Grip [G]" />
-            </ComposedChart>
+            </AreaChart>
           </ResponsiveContainer></GC>
         </Sec>
- 
-        {/* Stability response */}
+
         <Sec title={`Stability Response — ${PN[sweepParam]}`}>
           <GC><ResponsiveContainer width="100%" height={280}>
-            <ComposedChart data={sweepData} margin={{ top: 8, right: 16, bottom: 24, left: 12 }}>
+            <AreaChart data={sweepData} margin={{ top: 8, right: 16, bottom: 24, left: 12 }}>
               <CartesianGrid strokeDasharray="3 3" stroke={GS} />
               <XAxis dataKey="val" {...ax()} label={{ value: `${PN[sweepParam]} [normalized]`, position: "bottom", fill: C.dm, fontSize: 9 }} />
               <YAxis {...ax()} domain={["auto", "auto"]} label={{ value: "Stability [rad/s]", angle: -90, position: "insideLeft", fill: C.dm, fontSize: 9 }} />
@@ -224,15 +206,14 @@ function ParamSweepTab({ pareto, sens }) {
               <ReferenceLine x={bestVal} stroke={C.gn} strokeDasharray="4 2" />
               <ReferenceLine y={5.0} stroke={C.red} strokeDasharray="4 2" label={{ value: "5.0 cap", fill: C.red, fontSize: 7 }} />
               <Area dataKey="stability" stroke={C.am} fill={`${C.am}12`} strokeWidth={2} dot={false} name="Stability [rad/s]" />
-            </ComposedChart>
+            </AreaChart>
           </ResponsiveContainer></GC>
         </Sec>
       </div>
- 
-      {/* Dual objective overlay */}
+
       <Sec title="Grip vs Stability Trade-off (dual axis)">
         <GC><ResponsiveContainer width="100%" height={260}>
-          <ComposedChart data={sweepData} margin={{ top: 8, right: 40, bottom: 24, left: 12 }}>
+          <LineChart data={sweepData} margin={{ top: 8, right: 40, bottom: 24, left: 12 }}>
             <CartesianGrid strokeDasharray="3 3" stroke={GS} />
             <XAxis dataKey="val" {...ax()} label={{ value: `${PN[sweepParam]} [normalized]`, position: "bottom", fill: C.dm, fontSize: 9 }} />
             <YAxis yAxisId="g" {...ax()} label={{ value: "Grip [G]", angle: -90, position: "insideLeft", fill: C.dm, fontSize: 9 }} />
@@ -242,10 +223,10 @@ function ParamSweepTab({ pareto, sens }) {
             <Line yAxisId="g" dataKey="grip" stroke={C.cy} strokeWidth={2} dot={false} name="Grip" />
             <Line yAxisId="s" dataKey="stability" stroke={C.am} strokeWidth={2} dot={false} name="Stability" />
             <Legend wrapperStyle={{ fontSize: 9, fontFamily: C.hd }} />
-          </ComposedChart>
+          </LineChart>
         </ResponsiveContainer></GC>
       </Sec>
- 
+
       <Note>
         <strong style={{ color: C.cy }}>How to read:</strong> The sweep varies <strong style={{ color: C.cy }}>{PN[sweepParam]}</strong> from 0→1 (normalized bounds) while holding all other 27 parameters at their Pareto-optimal values. The green reference line marks the current best. Flat curves = insensitive parameter (safe to ignore). Steep curves with cliff edges = critical parameter (small change = large grip/stability shift). The quadratic response surface is a local approximation — actual landscape may have additional local optima.
       </Note>
