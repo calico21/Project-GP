@@ -57,7 +57,9 @@ import EnergyAuditModule from "./EnergyAuditModule.jsx";
 import TirePhysicsModule from "./TirePhysicsModule.jsx";
 import DriverCoachingModule from "./DriverCoachingModule.jsx";
 import EnduranceStrategyModule from "./EnduranceStrategyModule.jsx";
-
+import WeightBalanceModule from "./WeightBalanceModule.jsx";
+import ComplianceModule from "./ComplianceModule.jsx";
+ import DifferentiableInsightsModule from "./DifferentiableInsightsModule.jsx";
 // ═════════════════════════════════════════════════════════════════════════════
 // NAV CONFIGURATION
 // ═════════════════════════════════════════════════════════════════════════════
@@ -71,6 +73,9 @@ const NAV = [
   { key: "suspension", label: "Suspension",    icon: "△" },
   { key: "coaching",   label: "Coaching",      icon: "◈" },
   { key: "endurance",  label: "Endurance",     icon: "⏱" },
+  { key: "weight",     label: "Weight & CG",   icon: "⊿" },
+  { key: "compliance", label: "Compliance",    icon: "☑" },
+  { key: "diff",       label: "∇ Insights",    icon: "∂" },
 ];
 
 
@@ -253,6 +258,11 @@ export default function App() {
       case "suspension":
         return <SuspensionModule data={susp} />;
         
+      case "weight": return <WeightBalanceModule />;
+
+      case "compliance": return <ComplianceModule />;
+      
+      case "diff": return <DifferentiableInsightsModule />;
       default:
         return <OverviewModule pareto={pareto} conv={conv} />;
     }

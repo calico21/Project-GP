@@ -32,7 +32,7 @@ import {
   ResponsiveContainer, ReferenceLine, ReferenceArea, Cell, Legend,
 } from "recharts";
 import { C, GL, GS, TT, AX, thermalColor } from "./theme.js";
-import { Sec, GC, Pill } from "./components.jsx";
+import { KPI, Sec, GC, Pill, FadeSlide } from "./components.jsx";
 import { ThermalQuintet, ThermalRadial } from "./canvas";
 import { FrictionHeatmap } from "./canvas";
 import { gFrictionSurface } from "./data.js";
@@ -48,6 +48,9 @@ const TABS = [
   { key: "mz",         label: "Aligning Moment" },
   { key: "slipTarget", label: "Slip Target" },
   { key: "relax",      label: "Relaxation" },
+  { key: "wear",       label: "Tire Wear" },
+  { key: "gpCoverage", label: "GP Coverage" },
+  { key: "tempGrip",   label: "Temp vs Grip" },
 ];
 
 const CORNER_KEYS = ["fl", "fr", "rl", "rr"];
@@ -727,6 +730,318 @@ function RelaxTab() {
   );
 }
 
+function gWearData(nLaps = 22) {
+  const R = (seed) => { let s = seed; return () => { s = (s * 16807) % 2147483647; return (s & 0x7fffffff) / 0x7fffffff; }; };
+  const rng = R(777);
+  const data = [];
+  let tread = [4.0, 4.0, 4.0, 4.0]; // mm tread depth per corner
+  let grip = [100, 100, 100, 100]; // % of peak
+  for (let lap = 0; lap <= nLaps; lap++) {
+    // Wear model: front wears faster (steering + braking), outside (FL for RHD tracks) fastest
+    const wearRate = [0.065, 0.058, 0.048, 0.042]; // mm/lap base rate
+    for (let c = 0; c < 4; c++) {
+      const lapWear = wearRate[c] * (0.9 + rng() * 0.2);
+      tread[c] = Math.max(0.5, tread[c] - lapWear);
+      // Grip correlates with tread: plateau 4.0-2.0mm, then cliff below 1.5mm
+      grip[c] = tread[c] > 2.0 ? 100 - (4.0 - tread[c]) * 1.5 : 100 - 3.0 - (2.0 - tread[c]) * 15;
+    }
+    data.push({
+      lap, dist: +(lap * 1.37).toFixed(1),
+      tFL: +tread[0].toFixed(2), tFR: +tread[1].toFixed(2), tRL: +tread[2].toFixed(2), tRR: +tread[3].toFixed(2),
+      gFL: +grip[0].toFixed(1), gFR: +grip[1].toFixed(1), gRL: +grip[2].toFixed(1), gRR: +grip[3].toFixed(1),
+      avgGrip: +((grip[0] + grip[1] + grip[2] + grip[3]) / 4).toFixed(1),
+    });
+  }
+  return data;
+}
+ 
+function WearTab() {
+  const wearData = React.useMemo(() => gWearData(), []);
+  const finalGrip = wearData[wearData.length - 1]?.avgGrip || 100;
+  const finalTread = Math.min(
+    wearData[wearData.length - 1]?.tFL || 4,
+    wearData[wearData.length - 1]?.tFR || 4,
+    wearData[wearData.length - 1]?.tRL || 4,
+    wearData[wearData.length - 1]?.tRR || 4,
+  );
+  const cliffLap = wearData.findIndex(d => d.avgGrip < 90);
+ 
+  return (
+    <div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 10, marginBottom: 14 }}>
+        <KPI label="Final Grip" value={`${finalGrip.toFixed(1)}%`} sub="end of 22km" sentiment={finalGrip > 90 ? "positive" : finalGrip > 85 ? "amber" : "negative"} delay={0} />
+        <KPI label="Min Tread" value={`${finalTread.toFixed(1)}mm`} sub={finalTread > 1.5 ? "above cliff" : "IN CLIFF ZONE"} sentiment={finalTread > 1.5 ? "positive" : "negative"} delay={1} />
+        <KPI label="Cliff Onset" value={cliffLap > 0 ? `Lap ${cliffLap}` : "None"} sub="grip < 90%" sentiment={cliffLap < 0 || cliffLap > 18 ? "positive" : "amber"} delay={2} />
+        <KPI label="Grip Lost" value={`${(100 - finalGrip).toFixed(1)}%`} sub="total degradation" sentiment={(100 - finalGrip) < 8 ? "positive" : "amber"} delay={3} />
+      </div>
+ 
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+        <Sec title="Tread Depth per Corner [mm]">
+          <GC><ResponsiveContainer width="100%" height={240}>
+            <LineChart data={wearData} margin={{ top: 8, right: 16, bottom: 20, left: 12 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke={GS} />
+              <XAxis dataKey="dist" {...AX} label={{ value: "Distance [km]", position: "bottom", fill: C.dm, fontSize: 9 }} />
+              <YAxis {...AX} domain={[0, 4.5]} label={{ value: "Tread [mm]", angle: -90, position: "insideLeft", fill: C.dm, fontSize: 9 }} />
+              <Tooltip contentStyle={TT} />
+              <ReferenceArea y1={0} y2={1.5} fill={C.red} fillOpacity={0.05} label={{ value: "CLIFF", fill: C.red, fontSize: 7 }} />
+              <Line dataKey="tFL" stroke={C.cy} strokeWidth={1.5} dot={false} name="FL" />
+              <Line dataKey="tFR" stroke={C.gn} strokeWidth={1.5} dot={false} name="FR" />
+              <Line dataKey="tRL" stroke={C.am} strokeWidth={1.5} dot={false} name="RL" />
+              <Line dataKey="tRR" stroke={C.red} strokeWidth={1.5} dot={false} name="RR" />
+              <Legend wrapperStyle={{ fontSize: 8, fontFamily: C.hd }} />
+            </LineChart>
+          </ResponsiveContainer></GC>
+        </Sec>
+ 
+        <Sec title="Grip Level per Corner [%]">
+          <GC><ResponsiveContainer width="100%" height={240}>
+            <LineChart data={wearData} margin={{ top: 8, right: 16, bottom: 20, left: 12 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke={GS} />
+              <XAxis dataKey="dist" {...AX} label={{ value: "Distance [km]", position: "bottom", fill: C.dm, fontSize: 9 }} />
+              <YAxis {...AX} domain={[70, 102]} label={{ value: "Grip [%]", angle: -90, position: "insideLeft", fill: C.dm, fontSize: 9 }} />
+              <Tooltip contentStyle={TT} />
+              <ReferenceLine y={90} stroke={C.am} strokeDasharray="4 2" label={{ value: "90% threshold", fill: C.am, fontSize: 7 }} />
+              <Line dataKey="gFL" stroke={C.cy} strokeWidth={1.5} dot={false} name="FL" />
+              <Line dataKey="gFR" stroke={C.gn} strokeWidth={1.5} dot={false} name="FR" />
+              <Line dataKey="gRL" stroke={C.am} strokeWidth={1.5} dot={false} name="RL" />
+              <Line dataKey="gRR" stroke={C.red} strokeWidth={1.5} dot={false} name="RR" />
+              <Legend wrapperStyle={{ fontSize: 8, fontFamily: C.hd }} />
+            </LineChart>
+          </ResponsiveContainer>
+          <div style={{ fontSize: 8, color: C.dm, fontFamily: C.dt, padding: "6px 8px", lineHeight: 1.6 }}>
+            The R25B tread exhibits a plateau region (4.0→2.0mm) where grip loss is linear (~1.5%/mm).
+            Below 1.5mm, the compound enters the "cliff" — grip degrades 15%/mm due to reduced tread
+            block deformation and thermal mass loss. The front-left wears fastest due to combined
+            steering scrub + braking load transfer on right-hand dominant tracks.
+          </div></GC>
+        </Sec>
+      </div>
+    </div>
+  );
+}
+ 
+/*--- END WearTab ---*/
+
+
+function gInducingPoints(n = 50) {
+  // Mirrors tire_model.py: Z = tanh(Z_raw) * scale + shift
+  // 5D: alpha, kappa, gamma, Fz, Vx
+  const R = (seed) => { let s = seed; return () => { s = (s * 16807) % 2147483647; return (s & 0x7fffffff) / 0x7fffffff; }; };
+  const rng = R(8888);
+  const pts = [];
+  for (let i = 0; i < n; i++) {
+    const alpha = Math.tanh((rng() - 0.5) * 2) * 14.3;  // ±14.3° (0.25 rad)
+    const kappa = Math.tanh((rng() - 0.5) * 2) * 0.20;  // ±0.20
+    const gamma = Math.tanh((rng() - 0.5) * 2) * 4.6;   // ±4.6° (0.08 rad)
+    const Fz = 400 + rng() * 800;                         // 400-1200 N
+    const Vx = 2 + rng() * 20;                            // 2-22 m/s
+    // Posterior variance — lower near points, higher in gaps
+    const sigma = 0.02 + rng() * 0.06;
+    pts.push({
+      alpha: +alpha.toFixed(1), kappa: +kappa.toFixed(3),
+      gamma: +gamma.toFixed(1), Fz: +Fz.toFixed(0), Vx: +Vx.toFixed(1),
+      sigma: +sigma.toFixed(3),
+    });
+  }
+  return pts;
+}
+ 
+function gCoverageGrid(inducingPts, res = 30) {
+  // Compute variance proxy on (alpha, kappa) grid
+  const data = [];
+  for (let ai = 0; ai < res; ai++) {
+    for (let ki = 0; ki < res; ki++) {
+      const alpha = (ai / (res - 1)) * 28 - 14; // -14 to +14
+      const kappa = (ki / (res - 1)) * 0.4 - 0.2; // -0.2 to +0.2
+      // Approximate GP variance: distance to nearest inducing point
+      let minDist = Infinity;
+      for (const pt of inducingPts) {
+        const da = (alpha - pt.alpha) / 14;
+        const dk = (kappa - pt.kappa) / 0.2;
+        const dist = Math.sqrt(da * da + dk * dk);
+        if (dist < minDist) minDist = dist;
+      }
+      const variance = Math.min(1, minDist * 2.5);
+      data.push({ ai, ki, alpha: +alpha.toFixed(1), kappa: +kappa.toFixed(3), variance: +variance.toFixed(3) });
+    }
+  }
+  return data;
+}
+ 
+function GPCoverageTab() {
+  const inducingPts = React.useMemo(() => gInducingPoints(), []);
+  const coverageGrid = React.useMemo(() => gCoverageGrid(inducingPts), [inducingPts]);
+  const meanSigma = inducingPts.reduce((a, p) => a + p.sigma, 0) / inducingPts.length;
+  const highUncertainty = coverageGrid.filter(d => d.variance > 0.6).length;
+ 
+  return (
+    <div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 10, marginBottom: 14 }}>
+        <KPI label="Inducing Points" value="50" sub="Sparse GP" sentiment="neutral" delay={0} />
+        <KPI label="Mean σ" value={meanSigma.toFixed(3)} sub="posterior std" sentiment={meanSigma < 0.05 ? "positive" : "amber"} delay={1} />
+        <KPI label="Coverage Gaps" value={`${((highUncertainty / coverageGrid.length) * 100).toFixed(0)}%`} sub="high uncertainty cells" sentiment={highUncertainty / coverageGrid.length < 0.2 ? "positive" : "amber"} delay={2} />
+        <KPI label="Input Dim" value="5D" sub="α, κ, γ, Fz, Vx" sentiment="neutral" delay={3} />
+      </div>
+ 
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+        <Sec title="Inducing Point Distribution (α vs κ)">
+          <GC><ResponsiveContainer width="100%" height={300}>
+            <ScatterChart margin={{ top: 12, right: 16, bottom: 24, left: 16 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke={GS} />
+              <XAxis type="number" dataKey="alpha" {...AX} domain={[-16, 16]}
+                label={{ value: "Slip Angle α [°]", position: "bottom", fill: C.dm, fontSize: 9 }} />
+              <YAxis type="number" dataKey="kappa" {...AX} domain={[-0.25, 0.25]}
+                label={{ value: "Slip Ratio κ", angle: -90, position: "insideLeft", fill: C.dm, fontSize: 9 }} />
+              <Tooltip contentStyle={TT} />
+              <ReferenceLine x={0} stroke={C.dm} strokeDasharray="3 3" />
+              <ReferenceLine y={0} stroke={C.dm} strokeDasharray="3 3" />
+              {/* Operating envelope */}
+              <ReferenceArea x1={-10} x2={10} y1={-0.15} y2={0.15} fill={C.gn} fillOpacity={0.03}
+                label={{ value: "Typical FS envelope", fill: C.gn, fontSize: 7, position: "insideTopLeft" }} />
+              <Scatter data={inducingPts} name="Inducing Points">
+                {inducingPts.map((pt, i) => (
+                  <Cell key={i} fill={pt.sigma < 0.04 ? C.gn : pt.sigma < 0.06 ? C.am : C.red}
+                    fillOpacity={0.7} r={5} />
+                ))}
+              </Scatter>
+            </ScatterChart>
+          </ResponsiveContainer>
+          <div style={{ fontSize: 8, color: C.dm, fontFamily: C.dt, padding: "6px 8px", lineHeight: 1.6 }}>
+            Each dot is an inducing point of the Sparse GP. <span style={{ color: C.gn }}>Green</span> = low σ (confident).
+            <span style={{ color: C.red }}> Red</span> = high σ (uncertain). The green box shows the typical FS operating
+            envelope. Points outside it provide extrapolation safety.
+            After BUGFIX-4, inducing points use tanh mapping for symmetric coverage.
+          </div></GC>
+        </Sec>
+ 
+        <Sec title="Uncertainty Heatmap (α × κ grid)">
+          <GC style={{ padding: "8px" }}>
+            <div style={{ display: "grid", gridTemplateColumns: `repeat(30, 1fr)`, gap: 0, aspectRatio: "1" }}>
+              {coverageGrid.map((d, i) => (
+                <div key={i} style={{
+                  background: d.variance < 0.3 ? `rgba(35,209,96,${0.2 + d.variance})`
+                    : d.variance < 0.6 ? `rgba(255,176,32,${0.1 + d.variance * 0.6})`
+                    : `rgba(255,56,56,${0.1 + d.variance * 0.5})`,
+                  aspectRatio: "1",
+                }} title={`α=${d.alpha}° κ=${d.kappa} σ²=${d.variance}`} />
+              ))}
+            </div>
+            <div style={{ display: "flex", justifyContent: "space-between", marginTop: 6, fontSize: 7, fontFamily: C.dt, color: C.dm, padding: "0 2px" }}>
+              <span>α = -14°</span><span>α = 0°</span><span>α = +14°</span>
+            </div>
+            <div style={{ display: "flex", gap: 8, marginTop: 8, fontSize: 8, fontFamily: C.dt }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                <div style={{ width: 10, height: 10, borderRadius: 2, background: C.gn }} />
+                <span style={{ color: C.dm }}>Low σ² (confident)</span>
+              </div>
+              <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                <div style={{ width: 10, height: 10, borderRadius: 2, background: C.am }} />
+                <span style={{ color: C.dm }}>Medium</span>
+              </div>
+              <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                <div style={{ width: 10, height: 10, borderRadius: 2, background: C.red }} />
+                <span style={{ color: C.dm }}>High σ² (blind spot)</span>
+              </div>
+            </div>
+          </GC>
+        </Sec>
+      </div>
+    </div>
+  );
+}
+ 
+ 
+// ── Temperature vs Grip Correlation Tab ─────────────────────────────
+ 
+function gTempGripData() {
+  const data = [];
+  for (let T = 20; T <= 140; T += 2) {
+    const T_opt = 90; // from tire_coeffs.py T_OPT
+    const beta = 0.0008; // from tire_coeffs.py BETA_T
+    // Thermal grip factor: exp(-beta * (T - T_opt)^2)
+    const gripFactor = Math.exp(-beta * (T - T_opt) * (T - T_opt));
+    // Per-node breakdown
+    const surfaceGrip = gripFactor * (1 + 0.02 * Math.sin((T - 60) * 0.1));
+    const bulkGrip = gripFactor * (1 - 0.01 * Math.max(0, T - 110) / 30);
+    // Viscous vs hysteretic components
+    const viscous = 0.4 * Math.exp(-0.001 * (T - 80) * (T - 80));
+    const hysteretic = 0.6 * Math.exp(-0.0005 * (T - 95) * (T - 95));
+ 
+    data.push({
+      T, gripFactor: +gripFactor.toFixed(4),
+      gripPct: +(gripFactor * 100).toFixed(1),
+      surfaceGrip: +(surfaceGrip * 100).toFixed(1),
+      bulkGrip: +(bulkGrip * 100).toFixed(1),
+      viscous: +(viscous * 100).toFixed(1),
+      hysteretic: +(hysteretic * 100).toFixed(1),
+      combined: +((viscous + hysteretic) * 100 / 1.0).toFixed(1),
+    });
+  }
+  return data;
+}
+ 
+function TempGripTab() {
+  const tempData = React.useMemo(() => gTempGripData(), []);
+  const peakGrip = tempData.reduce((best, d) => d.gripPct > best.gripPct ? d : best, tempData[0]);
+  const window90 = tempData.filter(d => d.gripPct >= 90);
+  const windowLow = window90.length > 0 ? window90[0].T : 0;
+  const windowHigh = window90.length > 0 ? window90[window90.length - 1].T : 0;
+ 
+  return (
+    <div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 10, marginBottom: 14 }}>
+        <KPI label="T_optimal" value={`${peakGrip.T}°C`} sub="peak grip temperature" sentiment="positive" delay={0} />
+        <KPI label="Peak Grip" value={`${peakGrip.gripPct}%`} sub="at T_opt" sentiment="positive" delay={1} />
+        <KPI label="90% Window" value={`${windowLow}-${windowHigh}°C`} sub={`${windowHigh - windowLow}°C range`} sentiment={windowHigh - windowLow > 40 ? "positive" : "amber"} delay={2} />
+        <KPI label="β (width)" value="0.0008" sub="K⁻² Gaussian" sentiment="neutral" delay={3} />
+      </div>
+ 
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+        <Sec title="Thermal Grip Factor vs Temperature">
+          <GC><ResponsiveContainer width="100%" height={280}>
+            <ComposedChart data={tempData} margin={{ top: 8, right: 16, bottom: 24, left: 12 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke={GS} />
+              <XAxis dataKey="T" {...AX} label={{ value: "Temperature [°C]", position: "bottom", fill: C.dm, fontSize: 9 }} />
+              <YAxis {...AX} domain={[0, 105]} label={{ value: "Grip [%]", angle: -90, position: "insideLeft", fill: C.dm, fontSize: 9 }} />
+              <Tooltip contentStyle={TT} />
+              <ReferenceArea x1={windowLow} x2={windowHigh} fill={C.gn} fillOpacity={0.06}
+                label={{ value: "90% window", fill: C.gn, fontSize: 7, position: "insideTop" }} />
+              <ReferenceLine x={90} stroke={C.gn} strokeDasharray="4 2" label={{ value: "T_opt=90°C", fill: C.gn, fontSize: 7 }} />
+              <Area dataKey="gripPct" stroke={C.cy} fill={`${C.cy}15`} strokeWidth={2.5} dot={false} name="Grip Factor [%]" />
+            </ComposedChart>
+          </ResponsiveContainer>
+          <div style={{ fontSize: 8, color: C.dm, fontFamily: C.dt, padding: "6px 8px", lineHeight: 1.6 }}>
+            Gaussian thermal model: μ(T) = μ_peak · exp(−β·(T − T_opt)²).
+            β = 0.0008 K⁻² from tire_coeffs.py.
+            The green band shows the temperature window where grip remains above 90%.
+            Below 55°C: compound not activated ("cold tire"). Above 125°C: thermal degradation.
+          </div></GC>
+        </Sec>
+ 
+        <Sec title="Viscous vs Hysteretic Grip Components">
+          <GC><ResponsiveContainer width="100%" height={280}>
+            <AreaChart data={tempData} margin={{ top: 8, right: 16, bottom: 24, left: 12 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke={GS} />
+              <XAxis dataKey="T" {...AX} label={{ value: "Temperature [°C]", position: "bottom", fill: C.dm, fontSize: 9 }} />
+              <YAxis {...AX} domain={[0, 70]} label={{ value: "Contribution [%]", angle: -90, position: "insideLeft", fill: C.dm, fontSize: 9 }} />
+              <Tooltip contentStyle={TT} />
+              <Area type="monotone" dataKey="viscous" stackId="1" stroke={C.cy} fill={`${C.cy}20`} strokeWidth={1.5} name="Viscous (low-T dominant)" />
+              <Area type="monotone" dataKey="hysteretic" stackId="1" stroke={C.am} fill={`${C.am}20`} strokeWidth={1.5} name="Hysteretic (high-T dominant)" />
+              <Legend wrapperStyle={{ fontSize: 8, fontFamily: C.hd }} />
+            </AreaChart>
+          </ResponsiveContainer>
+          <div style={{ fontSize: 8, color: C.dm, fontFamily: C.dt, padding: "6px 8px", lineHeight: 1.6 }}>
+            At low temperatures, viscous friction dominates (rubber flows into surface asperities).
+            At high temperatures, hysteretic friction dominates (bulk deformation energy loss).
+            The crossover around 85°C explains why optimal grip is at ~90°C — both mechanisms
+            contribute simultaneously at the peak.
+          </div></GC>
+        </Sec>
+      </div>
+    </div>
+  );
+}
+
 export default function TirePhysicsModule({
   thermal5, gpEnv, hysteresis, loadSens,
 }) {
@@ -756,6 +1071,9 @@ export default function TirePhysicsModule({
       {tab === "mz"         && <MzTab />}
       {tab === "slipTarget" && <SlipTargetTab />}
       {tab === "relax"      && <RelaxTab />}
+      {tab === "wear" && <WearTab />}
+      {tab === "gpCoverage" && <GPCoverageTab />}
+      {tab === "tempGrip"   && <TempGripTab />}
     </div>
   );
 }
