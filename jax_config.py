@@ -37,9 +37,7 @@ os.environ.setdefault('XLA_PYTHON_CLIENT_MEM_FRACTION',   '0.80')
 # On an 8-core machine this cuts compile time by 3-5x.
 cpu_count = os.cpu_count() or 4
 os.environ.setdefault('XLA_FLAGS',
-    f'--xla_cpu_multi_thread_eigen=true '
-    f'--intra_op_parallelism_threads={cpu_count} '
-    f'--inter_op_parallelism_threads={cpu_count}')
+    f'--xla_cpu_multi_thread_eigen=true')
 
 # ── Now import JAX and apply Python-side config ───────────────────────────────
 import jax
