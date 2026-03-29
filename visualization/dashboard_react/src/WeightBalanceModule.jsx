@@ -21,70 +21,70 @@
 //   8. CG Targets      — Optimization targets for CG position
 //
 // Integration:
-//   NAV: { key: “weight”, label: “Weight & CG”, icon: “⊿” }
-//   Import: import WeightBalanceModule from “./WeightBalanceModule.jsx”
-//   Route: case “weight”: return <WeightBalanceModule />
+//   NAV: { key: "weight", label: "Weight & CG", icon: "⊿" }
+//   Import: import WeightBalanceModule from "./WeightBalanceModule.jsx"
+//   Route: case "weight": return <WeightBalanceModule />
 // ═══════════════════════════════════════════════════════════════════════════
 
-import React, { useState, useMemo } from “react”;
+import React, { useState, useMemo } from "react";
 import {
 BarChart, Bar, LineChart, Line, ScatterChart, Scatter, ComposedChart,
 XAxis, YAxis, CartesianGrid, Tooltip,
 ResponsiveContainer, ReferenceLine, Cell, Legend,
-} from “recharts”;
-import { C, GL, GS, TT } from “./theme.js”;
-import { KPI, Sec, GC, Pill } from “./components.jsx”;
+} from "recharts";
+import { C, GL, GS, TT } from "./theme.js";
+import { KPI, Sec, GC, Pill } from "./components.jsx";
 
 const ax = () => ({ tick: { fontSize: 8, fill: C.dm, fontFamily: C.dt }, stroke: C.b1, tickLine: false });
 
 const TABS = [
-{ key: “overview”,   label: “CG & Mass” },
-{ key: “inertia”,    label: “Inertia Tensor” },
-{ key: “corners”,    label: “Corner Weights” },
-{ key: “ballast”,    label: “Ballast Optimizer” },
-{ key: “sensitivity”,label: “Weight Sensitivity” },
-{ key: “transfer”,   label: “Dynamic Transfer” },
-{ key: “regulations”,label: “Regulations” },
-{ key: “targets”,    label: “CG Targets” },
+{ key: "overview",   label: "CG & Mass" },
+{ key: "inertia",    label: "Inertia Tensor" },
+{ key: "corners",    label: "Corner Weights" },
+{ key: "ballast",    label: "Ballast Optimizer" },
+{ key: "sensitivity",label: "Weight Sensitivity" },
+{ key: "transfer",   label: "Dynamic Transfer" },
+{ key: "regulations",label: "Regulations" },
+{ key: "targets",    label: "CG Targets" },
 ];
 
 const CAT_COLORS = {
-Chassis: C.cy, Aero: “#ff6090”, Powertrain: C.am, Electronics: “#7c3aed”,
-Cooling: “#22d3ee”, Suspension: C.red, Unsprung: “#a78bfa”, Driver: “#f472b6”, Safety: C.dm,
+Chassis: C.cy, Aero: "#ff6090", Powertrain: C.am, Electronics: "#7c3aed",
+Cooling: "#22d3ee", Suspension: C.red, Unsprung: "#a78bfa", Driver: "#f472b6", Safety: C.dm,
 };
 
 // ═══════════════════════════════════════════════════════════════════════════
 // VEHICLE COMPONENT DATABASE
 // ═══════════════════════════════════════════════════════════════════════════
 const DEFAULT_COMPONENTS = [
-{ name: “Monocoque”, mass: 32, x: 0.20, y: 0.18, z: 0.00, category: “Chassis” },
-{ name: “Rear Subframe”, mass: 8, x: -0.55, y: 0.14, z: 0.00, category: “Chassis” },
-{ name: “Roll Hoop”, mass: 3.5, x: -0.26, y: 0.40, z: 0.00, category: “Chassis” },
-{ name: “Front Wing Assy”, mass: 4.2, x: 1.10, y: -0.10, z: 0.00, category: “Aero” },
-{ name: “Rear Wing Assy”, mass: 3.8, x: -0.80, y: 0.48, z: 0.00, category: “Aero” },
-{ name: “Undertray”, mass: 5.0, x: 0.15, y: -0.05, z: 0.00, category: “Aero” },
-{ name: “Motor L”, mass: 12, x: -0.50, y: 0.10, z: 0.30, category: “Powertrain” },
-{ name: “Motor R”, mass: 12, x: -0.50, y: 0.10, z: -0.30, category: “Powertrain” },
-{ name: “Inverter L”, mass: 4.5, x: -0.40, y: 0.22, z: 0.25, category: “Powertrain” },
-{ name: “Inverter R”, mass: 4.5, x: -0.40, y: 0.22, z: -0.25, category: “Powertrain” },
-{ name: “Accumulator”, mass: 52, x: -0.15, y: 0.12, z: 0.00, category: “Powertrain” },
-{ name: “TSAL/BMS/HVD”, mass: 6, x: -0.10, y: 0.30, z: 0.10, category: “Electronics” },
-{ name: “ECU + Sensors”, mass: 3, x: 0.10, y: 0.28, z: -0.08, category: “Electronics” },
-{ name: “Wiring Harness”, mass: 8, x: 0.00, y: 0.15, z: 0.00, category: “Electronics” },
-{ name: “Cooling System”, mass: 7, x: 0.40, y: 0.08, z: 0.20, category: “Cooling” },
-{ name: “Brake System”, mass: 6, x: 0.30, y: 0.05, z: 0.00, category: “Chassis” },
-{ name: “Steering System”, mass: 4, x: 0.50, y: 0.12, z: 0.00, category: “Chassis” },
-{ name: “Susp FL”, mass: 5.5, x: 0.85, y: 0.10, z: 0.61, category: “Suspension” },
-{ name: “Susp FR”, mass: 5.5, x: 0.85, y: 0.10, z: -0.61, category: “Suspension” },
-{ name: “Susp RL”, mass: 5.0, x: -0.70, y: 0.10, z: 0.59, category: “Suspension” },
-{ name: “Susp RR”, mass: 5.0, x: -0.70, y: 0.10, z: -0.59, category: “Suspension” },
-{ name: “Wheel+Tire FL”, mass: 8, x: 0.85, y: 0.23, z: 0.61, category: “Unsprung” },
-{ name: “Wheel+Tire FR”, mass: 8, x: 0.85, y: 0.23, z: -0.61, category: “Unsprung” },
-{ name: “Wheel+Tire RL”, mass: 8, x: -0.70, y: 0.23, z: 0.59, category: “Unsprung” },
-{ name: “Wheel+Tire RR”, mass: 8, x: -0.70, y: 0.23, z: -0.59, category: “Unsprung” },
-{ name: “Driver (75kg)”, mass: 75, x: 0.05, y: 0.28, z: 0.00, category: “Driver” },
-{ name: “Pedalbox”, mass: 3, x: 0.60, y: 0.06, z: 0.00, category: “Chassis” },
-{ name: “Fire Extinguisher”, mass: 1.5, x: -0.20, y: 0.10, z: 0.15, category: “Safety” },
+{ name: "Monocoque", mass: 32, x: 0.20, y: 0.18, z: 0.00, category: "Chassis" },
+{ name: "Rear Subframe", mass: 8, x: -0.55, y: 0.14, z: 0.00, category: "Chassis" },
+{ name: "Roll Hoop", mass: 3.5, x: -0.26, y: 0.40, z: 0.00, category: "Chassis" },
+{ name: "Front Wing Assy", mass: 4.2, x: 1.10, y: -0.10, z: 0.00, category: "Aero" },
+{ name: "Rear Wing Assy", mass: 3.8, x: -0.80, y: 0.48, z: 0.00, category: "Aero" },
+{ name: "Undertray", mass: 5.0, x: 0.15, y: -0.05, z: 0.00, category: "Aero" },
+{ name: "Motor L", mass: 12, x: -0.50, y: 0.10, z: 0.30, category: "Powertrain" },
+{ name: "Motor R", mass: 12, x: -0.50, y: 0.10, z: -0.30, category: "Powertrain" },
+{ name: "Inverter L", mass: 4.5, x: -0.40, y: 0.22, z: 0.25, category: "Powertrain" },
+{ name: "Inverter R", mass: 4.5, x: -0.40, y: 0.22, z: -0.25, category: "Powertrain" },
+{ name: "Accumulator", mass: 52, x: -0.15, y: 0.12, z: 0.00, category: "Powertrain" },
+{ name: "TSAL/BMS/HVD", mass: 6, x: -0.10, y: 0.30, z: 0.10, category: "Electronics" },
+{ name: "ECU + Sensors", mass: 3, x: 0.10, y: 0.28, z: -0.08, category: "Electronics" },
+{ name: "Wiring Harness", mass: 8, x: 0.00, y: 0.15, z: 0.00, category: "Electronics" },
+{ name: "Cooling System", mass: 7, x: 0.40, y: 0.08, z: 0.20, category: "Cooling" },
+{ name: "Brake System", mass: 6, x: 0.30, y: 0.05, z: 0.00, category: "Chassis" },
+{ name: "Steering System", mass: 4, x: 0.50, y: 0.12, z: 0.00, category: "Chassis" },
+{ name: "Susp FL", mass: 5.5, x: 0.85, y: 0.10, z: 0.61, category: "Suspension" },
+{ name: "Susp FR", mass: 5.5, x: 0.85, y: 0.10, z: -0.61, category: "Suspension" },
+{ name: "Susp RL", mass: 5.0, x: -0.70, y: 0.10, z: 0.59, category: "Suspension" },
+{ name: "Susp RR", mass: 5.0, x: -0.70, y: 0.10, z: -0.59, category: "Suspension" },
+{ name: "Wheel+Tire FL", mass: 8, x: 0.85, y: 0.23, z: 0.61, category: "Unsprung" },
+{ name: "Wheel+Tire FR", mass: 8, x: 0.85, y: 0.23, z: -0.61, category: "Unsprung" },
+{ name: "Wheel+Tire RL", mass: 8, x: -0.70, y: 0.23, z: 0.59, category: "Unsprung" },
+{ name: "Wheel+Tire RR", mass: 8, x: -0.70, y: 0.23, z: -0.59, category: "Unsprung" },
+{ name: "Driver (75kg)", mass: 75, x: 0.05, y: 0.28, z: 0.00, category: "Driver" },
+{ name: "Pedalbox", mass: 3, x: 0.60, y: 0.06, z: 0.00, category: "Chassis" },
+{ name: "Fire Extinguisher", mass: 1.5, x: -0.20, y: 0.10, z: 0.15, category: "Safety" },
 ];
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -143,15 +143,15 @@ const top10 = useMemo(() => […components].sort((a, b) => b.mass - a.mass).slic
 
 return (
 <div>
-<div style={{ display: “grid”, gridTemplateColumns: “1fr 1fr”, gap: 10 }}>
+<div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
 <Sec title="Mass by Category [kg]">
 <GC><ResponsiveContainer width="100%" height={260}>
-<BarChart data={byCat} layout=“vertical” margin={{ top: 8, right: 16, bottom: 8, left: 80 }}>
+<BarChart data={byCat} layout="vertical" margin={{ top: 8, right: 16, bottom: 8, left: 80 }}>
 <CartesianGrid strokeDasharray="3 3" stroke={GS} horizontal={false} />
-<XAxis type=“number” {…ax()} />
-<YAxis dataKey=“cat” type=“category” tick={{ fontSize: 9, fill: C.br, fontFamily: C.dt }} stroke={C.b1} width={75} />
+<XAxis type="number" {…ax()} />
+<YAxis dataKey="cat" type="category" tick={{ fontSize: 9, fill: C.br, fontFamily: C.dt }} stroke={C.b1} width={75} />
 <Tooltip contentStyle={TT} />
-<Bar dataKey=“mass” radius={[0, 4, 4, 0]} barSize={14}>
+<Bar dataKey="mass" radius={[0, 4, 4, 0]} barSize={14}>
 {byCat.map((e, i) => <Cell key={i} fill={e.color} fillOpacity={0.7} />)}
 </Bar>
 </BarChart>
@@ -159,29 +159,29 @@ return (
 </Sec>
 <Sec title="Top 10 Heaviest [kg]">
 <GC><ResponsiveContainer width="100%" height={260}>
-<BarChart data={top10} layout=“vertical” margin={{ top: 8, right: 16, bottom: 8, left: 100 }}>
+<BarChart data={top10} layout="vertical" margin={{ top: 8, right: 16, bottom: 8, left: 100 }}>
 <CartesianGrid strokeDasharray="3 3" stroke={GS} horizontal={false} />
-<XAxis type=“number” {…ax()} />
-<YAxis dataKey=“name” type=“category” tick={{ fontSize: 8, fill: C.br, fontFamily: C.dt }} stroke={C.b1} width={95} />
+<XAxis type="number" {…ax()} />
+<YAxis dataKey="name" type="category" tick={{ fontSize: 8, fill: C.br, fontFamily: C.dt }} stroke={C.b1} width={95} />
 <Tooltip contentStyle={TT} />
-<Bar dataKey=“mass” radius={[0, 4, 4, 0]} barSize={12}>
+<Bar dataKey="mass" radius={[0, 4, 4, 0]} barSize={12}>
 {top10.map((e, i) => <Cell key={i} fill={e.color} fillOpacity={0.7} />)}
 </Bar>
 </BarChart>
 </ResponsiveContainer></GC>
 </Sec>
 </div>
-<Sec title=“CG Position (top view: X forward, Z right)” style={{ marginTop: 10 }}>
+<Sec title="CG Position (top view: X forward, Z right)" style={{ marginTop: 10 }}>
 <GC><ResponsiveContainer width="100%" height={280}>
 <ScatterChart margin={{ top: 16, right: 20, bottom: 24, left: 20 }}>
 <CartesianGrid strokeDasharray="3 3" stroke={GS} />
-<XAxis dataKey=“x” type=“number” {…ax()} domain={[-1, 1.3]} name=“X [m]” />
-<YAxis dataKey=“z” type=“number” {…ax()} domain={[-0.8, 0.8]} name=“Z [m]” />
+<XAxis dataKey="x" type="number" {…ax()} domain={[-1, 1.3]} name="X [m]" />
+<YAxis dataKey="z" type="number" {…ax()} domain={[-0.8, 0.8]} name="Z [m]" />
 <Tooltip contentStyle={TT} />
 <Scatter data={components} r={4}>
 {components.map((c, i) => <Cell key={i} fill={CAT_COLORS[c.category] || C.dm} fillOpacity={0.6} />)}
 </Scatter>
-<Scatter data={[{ x: cg.x, z: cg.z, name: “CG” }]} r={8} fill={C.red}>
+<Scatter data={[{ x: cg.x, z: cg.z, name: "CG" }]} r={8} fill={C.red}>
 <Cell fill={C.red} />
 </Scatter>
 <ReferenceLine x={0} stroke={C.dm} strokeDasharray="3 3" />
@@ -202,28 +202,28 @@ const tensor = [
 [inertia.Ixy, inertia.Iyy, inertia.Iyz],
 [inertia.Ixz, inertia.Iyz, inertia.Izz],
 ];
-const labels = [“Roll (Ixx)”, “Pitch (Iyy)”, “Yaw (Izz)”];
+const labels = ["Roll (Ixx)", "Pitch (Iyy)", "Yaw (Izz)"];
 const diagData = labels.map((l, i) => ({ axis: l, value: +tensor[i][i].toFixed(1) }));
 
 return (
 <div>
-<div style={{ display: “grid”, gridTemplateColumns: “repeat(3, 1fr)”, gap: 10, marginBottom: 14 }}>
-<KPI label=“Ixx (Roll)” value={`${inertia.Ixx.toFixed(1)} kg·m²`} sub=“roll inertia” sentiment=“neutral” delay={0} />
-<KPI label=“Iyy (Pitch)” value={`${inertia.Iyy.toFixed(1)} kg·m²`} sub=“pitch inertia” sentiment=“neutral” delay={1} />
-<KPI label=“Izz (Yaw)” value={`${inertia.Izz.toFixed(1)} kg·m²`} sub=“yaw inertia” sentiment=“neutral” delay={2} />
+<div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 10, marginBottom: 14 }}>
+<KPI label="Ixx (Roll)" value={`${inertia.Ixx.toFixed(1)} kg·m²`} sub="roll inertia" sentiment="neutral" delay={0} />
+<KPI label="Iyy (Pitch)" value={`${inertia.Iyy.toFixed(1)} kg·m²`} sub="pitch inertia" sentiment="neutral" delay={1} />
+<KPI label="Izz (Yaw)" value={`${inertia.Izz.toFixed(1)} kg·m²`} sub="yaw inertia" sentiment="neutral" delay={2} />
 </div>
 <Sec title="Inertia Tensor Matrix [kg·m²]">
 <GC style={{ padding: 12 }}>
-<div style={{ display: “grid”, gridTemplateColumns: “60px repeat(3, 1fr)”, gap: 4, fontSize: 10, fontFamily: C.dt }}>
+<div style={{ display: "grid", gridTemplateColumns: "60px repeat(3, 1fr)", gap: 4, fontSize: 10, fontFamily: C.dt }}>
 <div />
-{[“X (Roll)”, “Y (Pitch)”, “Z (Yaw)”].map(h => <div key={h} style={{ color: C.dm, fontWeight: 700, textAlign: “center” }}>{h}</div>)}
+{["X (Roll)", "Y (Pitch)", "Z (Yaw)"].map(h => <div key={h} style={{ color: C.dm, fontWeight: 700, textAlign: "center" }}>{h}</div>)}
 {tensor.map((row, i) => (
 <React.Fragment key={i}>
-<div style={{ color: C.cy, fontWeight: 700 }}>{[“X”, “Y”, “Z”][i]}</div>
+<div style={{ color: C.cy, fontWeight: 700 }}>{["X", "Y", "Z"][i]}</div>
 {row.map((v, j) => (
 <div key={j} style={{
-textAlign: “center”, padding: “8px 4px”, borderRadius: 4,
-background: i === j ? `${C.cy}10` : Math.abs(v) > 1 ? `${C.am}08` : “transparent”,
+textAlign: "center", padding: "8px 4px", borderRadius: 4,
+background: i === j ? `${C.cy}10` : Math.abs(v) > 1 ? `${C.am}08` : "transparent",
 color: i === j ? C.cy : C.br, fontWeight: i === j ? 700 : 400,
 }}>{v.toFixed(1)}</div>
 ))}
@@ -232,14 +232,14 @@ color: i === j ? C.cy : C.br, fontWeight: i === j ? 700 : 400,
 </div>
 </GC>
 </Sec>
-<Sec title=“Principal Inertias” style={{ marginTop: 10 }}>
+<Sec title="Principal Inertias" style={{ marginTop: 10 }}>
 <GC><ResponsiveContainer width="100%" height={180}>
-<BarChart data={diagData} margin={{ top: 8, right: 16, bottom: 8, left: 80 }} layout=“vertical”>
+<BarChart data={diagData} margin={{ top: 8, right: 16, bottom: 8, left: 80 }} layout="vertical">
 <CartesianGrid strokeDasharray="3 3" stroke={GS} horizontal={false} />
-<XAxis type=“number” {…ax()} />
-<YAxis dataKey=“axis” type=“category” tick={{ fontSize: 9, fill: C.br, fontFamily: C.dt }} stroke={C.b1} width={75} />
+<XAxis type="number" {…ax()} />
+<YAxis dataKey="axis" type="category" tick={{ fontSize: 9, fill: C.br, fontFamily: C.dt }} stroke={C.b1} width={75} />
 <Tooltip contentStyle={TT} />
-<Bar dataKey=“value” barSize={16} radius={[0, 4, 4, 0]} fill={C.cy} fillOpacity={0.6} />
+<Bar dataKey="value" barSize={16} radius={[0, 4, 4, 0]} fill={C.cy} fillOpacity={0.6} />
 </BarChart>
 </ResponsiveContainer></GC>
 </Sec>
@@ -253,29 +253,29 @@ color: i === j ? C.cy : C.br, fontWeight: i === j ? 700 : 400,
 function CornersTab({ corners, cg }) {
 const crossDiag = Math.abs(corners.crossFL_RR - corners.crossFR_RL) / (cg.mass * 9.81) * 100;
 const cornerData = [
-{ corner: “FL”, load: +corners.FL.toFixed(0), color: C.cy },
-{ corner: “FR”, load: +corners.FR.toFixed(0), color: C.gn },
-{ corner: “RL”, load: +corners.RL.toFixed(0), color: C.am },
-{ corner: “RR”, load: +corners.RR.toFixed(0), color: C.red },
+{ corner: "FL", load: +corners.FL.toFixed(0), color: C.cy },
+{ corner: "FR", load: +corners.FR.toFixed(0), color: C.gn },
+{ corner: "RL", load: +corners.RL.toFixed(0), color: C.am },
+{ corner: "RR", load: +corners.RR.toFixed(0), color: C.red },
 ];
 
 return (
 <div>
-<div style={{ display: “grid”, gridTemplateColumns: “repeat(5, 1fr)”, gap: 10, marginBottom: 14 }}>
-<KPI label=“FL” value={`${corners.FL.toFixed(0)} N`} sub=“front left” sentiment=“neutral” delay={0} />
-<KPI label=“FR” value={`${corners.FR.toFixed(0)} N`} sub=“front right” sentiment=“neutral” delay={1} />
-<KPI label=“RL” value={`${corners.RL.toFixed(0)} N`} sub=“rear left” sentiment=“neutral” delay={2} />
-<KPI label=“RR” value={`${corners.RR.toFixed(0)} N`} sub=“rear right” sentiment=“neutral” delay={3} />
-<KPI label=“Cross Weight” value={`${crossDiag.toFixed(1)}%`} sub=“diagonal imbalance” sentiment={crossDiag < 1 ? “positive” : “amber”} delay={4} />
+<div style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 10, marginBottom: 14 }}>
+<KPI label="FL" value={`${corners.FL.toFixed(0)} N`} sub="front left" sentiment="neutral" delay={0} />
+<KPI label="FR" value={`${corners.FR.toFixed(0)} N`} sub="front right" sentiment="neutral" delay={1} />
+<KPI label="RL" value={`${corners.RL.toFixed(0)} N`} sub="rear left" sentiment="neutral" delay={2} />
+<KPI label="RR" value={`${corners.RR.toFixed(0)} N`} sub="rear right" sentiment="neutral" delay={3} />
+<KPI label="Cross Weight" value={`${crossDiag.toFixed(1)}%`} sub="diagonal imbalance" sentiment={crossDiag < 1 ? "positive" : "amber"} delay={4} />
 </div>
 <Sec title="Static Corner Loads [N]">
 <GC><ResponsiveContainer width="100%" height={220}>
 <BarChart data={cornerData} margin={{ top: 8, right: 16, bottom: 8, left: 8 }}>
 <CartesianGrid strokeDasharray="3 3" stroke={GS} />
-<XAxis dataKey=“corner” {…ax()} />
+<XAxis dataKey="corner" {…ax()} />
 <YAxis {…ax()} />
 <Tooltip contentStyle={TT} />
-<Bar dataKey=“load” barSize={40} radius={[4, 4, 0, 0]}>
+<Bar dataKey="load" barSize={40} radius={[4, 4, 0, 0]}>
 {cornerData.map((c, i) => <Cell key={i} fill={c.color} fillOpacity={0.7} />)}
 </Bar>
 </BarChart>
@@ -292,14 +292,14 @@ function BallastTab({ components, cg }) {
 // Simulate ballast placement options
 const options = useMemo(() => {
 const positions = [
-{ label: “Front left”, x: 0.7, z: 0.3 },
-{ label: “Front right”, x: 0.7, z: -0.3 },
-{ label: “Rear left”, x: -0.5, z: 0.3 },
-{ label: “Rear right”, x: -0.5, z: -0.3 },
-{ label: “Front center”, x: 0.6, z: 0.0 },
+{ label: "Front left", x: 0.7, z: 0.3 },
+{ label: "Front right", x: 0.7, z: -0.3 },
+{ label: "Rear left", x: -0.5, z: 0.3 },
+{ label: "Rear right", x: -0.5, z: -0.3 },
+{ label: "Front center", x: 0.6, z: 0.0 },
 ];
 return positions.map(p => {
-const ballast = { …p, name: `Ballast ${p.label}`, mass: 2, y: 0.05, category: “Chassis” };
+const ballast = { …p, name: `Ballast ${p.label}`, mass: 2, y: 0.05, category: "Chassis" };
 const newCG = computeCG([…components, ballast]);
 const newCorners = computeCornerWeights(newCG, newCG.mass);
 return {
@@ -314,17 +314,17 @@ return (
 <div>
 <Sec title="Ballast Placement Options (2 kg)">
 <GC style={{ padding: 10 }}>
-<div style={{ display: “grid”, gridTemplateColumns: “120px 80px 80px 80px 80px”, gap: 0, fontSize: 8, fontFamily: C.dt }}>
-{[“Position”, “F/R [%]”, “CG X [mm]”, “CG Z [mm]”, “Cross Δ [%]”].map(h => (
-<div key={h} style={{ color: C.dm, fontWeight: 700, padding: “6px 4px”, borderBottom: `1px solid ${C.b1}` }}>{h}</div>
+<div style={{ display: "grid", gridTemplateColumns: "120px 80px 80px 80px 80px", gap: 0, fontSize: 8, fontFamily: C.dt }}>
+{["Position", "F/R [%]", "CG X [mm]", "CG Z [mm]", "Cross Δ [%]"].map(h => (
+<div key={h} style={{ color: C.dm, fontWeight: 700, padding: "6px 4px", borderBottom: `1px solid ${C.b1}` }}>{h}</div>
 ))}
 {options.map(o => (
 <React.Fragment key={o.label}>
-<div style={{ color: C.cy, padding: “5px 4px”, borderBottom: `1px solid ${C.b1}08` }}>{o.label}</div>
-<div style={{ color: C.br, padding: “5px 4px”, borderBottom: `1px solid ${C.b1}08` }}>{o.frontPct}</div>
-<div style={{ color: C.br, padding: “5px 4px”, borderBottom: `1px solid ${C.b1}08` }}>{o.cgX}</div>
-<div style={{ color: Math.abs(+o.cgZ) < 2 ? C.gn : C.am, padding: “5px 4px”, borderBottom: `1px solid ${C.b1}08` }}>{o.cgZ}</div>
-<div style={{ color: +o.crossImbalance < 0.5 ? C.gn : C.am, padding: “5px 4px”, borderBottom: `1px solid ${C.b1}08` }}>{o.crossImbalance}</div>
+<div style={{ color: C.cy, padding: "5px 4px", borderBottom: `1px solid ${C.b1}08` }}>{o.label}</div>
+<div style={{ color: C.br, padding: "5px 4px", borderBottom: `1px solid ${C.b1}08` }}>{o.frontPct}</div>
+<div style={{ color: C.br, padding: "5px 4px", borderBottom: `1px solid ${C.b1}08` }}>{o.cgX}</div>
+<div style={{ color: Math.abs(+o.cgZ) < 2 ? C.gn : C.am, padding: "5px 4px", borderBottom: `1px solid ${C.b1}08` }}>{o.cgZ}</div>
+<div style={{ color: +o.crossImbalance < 0.5 ? C.gn : C.am, padding: "5px 4px", borderBottom: `1px solid ${C.b1}08` }}>{o.crossImbalance}</div>
 </React.Fragment>
 ))}
 </div>
@@ -339,7 +339,7 @@ return (
 // ═══════════════════════════════════════════════════════════════════════════
 function SensitivityTab({ components }) {
 const sensData = useMemo(() => {
-return components.filter(c => c.category !== “Driver”).map(c => {
+return components.filter(c => c.category !== "Driver").map(c => {
 const lapSens = c.mass * 0.012 + (c.y > 0.2 ? c.mass * 0.005 : 0); // higher = worse
 return { name: c.name, mass: c.mass, lapSens: +lapSens.toFixed(3), category: c.category };
 }).sort((a, b) => b.lapSens - a.lapSens).slice(0, 15);
@@ -349,12 +349,12 @@ return (
 <div>
 <Sec title="Lap Time Sensitivity to Component Mass [ms/kg]">
 <GC><ResponsiveContainer width="100%" height={380}>
-<BarChart data={sensData} layout=“vertical” margin={{ top: 8, right: 16, bottom: 8, left: 100 }}>
+<BarChart data={sensData} layout="vertical" margin={{ top: 8, right: 16, bottom: 8, left: 100 }}>
 <CartesianGrid strokeDasharray="3 3" stroke={GS} horizontal={false} />
-<XAxis type=“number” {…ax()} />
-<YAxis dataKey=“name” type=“category” tick={{ fontSize: 8, fill: C.br, fontFamily: C.dt }} stroke={C.b1} width={95} />
+<XAxis type="number" {…ax()} />
+<YAxis dataKey="name" type="category" tick={{ fontSize: 8, fill: C.br, fontFamily: C.dt }} stroke={C.b1} width={95} />
 <Tooltip contentStyle={TT} />
-<Bar dataKey=“lapSens” barSize={12} radius={[0, 4, 4, 0]} name=“Δt_lap [ms/kg]”>
+<Bar dataKey="lapSens" barSize={12} radius={[0, 4, 4, 0]} name="Δt_lap [ms/kg]">
 {sensData.map((s, i) => <Cell key={i} fill={CAT_COLORS[s.category] || C.dm} fillOpacity={0.7} />)}
 </Bar>
 </BarChart>
@@ -394,11 +394,11 @@ insideLoad: +Math.min(FR, RR).toFixed(0),
 
 return (
 <div>
-<div style={{ display: “grid”, gridTemplateColumns: “repeat(4, 1fr)”, gap: 10, marginBottom: 14 }}>
-<KPI label=“CG Height” value={`${(hCG * 1000).toFixed(0)} mm`} sub=“primary transfer driver” sentiment={hCG < 0.30 ? “positive” : “amber”} delay={0} />
-<KPI label=“ΔFz @ 1G lat” value={`${(mass * 1.0 * 9.81 * hCG / ((tF + tR) / 2)).toFixed(0)} N`} sub=“total lateral transfer” sentiment=“neutral” delay={1} />
-<KPI label=“ΔFz @ 1G lon” value={`${(mass * 1.0 * 9.81 * hCG / wb).toFixed(0)} N`} sub=“total longitudinal transfer” sentiment=“neutral” delay={2} />
-<KPI label=“Wheel Lift G” value={`${(corners.FR / (mass * 9.81 * hCG / ((tF + tR) / 2)) + 0.01).toFixed(2)}G`} sub=“inside wheel unloads” sentiment=“neutral” delay={3} />
+<div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 10, marginBottom: 14 }}>
+<KPI label="CG Height" value={`${(hCG * 1000).toFixed(0)} mm`} sub="primary transfer driver" sentiment={hCG < 0.30 ? "positive" : "amber"} delay={0} />
+<KPI label="ΔFz @ 1G lat" value={`${(mass * 1.0 * 9.81 * hCG / ((tF + tR) / 2)).toFixed(0)} N`} sub="total lateral transfer" sentiment="neutral" delay={1} />
+<KPI label="ΔFz @ 1G lon" value={`${(mass * 1.0 * 9.81 * hCG / wb).toFixed(0)} N`} sub="total longitudinal transfer" sentiment="neutral" delay={2} />
+<KPI label="Wheel Lift G" value={`${(corners.FR / (mass * 9.81 * hCG / ((tF + tR) / 2)) + 0.01).toFixed(2)}G`} sub="inside wheel unloads" sentiment="neutral" delay={3} />
 </div>
 
 ```
@@ -447,12 +447,12 @@ const driverMin = 68; // kg minimum driver weight (with ballast)
 const driver = 75;
 const carOnly = cg.mass - driver;
 const checks = [
-{ rule: “No minimum”, item: “Vehicle weight (no minimum in FSG EV)”, value: `${carOnly.toFixed(0)} kg`, status: “pass” },
-{ rule: “Driver”, item: “Driver weight ≥ 68 kg (inc. ballast)”, value: `${driver} kg`, status: driver >= driverMin ? “pass” : “fail” },
-{ rule: “Total”, item: “Total system weight with driver”, value: `${cg.mass.toFixed(0)} kg`, status: “pass” },
-{ rule: “CG Height”, item: “CG height below 350mm recommended”, value: `${(cg.y * 1000).toFixed(0)} mm`, status: cg.y < 0.35 ? “pass” : “warn” },
-{ rule: “Lateral CG”, item: “Lateral CG offset < 10mm”, value: `${(Math.abs(cg.z) * 1000).toFixed(1)} mm`, status: Math.abs(cg.z) < 0.01 ? “pass” : “warn” },
-{ rule: “F/R Split”, item: “Front weight 45–52% optimal”, value: `${(cg.mass > 0 ? ((1.55/2 - cg.x) / 1.55 * 100) : 50).toFixed(1)}%`, status: “pass” },
+{ rule: "No minimum", item: "Vehicle weight (no minimum in FSG EV)", value: `${carOnly.toFixed(0)} kg`, status: "pass" },
+{ rule: "Driver", item: "Driver weight ≥ 68 kg (inc. ballast)", value: `${driver} kg`, status: driver >= driverMin ? "pass" : "fail" },
+{ rule: "Total", item: "Total system weight with driver", value: `${cg.mass.toFixed(0)} kg`, status: "pass" },
+{ rule: "CG Height", item: "CG height below 350mm recommended", value: `${(cg.y * 1000).toFixed(0)} mm`, status: cg.y < 0.35 ? "pass" : "warn" },
+{ rule: "Lateral CG", item: "Lateral CG offset < 10mm", value: `${(Math.abs(cg.z) * 1000).toFixed(1)} mm`, status: Math.abs(cg.z) < 0.01 ? "pass" : "warn" },
+{ rule: "F/R Split", item: "Front weight 45–52% optimal", value: `${(cg.mass > 0 ? ((1.55/2 - cg.x) / 1.55 * 100) : 50).toFixed(1)}%`, status: "pass" },
 ];
 
 return (
@@ -460,13 +460,13 @@ return (
 <Sec title="FSG Weight & CG Compliance">
 <GC style={{ padding: 10 }}>
 {checks.map(c => (
-<div key={c.rule} style={{ display: “flex”, alignItems: “center”, gap: 10, padding: “8px 0”, borderBottom: `1px solid ${C.b1}08` }}>
-<div style={{ width: 8, height: 8, borderRadius: “50%”, background: c.status === “pass” ? C.gn : c.status === “warn” ? C.am : C.red, flexShrink: 0 }} />
+<div key={c.rule} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 0", borderBottom: `1px solid ${C.b1}08` }}>
+<div style={{ width: 8, height: 8, borderRadius: "50%", background: c.status === "pass" ? C.gn : c.status === "warn" ? C.am : C.red, flexShrink: 0 }} />
 <div style={{ fontSize: 8, color: C.cy, fontFamily: C.dt, fontWeight: 700, width: 70 }}>{c.rule}</div>
 <div style={{ fontSize: 9, color: C.br, fontFamily: C.dt, flex: 1 }}>{c.item}</div>
-<div style={{ fontSize: 10, fontWeight: 700, color: c.status === “pass” ? C.gn : C.am, fontFamily: C.dt }}>{c.value}</div>
-<div style={{ fontSize: 7, fontWeight: 700, color: c.status === “pass” ? C.gn : c.status === “warn” ? C.am : C.red, background: `${c.status === "pass" ? C.gn : c.status === "warn" ? C.am : C.red}15`, padding: “2px 8px”, borderRadius: 4, fontFamily: C.dt }}>
-{c.status === “pass” ? “PASS” : c.status === “warn” ? “REVIEW” : “FAIL”}
+<div style={{ fontSize: 10, fontWeight: 700, color: c.status === "pass" ? C.gn : C.am, fontFamily: C.dt }}>{c.value}</div>
+<div style={{ fontSize: 7, fontWeight: 700, color: c.status === "pass" ? C.gn : c.status === "warn" ? C.am : C.red, background: `${c.status === "pass" ? C.gn : c.status === "warn" ? C.am : C.red}15`, padding: "2px 8px", borderRadius: 4, fontFamily: C.dt }}>
+{c.status === "pass" ? "PASS" : c.status === "warn" ? "REVIEW" : "FAIL"}
 </div>
 </div>
 ))}
@@ -481,19 +481,19 @@ return (
 // ═══════════════════════════════════════════════════════════════════════════
 function TargetsTab({ cg, corners }) {
 const targets = [
-{ param: “CG X (longitudinal)”, current: +(cg.x * 1000).toFixed(0), target: 0, unit: “mm”, tolerance: 30 },
-{ param: “CG Y (height)”, current: +(cg.y * 1000).toFixed(0), target: 280, unit: “mm”, tolerance: 20 },
-{ param: “CG Z (lateral)”, current: +(cg.z * 1000).toFixed(1), target: 0, unit: “mm”, tolerance: 5 },
-{ param: “Front Weight %”, current: +corners.frontPct.toFixed(1), target: 48.0, unit: “%”, tolerance: 2 },
-{ param: “Total Mass”, current: +cg.mass.toFixed(0), target: 290, unit: “kg”, tolerance: 15 },
+{ param: "CG X (longitudinal)", current: +(cg.x * 1000).toFixed(0), target: 0, unit: "mm", tolerance: 30 },
+{ param: "CG Y (height)", current: +(cg.y * 1000).toFixed(0), target: 280, unit: "mm", tolerance: 20 },
+{ param: "CG Z (lateral)", current: +(cg.z * 1000).toFixed(1), target: 0, unit: "mm", tolerance: 5 },
+{ param: "Front Weight %", current: +corners.frontPct.toFixed(1), target: 48.0, unit: "%", tolerance: 2 },
+{ param: "Total Mass", current: +cg.mass.toFixed(0), target: 290, unit: "kg", tolerance: 15 },
 ];
 
 return (
 <div>
-<div style={{ display: “grid”, gridTemplateColumns: “repeat(5, 1fr)”, gap: 10, marginBottom: 14 }}>
+<div style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 10, marginBottom: 14 }}>
 {targets.map((t, i) => {
 const onTarget = Math.abs(t.current - t.target) <= t.tolerance;
-return <KPI key={t.param} label={t.param.split(” (”)[0]} value={`${t.current} ${t.unit}`} sub={`target: ${t.target} ±${t.tolerance}`} sentiment={onTarget ? “positive” : “amber”} delay={i} />;
+return <KPI key={t.param} label={t.param.split(" (")[0]} value={`${t.current} ${t.unit}`} sub={`target: ${t.target} ±${t.tolerance}`} sentiment={onTarget ? "positive" : "amber"} delay={i} />;
 })}
 </div>
 
@@ -540,7 +540,7 @@ return <KPI key={t.param} label={t.param.split(” (”)[0]} value={`${t.current
 // MAIN EXPORT
 // ═══════════════════════════════════════════════════════════════════════════
 export default function WeightBalanceModule() {
-const [tab, setTab] = useState(“overview”);
+const [tab, setTab] = useState("overview");
 const components = DEFAULT_COMPONENTS;
 const cg = useMemo(() => computeCG(components), [components]);
 const inertia = useMemo(() => computeInertia(components, cg), [components, cg]);
@@ -550,11 +550,11 @@ return (
 <div>
 {/* Header */}
 <div style={{
-…GL, padding: “12px 16px”, marginBottom: 14,
+…GL, padding: "12px 16px", marginBottom: 14,
 borderLeft: `3px solid ${C.am}`,
 background: `linear-gradient(90deg, ${C.am}08, transparent)`,
 }}>
-<div style={{ display: “flex”, alignItems: “center”, gap: 10 }}>
+<div style={{ display: "flex", alignItems: "center", gap: 10 }}>
 <span style={{ fontSize: 20, color: C.am }}>⊿</span>
 <div>
 <span style={{ fontSize: 12, fontWeight: 800, color: C.am, fontFamily: C.dt, letterSpacing: 2 }}>WEIGHT & CG</span>
