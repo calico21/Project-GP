@@ -184,7 +184,7 @@ count: finishers.filter(r => r.totalTime >= lo && r.totalTime < hi).length,
 };
 });
 // DNF histogram by lap
-const dnfByLap = Array.from({ length: nLaps }, (*, lap) => ({
+const dnfByLap = Array.from({ length: nLaps }, (_, lap) => ({
 lap: lap + 1,
 dnfCount: results.filter(r => !r.finished && r.dnfLap === lap + 1).length,
 }));
@@ -220,14 +220,14 @@ return { name, laps, totalTime: +cum.toFixed(2), finishEnergy: +laps[laps.length
 
 function gConditions() {
 const R = srng(901);
-const temps = Array.from({ length: 24 }, (*, h) => ({
+const temps = Array.from({ length: 24 }, (_, h) => ({
 hour: h, ambient: +(15 + 8 * Math.sin((h - 6) * Math.PI / 12) + R() * 2).toFixed(1),
 trackSurface: +(20 + 15 * Math.sin((h - 6) * Math.PI / 12) + R() * 3).toFixed(1),
 humidity: +(60 - 15 * Math.sin((h - 6) * Math.PI / 12) + R() * 5).toFixed(0),
 airDensity: +(1.225 - 0.004 * (15 + 8 * Math.sin((h - 6) * Math.PI / 12) - 15)).toFixed(4),
 }));
 // Track evolution: grip improves as rubber is laid
-const trackEvo = Array.from({ length: 40 }, (*, session) => ({
+const trackEvo = Array.from({ length: 40 }, (_, session) => ({
 session: session + 1, gripMult: +(0.92 + 0.08 * (1 - Math.exp(-session / 8)) + R() * 0.01).toFixed(3),
 rubberLevel: +Math.min(100, session * 3.5 + R() * 5).toFixed(0),
 }));
