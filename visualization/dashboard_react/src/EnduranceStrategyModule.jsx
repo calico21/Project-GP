@@ -282,7 +282,7 @@ borderTop: `2px solid ${s.crossLink ? ELEC : s.ok ? C.gn : C.red}`,
 ))}
 </div>
 
-```
+
   {/* Cross-link to Electronics */}
   <div style={{
     ...GL, padding: "8px 14px", marginBottom: 14,
@@ -335,7 +335,7 @@ borderTop: `2px solid ${s.crossLink ? ELEC : s.ok ? C.gn : C.red}`,
     </Sec>
   </div>
 </div>
-```
+
 
 );
 }
@@ -358,7 +358,7 @@ return (
 <KPI label="Avg Per Lap" value={`${(totalConsumed / 16).toFixed(3)} kWh`} sub="net consumption" sentiment="neutral" delay={4} />
 </div>
 
-```
+
   <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
     <Sec title="SoC & Voltage vs Lap">
       <GC><ResponsiveContainer width="100%" height={240}>
@@ -404,7 +404,7 @@ return (
     </ResponsiveContainer></GC>
   </Sec>
 </div>
-```
+
 
 );
 }
@@ -426,7 +426,7 @@ return (
 <KPI label="Target Avg" value={`${(stintPlan.reduce((a, s) => a + s.targetPace, 0) / stintPlan.length).toFixed(2)}s`} sub="mean lap target" sentiment="neutral" delay={3} />
 </div>
 
-```
+
   {/* Stint plan table */}
   <Sec title="Lap-by-Lap Race Plan">
     <GC style={{ padding: 10 }}>
@@ -470,7 +470,7 @@ return (
     </ResponsiveContainer></GC>
   </Sec>
 </div>
-```
+
 
 );
 }
@@ -489,7 +489,7 @@ return (
 <KPI label="Spread" value={`${(mc.p95Time - mc.p5Time).toFixed(1)}s`} sub="P95 − P5 range" sentiment={(mc.p95Time - mc.p5Time) < 30 ? "positive" : "amber"} delay={4} />
 </div>
 
-```
+
   <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
     <Sec title="Race Time Distribution (finishers)">
       <GC><ResponsiveContainer width="100%" height={260}>
@@ -525,7 +525,7 @@ return (
     <span style={{ color: mc.finishProb > 95 ? C.gn : C.am, fontWeight: 600 }}> {mc.finishProb.toFixed(1)}% of simulations completed all 16 laps.</span>
   </div>
 </div>
-```
+
 
 );
 }
@@ -546,7 +546,7 @@ return (
 <KPI label="Cooling Rate" value={`~8%/lap`} sub="Newton’s law fit" sentiment="neutral" delay={3} />
 </div>
 
-```
+
   <Sec title="Brake Rotor Temperature Per Corner [°C]">
     <GC><ResponsiveContainer width="100%" height={280}>
       <LineChart data={brakes} margin={{ top: 8, right: 16, bottom: 8, left: 8 }}>
@@ -565,7 +565,7 @@ return (
     </ResponsiveContainer></GC>
   </Sec>
 </div>
-```
+
 
 );
 }
@@ -587,7 +587,7 @@ return (
 <KPI label="Peak Wear" value={`${peakWear}%/lap`} sub="highest rate" sentiment={peakWear < 0.7 ? "positive" : "amber"} delay={3} />
 </div>
 
-```
+
   <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
     <Sec title="Grip Remaining Per Corner [%]">
       <GC><ResponsiveContainer width="100%" height={240}>
@@ -619,7 +619,7 @@ return (
     </Sec>
   </div>
 </div>
-```
+
 
 );
 }
@@ -644,7 +644,7 @@ return (
 ))}
 </div>
 
-```
+
   <Sec title="Pace Comparison — Lap Time [s]">
     <GC><ResponsiveContainer width="100%" height={260}>
       <LineChart margin={{ top: 8, right: 16, bottom: 8, left: 8 }}>
@@ -678,7 +678,7 @@ return (
     </ResponsiveContainer></GC>
   </Sec>
 </div>
-```
+
 
 );
 }
@@ -700,7 +700,7 @@ return (
 <KPI label="Air Density" value={`${currentTemp?.airDensity || 1.22} kg/m³`} sub="for aero calc" sentiment="neutral" delay={3} />
 </div>
 
-```
+
   <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
     <Sec title="Ambient & Track Temperature [°C]">
       <GC><ResponsiveContainer width="100%" height={220}>
@@ -747,7 +747,7 @@ return (
     </ResponsiveContainer></GC>
   </Sec>
 </div>
-```
+
 
 );
 }
@@ -795,7 +795,7 @@ ENDURANCE: {status}
 </div>
 </div>
 
-```
+
   <div style={{ display: "flex", gap: 5, marginBottom: 14, flexWrap: "wrap" }}>
     {TABS.map(t => <Pill key={t.key} active={tab === t.key} label={t.label} onClick={() => setTab(t.key)} color={C.gn} />)}
   </div>
@@ -809,7 +809,7 @@ ENDURANCE: {status}
   {tab === "pace" && <PaceTab strategies={strategies} />}
   {tab === "conditions" && <ConditionsTab conditions={conditions} />}
 </div>
-```
+
 
 );
 }
