@@ -111,9 +111,9 @@ const pts = lap.filter(p => p.s >= sd.start && p.s < sd.end);
 const optTime = pts.length * 0.05;
 const actTime = optTime + (R() - 0.3) * 0.3;
 const avgSpeed = pts.reduce((a, p) => a + p.speed, 0) / (pts.length || 1);
-const peakAy = Math.max(…pts.map(p => Math.abs(p.latG)));
+const peakAy = Math.max(...pts.map(p => Math.abs(p.latG)));
 return {
-…sd, optTime: +optTime.toFixed(2), actTime: +actTime.toFixed(2),
+...sd, optTime: +optTime.toFixed(2), actTime: +actTime.toFixed(2),
 delta: +(actTime - optTime).toFixed(2),
 avgSpeedAct: +avgSpeed.toFixed(1), peakAy: +peakAy.toFixed(3),
 consistencyPct: +(90 + R() * 8).toFixed(1),
@@ -204,7 +204,7 @@ trailBraking: +(55 + R() * 35 + (i > 4 ? 8 : 0)).toFixed(0),
 steeringSmooth: +(72 + R() * 23).toFixed(0),
 liftAndCoast: +(80 + R() * 15).toFixed(0),
 overall: 0,
-})).map(l => ({ …l, overall: +((+l.throttleSmoothness + +l.brakeModulation + +l.trailBraking + +l.steeringSmooth + +l.liftAndCoast) / 5).toFixed(0) }));
+})).map(l => ({ ...l, overall: +((+l.throttleSmoothness + +l.brakeModulation + +l.trailBraking + +l.steeringSmooth + +l.liftAndCoast) / 5).toFixed(0) }));
 }
 
 function gLineDeviation(n = 200) {
@@ -235,8 +235,8 @@ return (
 <GC><ResponsiveContainer width="100%" height={200}>
 <LineChart data={sparse} margin={{ top: 8, right: 12, bottom: 8, left: 8 }}>
 <CartesianGrid strokeDasharray="3 3" stroke={GS} />
-<XAxis dataKey="s" {…ax()} />
-<YAxis {…ax()} />
+<XAxis dataKey="s" {...ax()} />
+<YAxis {...ax()} />
 <Tooltip contentStyle={TT} />
 <Line type="monotone" dataKey="optSteer" stroke={C.gn} strokeWidth={2} dot={false} name="MPC Optimal" />
 <Line type="monotone" dataKey="actSteer" stroke={C.cy} strokeWidth={1.5} dot={false} name="Driver" strokeDasharray="4 2" />
@@ -304,8 +304,8 @@ return (
 <GC><ResponsiveContainer width="100%" height={220}>
 <BarChart data={sectors} margin={{ top: 8, right: 16, bottom: 8, left: 8 }}>
 <CartesianGrid strokeDasharray="3 3" stroke={GS} />
-<XAxis dataKey="sector" {…ax()} />
-<YAxis {…ax()} />
+<XAxis dataKey="sector" {...ax()} />
+<YAxis {...ax()} />
 <Tooltip contentStyle={TT} />
 <ReferenceLine y={0} stroke={C.dm} />
 <Bar dataKey="delta" barSize={20} radius={[4, 4, 0, 0]} name="Δ Time [s]">
@@ -347,7 +347,7 @@ return (
 // TAB 3: CONSISTENCY
 // ═══════════════════════════════════════════════════════════════════════════
 function ConsistencyTab({ laps }) {
-const bestLap = Math.min(…laps.map(l => +l.time));
+const bestLap = Math.min(...laps.map(l => +l.time));
 const avgLap = laps.reduce((a, l) => a + +l.time, 0) / laps.length;
 const stdDev = Math.sqrt(laps.reduce((a, l) => a + (+l.time - avgLap) ** 2, 0) / laps.length);
 
@@ -646,7 +646,7 @@ return (
 function ReportTab({ lap, sectors, brakingPts, laps }) {
 const steerRMS = Math.sqrt(lap.reduce((a, d) => a + (+d.steerError) ** 2, 0) / lap.length);
 const avgTrail = brakingPts.reduce((a, b) => a + +b.trailScore, 0) / brakingPts.length;
-const bestLap = Math.min(…laps.map(l => +l.time));
+const bestLap = Math.min(...laps.map(l => +l.time));
 const stdDev = Math.sqrt(laps.reduce((a, l) => a + (+l.time - laps.reduce((aa, ll) => aa + +ll.time, 0) / laps.length) ** 2, 0) / laps.length);
 
 const grade = (v, thresholds) => {
@@ -657,12 +657,12 @@ return { letter: "D", color: C.red };
 };
 
 const skills = [
-{ skill: "Steering Precision", value: Math.max(0, 100 - steerRMS * 10), …grade(Math.max(0, 100 - steerRMS * 10), [85, 70, 55]), advice: steerRMS < 3 ? "Excellent — minimal correction" : "Reduce steering corrections; aim for smoother input" },
-{ skill: "Braking Accuracy", value: Math.max(0, 100 - brakingPts.reduce((a, b) => a + Math.abs(+b.distError), 0) / brakingPts.length * 15), …grade(Math.max(0, 100 - brakingPts.reduce((a, b) => a + Math.abs(+b.distError), 0) / brakingPts.length * 15), [80, 65, 50]), advice: "Work on hitting brake markers consistently" },
-{ skill: "Trail Braking", value: avgTrail, …grade(avgTrail, [85, 70, 55]), advice: avgTrail > 80 ? "Strong trail braking technique" : "Practice releasing brake pressure gradually into the corner" },
-{ skill: "Consistency", value: Math.max(0, 100 - stdDev * 100), …grade(Math.max(0, 100 - stdDev * 100), [85, 70, 55]), advice: stdDev < 0.3 ? "Very consistent driver" : "Focus on repeating the same line and inputs each lap" },
-{ skill: "Smoothness", value: 78, …grade(78, [85, 70, 55]), advice: "Good overall smoothness — continue practicing weight transfer management" },
-{ skill: "Grip Utilization", value: 72, …grade(72, [85, 70, 55]), advice: "Explore the friction circle more in braking+cornering transitions" },
+{ skill: "Steering Precision", value: Math.max(0, 100 - steerRMS * 10), ...grade(Math.max(0, 100 - steerRMS * 10), [85, 70, 55]), advice: steerRMS < 3 ? "Excellent — minimal correction" : "Reduce steering corrections; aim for smoother input" },
+{ skill: "Braking Accuracy", value: Math.max(0, 100 - brakingPts.reduce((a, b) => a + Math.abs(+b.distError), 0) / brakingPts.length * 15), ...grade(Math.max(0, 100 - brakingPts.reduce((a, b) => a + Math.abs(+b.distError), 0) / brakingPts.length * 15), [80, 65, 50]), advice: "Work on hitting brake markers consistently" },
+{ skill: "Trail Braking", value: avgTrail, ...grade(avgTrail, [85, 70, 55]), advice: avgTrail > 80 ? "Strong trail braking technique" : "Practice releasing brake pressure gradually into the corner" },
+{ skill: "Consistency", value: Math.max(0, 100 - stdDev * 100), ...grade(Math.max(0, 100 - stdDev * 100), [85, 70, 55]), advice: stdDev < 0.3 ? "Very consistent driver" : "Focus on repeating the same line and inputs each lap" },
+{ skill: "Smoothness", value: 78, ...grade(78, [85, 70, 55]), advice: "Good overall smoothness — continue practicing weight transfer management" },
+{ skill: "Grip Utilization", value: 72, ...grade(72, [85, 70, 55]), advice: "Explore the friction circle more in braking+cornering transitions" },
 ];
 
 const overallScore = skills.reduce((a, s) => a + s.value, 0) / skills.length;
@@ -733,7 +733,7 @@ return (
 <div>
 {/* Header banner */}
 <div style={{
-…GL, padding: "12px 16px", marginBottom: 14,
+...GL, padding: "12px 16px", marginBottom: 14,
 borderLeft: `3px solid ${C.cy}`,
 background: `linear-gradient(90deg, ${C.cy}08, transparent)`,
 }}>
