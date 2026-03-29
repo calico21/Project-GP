@@ -82,7 +82,7 @@ const isDamper = pi >= 4 && pi <= 11;
 const isGeom = pi >= 14 && pi <= 22;
 const isBrake = pi === 24;
 
-```
+
   if (isSusp && isSpring) mag = 0.6 + R() * 0.4;
   else if (isSusp && isDamper) mag = 0.3 + R() * 0.3;
   else if (isVel && isSpring) mag = 0.2 + R() * 0.3;
@@ -95,7 +95,7 @@ const isBrake = pi === 24;
   row.push(+((R() > 0.5 ? 1 : -1) * mag).toFixed(3));
 }
 J.push(row);
-```
+
 
 }
 return J;
@@ -325,7 +325,7 @@ return (
 <KPI label="Max |∂ẋ/∂p|" value={maxVal.toFixed(3)} sub="peak sensitivity" sentiment="neutral" delay={2} />
 </div>
 
-```
+
   <Sec title="Jacobian Heatmap — ∂(state_derivative)/∂(setup_parameter)">
     <GC style={{ padding: "8px", overflowX: "auto" }}>
       <div style={{ position: "relative", display: "inline-block" }}>
@@ -390,7 +390,7 @@ return (
     </GC>
   </Sec>
 </div>
-```
+
 
 );
 }
@@ -412,7 +412,7 @@ return (
 <KPI label="Slowest Mode" value={`${eigenvalues.find(e => Math.abs(e.real) === Math.min(...eigenvalues.map(ee => Math.abs(ee.real))))?.name}`} sub="least damped" sentiment="neutral" delay={3} />
 </div>
 
-```
+
   <div style={{ display: "grid", gridTemplateColumns: "1.2fr 0.8fr", gap: 10 }}>
     <Sec title="Complex Plane — Re(λ) vs Im(λ)">
       <GC><ResponsiveContainer width="100%" height={320}>
@@ -455,7 +455,7 @@ return (
     </Sec>
   </div>
 </div>
-```
+
 
 );
 }
@@ -479,7 +479,7 @@ sentiment={d.dtLap < 0 ? "positive" : "amber"} delay={d.rank - 1} />
 ))}
 </div>
 
-```
+
   <Sec title="∂t_lap / ∂(setup_param) — Full 28-Parameter Sensitivity [ms]">
     <GC><ResponsiveContainer width="100%" height={420}>
       <BarChart data={sensData} layout="vertical" margin={{ top: 8, right: 16, bottom: 8, left: 90 }}>
@@ -503,7 +503,7 @@ sentiment={d.dtLap < 0 ? "positive" : "amber"} delay={d.rank - 1} />
     <span style={{ color: C.am, fontWeight: 600 }}>This is impossible with traditional simulators.</span> CasADi/IPOPT can only compute finite-difference approximations requiring 28 additional sim runs. Our analytical gradient is exact, computed in a single backward pass.
   </div>
 </div>
-```
+
 
 );
 }
@@ -525,7 +525,7 @@ return (
 <KPI label="Grid Resolution" value={`${res} × ${res}`} sub="q_front × q_rear" sentiment="neutral" delay={2} />
 </div>
 
-```
+
   <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
     <Sec title="∇H Magnitude Map (q_front × q_rear)">
       <GC style={{ padding: "8px" }}>
@@ -563,7 +563,7 @@ return (
     </Sec>
   </div>
 </div>
-```
+
 
 );
 }
@@ -583,7 +583,7 @@ return (
 <KPI label="Effective DOF" value={`~${identifiable}`} sub="active parameters" sentiment="positive" delay={2} />
 </div>
 
-```
+
   <Sec title="Fisher Information Matrix — Eigenvalue Spectrum">
     <GC><ResponsiveContainer width="100%" height={380}>
       <BarChart data={fimData} layout="vertical" margin={{ top: 8, right: 24, bottom: 8, left: 70 }}>
@@ -599,7 +599,7 @@ return (
     </ResponsiveContainer></GC>
   </Sec>
 </div>
-```
+
 
 );
 }
@@ -646,7 +646,7 @@ return (
 <KPI label="100 Hz OK" value={avgMs < 10 ? "YES" : "NO"} sub="< 10ms budget" sentiment={avgMs < 10 ? "positive" : "amber"} delay={3} />
 </div>
 
-```
+
   <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
     <Sec title="L-BFGS-B Iterations Per MPC Step">
       <GC><ResponsiveContainer width="100%" height={220}>
@@ -678,7 +678,7 @@ return (
     </Sec>
   </div>
 </div>
-```
+
 
 );
 }
@@ -702,7 +702,7 @@ return (
 <KPI label="Sparsity" value={`${(matrix.filter(m => m.fi !== m.ti && m.strength < 0.1).length / (n * n - n) * 100).toFixed(0)}%`} sub="< 0.1 threshold" sentiment="positive" delay={3} />
 </div>
 
-```
+
   <div style={{ display: "grid", gridTemplateColumns: "1.2fr 0.8fr", gap: 10 }}>
     {/* Coupling heatmap */}
     <Sec title="∂(subsystem_i) / ∂(subsystem_j) — Gradient Interaction Matrix">
@@ -772,7 +772,7 @@ return (
     <span style={{ color: C.am, fontWeight: 600 }}>This whole-system gradient view is unique to differentiable simulators.</span> Traditional solvers must treat each subsystem independently, missing these cross-domain interactions entirely.
   </div>
 </div>
-```
+
 
 );
 }
@@ -794,7 +794,7 @@ return (
 <KPI label="Weakest State" value={gramianDiag.sort((a, b) => a.total - b.total)[0]?.state} sub="hardest to control" sentiment="neutral" delay={3} />
 </div>
 
-```
+
   <Sec title="Controllability Gramian Diagonal — Per-State Reachability by Input">
     <GC><ResponsiveContainer width="100%" height={380}>
       <BarChart data={gramianDiag} layout="vertical" margin={{ top: 8, right: 16, bottom: 8, left: 55 }}>
@@ -817,7 +817,7 @@ return (
     <span style={{ color: C.cy, fontWeight: 600 }}> Yaw (ψ)</span> is highly reachable via both steering and torque vectoring, confirming the TV system provides redundant yaw authority.
   </div>
 </div>
-```
+
 
 );
 }
@@ -849,7 +849,7 @@ Analytical gradients through the full physics engine — impossible with traditi
 </div>
 </div>
 
-```
+
   {/* Cross-link to Aerodynamics module */}
   <div style={{
     ...GL, padding: "8px 14px", marginBottom: 10,
@@ -877,7 +877,7 @@ Analytical gradients through the full physics engine — impossible with traditi
   {tab === "coupling" && <CouplingTab />}
   {tab === "control" && <ControlTab />}
 </div>
-```
+
 
 );
 }
