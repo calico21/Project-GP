@@ -100,7 +100,7 @@ temps[c] = Math.max(30, Math.min(500, temps[c] + heat - cool));
 data.push({
 lap, FL: +temps[0].toFixed(0), FR: +temps[1].toFixed(0),
 RL: +temps[2].toFixed(0), RR: +temps[3].toFixed(0),
-maxTemp: +Math.max(…temps).toFixed(0),
+maxTemp: +Math.max(...temps).toFixed(0),
 avgTemp: +(temps.reduce((a, t) => a + t, 0) / 4).toFixed(0),
 });
 }
@@ -172,8 +172,8 @@ finalMotorT: +motorT.toFixed(0), dnfLap,
 }
 // Histogram of finish times
 const finishers = results.filter(r => r.finished);
-const minTime = Math.min(…finishers.map(r => r.totalTime));
-const maxTime = Math.max(…finishers.map(r => r.totalTime));
+const minTime = Math.min(...finishers.map(r => r.totalTime));
+const maxTime = Math.max(...finishers.map(r => r.totalTime));
 const bins = 25;
 const timeHist = Array.from({ length: bins }, (*, i) => {
 const lo = minTime + (i / bins) * (maxTime - minTime);
@@ -214,7 +214,7 @@ cumTime: 0, // filled below
 });
 let cum = 0;
 laps.forEach(l => { cum += l.pace; l.cumTime = +cum.toFixed(2); });
-return { name, laps, totalTime: +cum.toFixed(2), finishEnergy: +laps[laps.length - 1].energy, peakMotorT: +Math.max(…laps.map(l => +l.motorT)) };
+return { name, laps, totalTime: +cum.toFixed(2), finishEnergy: +laps[laps.length - 1].energy, peakMotorT: +Math.max(...laps.map(l => +l.motorT)) };
 });
 }
 
@@ -250,7 +250,7 @@ return { temps, trackEvo, altEffect };
 // ═══════════════════════════════════════════════════════════════════════════
 function OverviewTab({ battery, brakes, tireDeg, mc }) {
 const finalSoC = battery[battery.length - 1]?.soc || 0;
-const maxBrake = Math.max(…brakes.map(b => b.maxTemp));
+const maxBrake = Math.max(...brakes.map(b => b.maxTemp));
 const finalGrip = tireDeg[tireDeg.length - 1]?.avgGrip || 100;
 
 const subsystems = [
@@ -270,7 +270,7 @@ return (
 <div style={{ display: "grid", gridTemplateColumns: `repeat(${subsystems.length}, 1fr)`, gap: 8, marginBottom: 14 }}>
 {subsystems.map(s => (
 <div key={s.name} style={{
-…GL, padding: "10px 12px",
+...GL, padding: "10px 12px",
 borderTop: `2px solid ${s.crossLink ? ELEC : s.ok ? C.gn : C.red}`,
 }}>
 <div style={{ fontSize: 8, color: C.dm, fontFamily: C.dt, letterSpacing: 1, marginBottom: 4 }}>{s.name}</div>
@@ -534,7 +534,7 @@ return (
 // TAB 5: BRAKE THERMAL
 // ═══════════════════════════════════════════════════════════════════════════
 function BrakeTab({ brakes }) {
-const maxBrake = Math.max(…brakes.map(b => b.maxTemp));
+const maxBrake = Math.max(...brakes.map(b => b.maxTemp));
 const fadeRisk = maxBrake > 400 ? "HIGH" : maxBrake > 350 ? "MODERATE" : "LOW";
 
 return (
@@ -576,7 +576,7 @@ return (
 function TireTab({ tireDeg }) {
 const finalGrip = tireDeg[tireDeg.length - 1]?.avgGrip || 100;
 const lapDelta = (tireDeg[tireDeg.length - 1]?.lapTime || 62.5) - (tireDeg[0]?.lapTime || 62.5);
-const peakWear = Math.max(…tireDeg.filter(t => t.wearRate > 0).map(t => +t.wearRate));
+const peakWear = Math.max(...tireDeg.filter(t => t.wearRate > 0).map(t => +t.wearRate));
 
 return (
 <div>
@@ -632,7 +632,7 @@ return (
 <div>
 <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 10, marginBottom: 14 }}>
 {strategies.map((s, i) => (
-<div key={s.name} style={{ …GL, padding: "12px 14px", borderTop: `2px solid ${i === 0 ? C.red : i === 1 ? C.gn : C.cy}` }}>
+<div key={s.name} style={{ ...GL, padding: "12px 14px", borderTop: `2px solid ${i === 0 ? C.red : i === 1 ? C.gn : C.cy}` }}>
 <div style={{ fontSize: 12, fontWeight: 800, color: i === 0 ? C.red : i === 1 ? C.gn : C.cy, fontFamily: C.dt }}>{s.name}</div>
 <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 4, marginTop: 8, fontSize: 8, fontFamily: C.dt }}>
 <div><span style={{ color: C.dm }}>Total: </span><span style={{ color: C.br }}>{s.totalTime.toFixed(1)}s</span></div>
@@ -767,7 +767,7 @@ const strategies = useMemo(() => gPaceStrategy(), []);
 const conditions = useMemo(() => gConditions(), []);
 
 const finalSoC = battery[battery.length - 1]?.soc || 0;
-const maxBrake = Math.max(…brakes.map(b => b.maxTemp));
+const maxBrake = Math.max(...brakes.map(b => b.maxTemp));
 const finalGrip = tireDeg[tireDeg.length - 1]?.avgGrip || 100;
 const status = finalSoC > 10 && maxBrake < 450 && mc.finishProb > 85 ? "GO" : "CAUTION";
 
@@ -775,7 +775,7 @@ return (
 <div>
 {/* Status banner */}
 <div style={{
-…GL, padding: "12px 16px", marginBottom: 14,
+...GL, padding: "12px 16px", marginBottom: 14,
 borderLeft: `3px solid ${status === "GO" ? C.gn : C.am}`,
 display: "flex", alignItems: "center", gap: 16,
 }}>
