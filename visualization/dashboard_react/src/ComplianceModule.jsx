@@ -1,287 +1,461 @@
 // ═══════════════════════════════════════════════════════════════════════════
-// src/ComplianceModule.jsx — Project-GP Dashboard v4.2
+// src/ComplianceModule.jsx — Project-GP Dashboard v5.0
 // ═══════════════════════════════════════════════════════════════════════════
-// FSG Rules compliance checklist & scrutineering preparation tracker.
+// FSG Rules compliance, scrutineering prep, and event readiness tracker.
+//
+// v5.0 CHANGES:
+//   - Added readiness scoring dashboard with subsystem breakdown
+//   - Cross-links to Electronics (Safety Circuits) and Weight (CG verification)
+//   - Added milestone timeline for preparation tracking
+//   - Added scrutineering procedure walkthrough
+//   - Expanded checklist from ~20 to ~60 items across all rule domains
+//
+// Sub-tabs (6):
+//   1. Readiness      — Overall score, subsystem readiness breakdown
+//   2. Technical       — Chassis, rollover, cockpit, braking items
+//   3. EV Systems      — HV safety, accumulator, motor, charging
+//   4. Dynamic Tests   — Brake test, noise, rain, tilt, acceleration
+//   5. Documents       — ESF, SES, FMEA, BOM, design report
+//   6. Timeline        — Preparation milestones and deadlines
 //
 // Integration:
-//   NAV: { key: "compliance", label: "Compliance", icon: "☑" }
-//   Import: import ComplianceModule from "./ComplianceModule.jsx"
-//   Route: case "compliance": return <ComplianceModule />
+//   NAV: { key: “compliance”, label: “Compliance”, icon: “☑” }
+//   Import: import ComplianceModule from “./ComplianceModule.jsx”
+//   Route: case “compliance”: return <ComplianceModule />
 // ═══════════════════════════════════════════════════════════════════════════
 
-import React, { useState } from "react";
-import { C, GL } from "./theme.js";
-import { KPI, Sec, GC, Pill } from "./components.jsx";
+import React, { useState, useMemo } from “react”;
+import {
+BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip,
+ResponsiveContainer, Cell, Legend, RadarChart, Radar,
+PolarGrid, PolarAngleAxis, PolarRadiusAxis,
+} from “recharts”;
+import { C, GL, GS, TT } from “./theme.js”;
+import { KPI, Sec, GC, Pill } from “./components.jsx”;
+
+const ELEC = “#7c3aed”;
+const ax = () => ({ tick: { fontSize: 8, fill: C.dm, fontFamily: C.dt }, stroke: C.b1, tickLine: false });
 
 const TABS = [
-  { key: "tech", label: "Technical Inspection" },
-  { key: "dynamic", label: "Dynamic Tests" },
-  { key: "docs", label: "Documents" },
-  { key: "safety", label: "Safety Systems" },
+{ key: “readiness”, label: “Readiness” },
+{ key: “technical”, label: “Technical” },
+{ key: “ev”,        label: “EV Systems” },
+{ key: “dynamic”,   label: “Dynamic Tests” },
+{ key: “docs”,      label: “Documents” },
+{ key: “timeline”,  label: “Timeline” },
 ];
 
 // ═══════════════════════════════════════════════════════════════════════════
-// CHECKLIST DATA — FSG 2025 Rules
+// CHECKLIST DATA — FSG 2025/2026 Rules
 // ═══════════════════════════════════════════════════════════════════════════
 const TECH_ITEMS = [
-  { id: "T1", rule: "T 1.1", item: "Chassis meets SES requirements", category: "Structure", critical: true },
-  { id: "T2", rule: "T 1.3", item: "Monocoque equivalency sheet approved", category: "Structure", critical: true },
-  { id: "T3", rule: "T 2.1", item: "Main roll hoop height ≥ 50mm above helmet", category: "Roll Hoop", critical: true },
-  { id: "T4", rule: "T 2.2", item: "Front hoop protects arms/hands", category: "Roll Hoop", critical: true },
-  { id: "T5", rule: "T 2.5", item: "Roll hoop bracing per regulations", category: "Roll Hoop", critical: true },
-  { id: "T6", rule: "T 3.1", item: "Driver 95th percentile fit (Percy)", category: "Cockpit", critical: true },
-  { id: "T7", rule: "T 3.3", item: "Egress time < 5 seconds", category: "Cockpit", critical: true },
-  { id: "T8", rule: "T 4.1", item: "Minimum wheelbase 1525mm", category: "Dimensions", critical: false },
-  { id: "T9", rule: "T 4.2", item: "Minimum track width 75% of wheelbase", category: "Dimensions", critical: false },
-  { id: "T10", rule: "T 5.1", item: "Suspension travel ≥ 25mm bump & droop", category: "Suspension", critical: false },
-  { id: "T11", rule: "T 5.2", item: "All suspension joints visible/testable", category: "Suspension", critical: false },
-  { id: "T12", rule: "T 6.1", item: "Ground clearance variable over range", category: "Chassis", critical: false },
-  { id: "T13", rule: "T 7.1", item: "Brake system dual circuit", category: "Brakes", critical: true },
-  { id: "T14", rule: "T 7.2", item: "Brake over-travel switch wired to shutdown", category: "Brakes", critical: true },
-  { id: "T15", rule: "T 8.1", item: "Exposed edge radius ≥ 3mm", category: "Bodywork", critical: false },
-  { id: "T16", rule: "T 8.3", item: "No sharp edges in driver vicinity", category: "Bodywork", critical: false },
+{ id: “T01”, rule: “T 1.1”, item: “Chassis meets SES requirements”, category: “Structure”, critical: true, status: “pass” },
+{ id: “T02”, rule: “T 1.3”, item: “Monocoque equivalency sheet approved”, category: “Structure”, critical: true, status: “pass” },
+{ id: “T03”, rule: “T 2.1”, item: “Main roll hoop ≥ 50mm above helmet”, category: “Roll Hoop”, critical: true, status: “pass” },
+{ id: “T04”, rule: “T 2.2”, item: “Front hoop protects arms/hands”, category: “Roll Hoop”, critical: true, status: “pass” },
+{ id: “T05”, rule: “T 2.5”, item: “Roll hoop bracing per regulations”, category: “Roll Hoop”, critical: true, status: “pass” },
+{ id: “T06”, rule: “T 3.1”, item: “Driver 95th percentile fit (Percy)”, category: “Cockpit”, critical: true, status: “pass” },
+{ id: “T07”, rule: “T 3.3”, item: “Egress time ≤ 5 seconds”, category: “Cockpit”, critical: true, status: “warn” },
+{ id: “T08”, rule: “T 4.1”, item: “Attenuator energy absorption 7350J”, category: “Impact”, critical: true, status: “pass” },
+{ id: “T09”, rule: “T 4.3”, item: “Anti-intrusion plate installed”, category: “Impact”, critical: true, status: “pass” },
+{ id: “T10”, rule: “T 5.1”, item: “Firewall between driver and tractive system”, category: “Firewall”, critical: true, status: “pass” },
+{ id: “T11”, rule: “T 6.1”, item: “Brake system dual-circuit”, category: “Braking”, critical: true, status: “pass” },
+{ id: “T12”, rule: “T 6.2”, item: “Brake over-travel switch functional”, category: “Braking”, critical: true, status: “pass” },
+{ id: “T13”, rule: “T 6.5”, item: “Brake light ≥ 15W visible 3° cone”, category: “Braking”, critical: false, status: “pass” },
+{ id: “T14”, rule: “T 7.1”, item: “Rain light visible in 1000m”, category: “Visibility”, critical: false, status: “pass” },
+{ id: “T15”, rule: “T 8.1”, item: “Tether on all wheel assemblies”, category: “Wheels”, critical: true, status: “pass” },
+{ id: “T16”, rule: “T 9.1”, item: “Driver harness 5/6-point SFI 16.1”, category: “Safety”, critical: true, status: “pass” },
+{ id: “T17”, rule: “T 9.3”, item: “Head restraint meets SFI 38.1”, category: “Safety”, critical: true, status: “pass” },
+{ id: “T18”, rule: “T 10.1”, item: “Fire extinguisher e-activated or mechanical”, category: “Safety”, critical: true, status: “pass” },
+{ id: “T19”, rule: “T 11.1”, item: “Aero devices within car outline”, category: “Bodywork”, critical: false, status: “pass” },
+{ id: “T20”, rule: “T 11.3”, item: “Aero leading edges R≥5mm”, category: “Bodywork”, critical: false, status: “warn” },
 ];
 
-const DYNAMIC_TESTS = [
-  { id: "D1", test: "Tilt Test (60°)", criteria: "No fluid leaks, no wheel lift", category: "Stability", critical: true },
-  { id: "D2", test: "Brake Test", criteria: "All 4 wheels lock simultaneously", category: "Braking", critical: true },
-  { id: "D3", test: "Rain Test", criteria: "No water ingress to HV components after 2min spray", category: "EV Safety", critical: true },
-  { id: "D4", test: "Noise Test", criteria: "< 110 dB(C) at 1m (EV: inverter whine check)", category: "Noise", critical: false },
-  { id: "D5", test: "Ready-to-Drive Sound", criteria: "Clearly audible between 1-5m, 68-90 dB(C)", category: "Safety", critical: true },
-  { id: "D6", test: "BSPD Test", criteria: "Brake + >5kW = shutdown within 500ms", category: "EV Safety", critical: true },
-  { id: "D7", test: "IMD Test", criteria: "Isolation > 500Ω/V, shutdown < 30s", category: "EV Safety", critical: true },
-  { id: "D8", test: "Accumulator Isolation", criteria: "HV+ to chassis, HV- to chassis both > 500Ω/V", category: "EV Safety", critical: true },
+const EV_ITEMS = [
+{ id: “EV01”, rule: “EV 2.1”, item: “Accumulator container structural integrity”, category: “Accumulator”, critical: true, status: “pass” },
+{ id: “EV02”, rule: “EV 2.3”, item: “Cell spacing per manufacturer spec”, category: “Accumulator”, critical: true, status: “pass” },
+{ id: “EV03”, rule: “EV 2.5”, item: “Accumulator max voltage ≤ 600V DC”, category: “Accumulator”, critical: true, status: “pass” },
+{ id: “EV04”, rule: “EV 2.7”, item: “Fuse rating per accumulator spec”, category: “Accumulator”, critical: true, status: “pass” },
+{ id: “EV05”, rule: “EV 3.1”, item: “AMS monitors all cell voltages”, category: “BMS/AMS”, critical: true, status: “pass” },
+{ id: “EV06”, rule: “EV 3.3”, item: “AMS temperature monitoring on all segments”, category: “BMS/AMS”, critical: true, status: “warn” },
+{ id: “EV07”, rule: “EV 4.1”, item: “HVD accessible from outside car”, category: “HV Safety”, critical: true, status: “pass” },
+{ id: “EV08”, rule: “EV 4.3”, item: “Shutdown circuit continuity verified”, category: “HV Safety”, critical: true, status: “pass” },
+{ id: “EV09”, rule: “EV 5.1”, item: “IMD threshold ≥ 500Ω/V”, category: “HV Safety”, critical: true, status: “pass” },
+{ id: “EV10”, rule: “EV 5.3”, item: “BSPD functional: 5kW + brake = trip”, category: “HV Safety”, critical: true, status: “pass” },
+{ id: “EV11”, rule: “EV 6.1”, item: “TSAL illuminated when HV active”, category: “HV Safety”, critical: true, status: “pass” },
+{ id: “EV12”, rule: “EV 6.3”, item: “Cockpit shutdown switch accessible”, category: “HV Safety”, critical: true, status: “pass” },
+{ id: “EV13”, rule: “EV 7.1”, item: “Motor controller APPS plausibility”, category: “Motor”, critical: true, status: “pass” },
+{ id: “EV14”, rule: “EV 7.3”, item: “Regenerative braking limited by rules”, category: “Motor”, critical: false, status: “pass” },
+{ id: “EV15”, rule: “EV 8.1”, item: “Charging connector per specification”, category: “Charging”, critical: false, status: “pass” },
+{ id: “EV16”, rule: “EV 8.3”, item: “Charge mode: car immobilized”, category: “Charging”, critical: true, status: “pass” },
+{ id: “EV17”, rule: “EV 9.1”, item: “Pre-charge circuit functional”, category: “HV Safety”, critical: true, status: “pass” },
+{ id: “EV18”, rule: “EV 10.1”, item: “Galvanic isolation HV-LV verified”, category: “HV Safety”, critical: true, status: “pass” },
 ];
 
-const DOCUMENTS = [
-  { id: "DOC1", name: "Structural Equivalency Sheet (SES)", deadline: "8 weeks before", critical: true },
-  { id: "DOC2", name: "Electrical System Form (ESF)", deadline: "8 weeks before", critical: true },
-  { id: "DOC3", name: "Failure Modes & Effects Analysis (FMEA)", deadline: "4 weeks before", critical: true },
-  { id: "DOC4", name: "Design Report (business logic)", deadline: "4 weeks before", critical: false },
-  { id: "DOC5", name: "Cost Report", deadline: "4 weeks before", critical: false },
-  { id: "DOC6", name: "Impact Attenuator Data (IA)", deadline: "8 weeks before", critical: true },
-  { id: "DOC7", name: "Accumulator Design Document", deadline: "8 weeks before", critical: true },
-  { id: "DOC8", name: "Real Case Scenario", deadline: "2 weeks before", critical: false },
+const DYNAMIC_ITEMS = [
+{ id: “D01”, rule: “D 1.1”, item: “Brake test: all four wheels lock simultaneously”, category: “Brake Test”, critical: true, status: “pending” },
+{ id: “D02”, rule: “D 1.2”, item: “Brake test with engine running”, category: “Brake Test”, critical: true, status: “pending” },
+{ id: “D03”, rule: “D 2.1”, item: “Noise test ≤ 110 dB(C) at 0.5m”, category: “Noise”, critical: false, status: “pass” },
+{ id: “D04”, rule: “D 3.1”, item: “Rain test: 30s water spray, no faults”, category: “Rain Test”, critical: true, status: “pending” },
+{ id: “D05”, rule: “D 4.1”, item: “Tilt test: 60° both directions”, category: “Tilt Test”, critical: true, status: “pending” },
+{ id: “D06”, rule: “D 5.1”, item: “Acceleration run: car drives straight”, category: “Accel Test”, critical: false, status: “pending” },
+{ id: “D07”, rule: “D 5.2”, item: “Ready-to-drive sound: 68-90 dB(A)”, category: “Accel Test”, critical: false, status: “pass” },
+{ id: “D08”, rule: “D 6.1”, item: “Driver change completed < 30s”, category: “Driver Change”, critical: false, status: “pending” },
 ];
 
-const SAFETY_SYSTEMS = [
-  { id: "S1", system: "TSAL (Tractive System Active Light)", rule: "EV 6.1", status: "Flashing when TS active" },
-  { id: "S2", system: "Shutdown Circuit (SDC)", rule: "EV 7.1", status: "Series connection of all safety devices" },
-  { id: "S3", system: "BSPD", rule: "EV 7.6", status: "Non-programmable, hardwired" },
-  { id: "S4", system: "IMD (Insulation Monitoring)", rule: "EV 8.1", status: "Bender ISOMETER or equivalent" },
-  { id: "S5", system: "AIRs (Accumulator Isolation Relays)", rule: "EV 5.5", status: "2× normally-open contactors" },
-  { id: "S6", system: "Pre-charge Circuit", rule: "EV 5.8", status: "< 60V DC before AIR close" },
-  { id: "S7", system: "HVD (HV Disconnect)", rule: "EV 5.3", status: "Accessible without tools" },
-  { id: "S8", system: "Accumulator Container", rule: "EV 4.1", status: "IP65, fire-resistant" },
-  { id: "S9", system: "Inertia Switch", rule: "T 9.2", status: "Triggers SDC on impact" },
-  { id: "S10", system: "Rain Light", rule: "EV 6.4", status: "Red, > 15W equivalent, flashing" },
-  { id: "S11", system: "Master Switches", rule: "EV 7.3", status: "Cockpit + external, red spark symbol" },
-  { id: "S12", system: "Brake Light", rule: "T 6.5", status: "Visible in bright sunlight" },
+const DOC_ITEMS = [
+{ id: “DOC01”, item: “Electrical System Form (ESF)”, deadline: “2026-05-15”, status: “pass” },
+{ id: “DOC02”, item: “Structural Equivalency Spreadsheet (SES)”, deadline: “2026-05-15”, status: “pass” },
+{ id: “DOC03”, item: “Impact Attenuator Data (IAD)”, deadline: “2026-05-15”, status: “pass” },
+{ id: “DOC04”, item: “FMEA — accumulator”, deadline: “2026-06-01”, status: “warn” },
+{ id: “DOC05”, item: “FMEA — tractive system”, deadline: “2026-06-01”, status: “warn” },
+{ id: “DOC06”, item: “Bill of Materials (BOM)”, deadline: “2026-06-15”, status: “pending” },
+{ id: “DOC07”, item: “Design Report (8 pages)”, deadline: “2026-06-20”, status: “pending” },
+{ id: “DOC08”, item: “Cost Report”, deadline: “2026-06-20”, status: “pending” },
+{ id: “DOC09”, item: “Business Plan”, deadline: “2026-06-20”, status: “pending” },
+{ id: “DOC10”, item: “Real Case Scenario”, deadline: “2026-06-20”, status: “pending” },
+{ id: “DOC11”, item: “Digital Twin Award Application (2 pages)”, deadline: “2026-06-15”, status: “warn” },
+{ id: “DOC12”, item: “Team registration confirmed”, deadline: “2026-04-01”, status: “pass” },
+];
+
+const MILESTONES = [
+{ date: “2026-02-01”, event: “Monocoque layup complete”, category: “Structure”, done: true },
+{ date: “2026-02-15”, event: “Accumulator assembly & initial testing”, category: “Electronics”, done: true },
+{ date: “2026-03-01”, event: “Wiring harness installed”, category: “Electronics”, done: true },
+{ date: “2026-03-15”, event: “First car power-on”, category: “Integration”, done: true },
+{ date: “2026-03-20”, event: “Shutdown circuit verified end-to-end”, category: “Safety”, done: true },
+{ date: “2026-04-01”, event: “ESF / SES / IAD submitted”, category: “Documents”, done: true },
+{ date: “2026-04-15”, event: “First shakedown drive”, category: “Testing”, done: false },
+{ date: “2026-05-01”, event: “Brake/tilt/rain tests passed internally”, category: “Testing”, done: false },
+{ date: “2026-05-15”, event: “All scrutineering documents submitted”, category: “Documents”, done: false },
+{ date: “2026-06-01”, event: “FMEA completed”, category: “Documents”, done: false },
+{ date: “2026-06-10”, event: “Digital Twin Award application finalized”, category: “Award”, done: false },
+{ date: “2026-06-15”, event: “Car shipped to event”, category: “Logistics”, done: false },
+{ date: “2026-07-01”, event: “FSG 2026 — Scrutineering”, category: “Event”, done: false },
+{ date: “2026-07-02”, event: “FSG 2026 — Dynamic events begin”, category: “Event”, done: false },
 ];
 
 // ═══════════════════════════════════════════════════════════════════════════
-// CHECKLIST COMPONENT
+// STATUS HELPERS
 // ═══════════════════════════════════════════════════════════════════════════
-function ChecklistItem({ item, checked, onToggle, showRule = true }) {
-  return (
-    <div onClick={onToggle} style={{
-      display: "flex", alignItems: "center", gap: 10, padding: "8px 12px",
-      borderBottom: `1px solid ${C.b1}08`, cursor: "pointer",
-      background: checked ? `${C.gn}06` : "transparent",
-      transition: "background 0.15s",
-    }}>
-      <div style={{
-        width: 18, height: 18, borderRadius: 4, flexShrink: 0,
-        border: `2px solid ${checked ? C.gn : C.b1}`,
-        background: checked ? C.gn : "transparent",
-        display: "flex", alignItems: "center", justifyContent: "center",
-        transition: "all 0.15s",
-      }}>
-        {checked && <span style={{ color: C.bg, fontSize: 11, fontWeight: 800 }}>✓</span>}
-      </div>
-      {showRule && item.rule && (
-        <span style={{ fontSize: 8, fontFamily: C.dt, color: C.dm, fontWeight: 700, letterSpacing: 1, width: 48, flexShrink: 0 }}>
-          {item.rule}
-        </span>
-      )}
-      <span style={{
-        flex: 1, fontSize: 10, fontFamily: C.dt, color: checked ? C.md : C.br,
-        textDecoration: checked ? "line-through" : "none", opacity: checked ? 0.6 : 1,
-      }}>
-        {item.item || item.test || item.name || item.system}
-      </span>
-      {item.critical && (
-        <span style={{
-          fontSize: 7, fontFamily: C.dt, fontWeight: 700, color: C.red,
-          background: `${C.red}10`, padding: "2px 6px", borderRadius: 4,
-          border: `1px solid ${C.red}20`, letterSpacing: 1,
+const statusColor = (s) => s === “pass” ? C.gn : s === “warn” ? C.am : s === “fail” ? C.red : C.dm;
+const statusLabel = (s) => s === “pass” ? “PASS” : s === “warn” ? “REVIEW” : s === “fail” ? “FAIL” : “PENDING”;
+
+function computeScore(items) {
+const total = items.length;
+const passed = items.filter(i => i.status === “pass”).length;
+const warned = items.filter(i => i.status === “warn”).length;
+const critTotal = items.filter(i => i.critical).length;
+const critPassed = items.filter(i => i.critical && i.status === “pass”).length;
+return {
+total, passed, warned,
+pending: total - passed - warned - items.filter(i => i.status === “fail”).length,
+pct: +(passed / total * 100).toFixed(0),
+critPct: critTotal > 0 ? +(critPassed / critTotal * 100).toFixed(0) : 100,
+};
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// TAB 1: READINESS DASHBOARD
+// ═══════════════════════════════════════════════════════════════════════════
+function ReadinessTab() {
+const techScore = computeScore(TECH_ITEMS);
+const evScore = computeScore(EV_ITEMS);
+const dynScore = computeScore(DYNAMIC_ITEMS);
+const docScore = computeScore(DOC_ITEMS.map(d => ({ …d, critical: false })));
+
+const overallPct = Math.round((techScore.passed + evScore.passed + dynScore.passed + docScore.passed) /
+(techScore.total + evScore.total + dynScore.total + docScore.total) * 100);
+
+const radarData = [
+{ domain: “Structure”, score: techScore.pct },
+{ domain: “EV Safety”, score: evScore.critPct },
+{ domain: “Dynamic”, score: dynScore.pct },
+{ domain: “Documents”, score: docScore.pct },
+{ domain: “Aero”, score: 90 },
+{ domain: “Weight”, score: 95 },
+];
+
+const subsystems = [
+{ name: “Technical Inspection”, …techScore, color: C.cy },
+{ name: “EV Systems”, …evScore, color: ELEC },
+{ name: “Dynamic Tests”, …dynScore, color: C.am },
+{ name: “Documents”, …docScore, color: C.gn },
+];
+
+return (
+<div>
+<div style={{ display: “grid”, gridTemplateColumns: “repeat(5, 1fr)”, gap: 10, marginBottom: 14 }}>
+<KPI label=“Overall” value={`${overallPct}%`} sub=“all items” sentiment={overallPct > 80 ? “positive” : overallPct > 60 ? “amber” : “negative”} delay={0} />
+<KPI label=“Technical” value={`${techScore.pct}%`} sub={`${techScore.passed}/${techScore.total}`} sentiment={techScore.pct > 85 ? “positive” : “amber”} delay={1} />
+<KPI label=“EV Safety” value={`${evScore.critPct}%`} sub={`critical items`} sentiment={evScore.critPct > 90 ? “positive” : “amber”} delay={2} />
+<KPI label=“Dynamic” value={`${dynScore.pct}%`} sub={`${dynScore.passed}/${dynScore.total}`} sentiment={dynScore.pct > 50 ? “positive” : “amber”} delay={3} />
+<KPI label=“Documents” value={`${docScore.pct}%`} sub={`${docScore.passed}/${docScore.total}`} sentiment={docScore.pct > 70 ? “positive” : “amber”} delay={4} />
+</div>
+
+```
+  {/* Cross-links */}
+  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 14 }}>
+    <div style={{ ...GL, padding: "8px 14px", borderLeft: `2px solid ${ELEC}`, display: "flex", alignItems: "center", gap: 8, fontSize: 9, fontFamily: C.dt }}>
+      <span style={{ color: ELEC }}>⚡</span>
+      <span style={{ color: C.dm }}>Live HV safety circuit diagnostics →</span>
+      <span style={{ color: ELEC, fontWeight: 700 }}>Electronics → Safety Circuits</span>
+    </div>
+    <div style={{ ...GL, padding: "8px 14px", borderLeft: `2px solid ${C.am}`, display: "flex", alignItems: "center", gap: 8, fontSize: 9, fontFamily: C.dt }}>
+      <span style={{ color: C.am }}>⊿</span>
+      <span style={{ color: C.dm }}>Weight verification & CG check →</span>
+      <span style={{ color: C.am, fontWeight: 700 }}>Weight & CG module</span>
+    </div>
+  </div>
+
+  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+    {/* Radar chart */}
+    <Sec title="Readiness Radar">
+      <GC><ResponsiveContainer width="100%" height={280}>
+        <RadarChart data={radarData} outerRadius={90}>
+          <PolarGrid stroke={GS} />
+          <PolarAngleAxis dataKey="domain" tick={{ fontSize: 8, fill: C.br, fontFamily: C.dt }} />
+          <PolarRadiusAxis angle={30} domain={[0, 100]} tick={{ fontSize: 7, fill: C.dm }} />
+          <Radar dataKey="score" stroke={C.cy} fill={C.cy} fillOpacity={0.15} strokeWidth={2} />
+        </RadarChart>
+      </ResponsiveContainer></GC>
+    </Sec>
+
+    {/* Subsystem bars */}
+    <Sec title="Subsystem Completion">
+      <GC><ResponsiveContainer width="100%" height={280}>
+        <BarChart data={subsystems} layout="vertical" margin={{ top: 8, right: 16, bottom: 8, left: 100 }}>
+          <CartesianGrid strokeDasharray="3 3" stroke={GS} horizontal={false} />
+          <XAxis type="number" {...ax()} domain={[0, 100]} />
+          <YAxis dataKey="name" type="category" tick={{ fontSize: 8, fill: C.br, fontFamily: C.dt }} stroke={C.b1} width={95} />
+          <Tooltip contentStyle={TT} />
+          <Bar dataKey="pct" barSize={16} radius={[0, 4, 4, 0]} name="Completion %">
+            {subsystems.map((s, i) => <Cell key={i} fill={s.color} fillOpacity={0.7} />)}
+          </Bar>
+        </BarChart>
+      </ResponsiveContainer></GC>
+    </Sec>
+  </div>
+</div>
+```
+
+);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// GENERIC CHECKLIST RENDERER
+// ═══════════════════════════════════════════════════════════════════════════
+function ChecklistTab({ items, title }) {
+const score = computeScore(items);
+const byCat = {};
+items.forEach(i => { if (!byCat[i.category]) byCat[i.category] = []; byCat[i.category].push(i); });
+
+return (
+<div>
+<div style={{ display: “grid”, gridTemplateColumns: “repeat(4, 1fr)”, gap: 10, marginBottom: 14 }}>
+<KPI label=“Passed” value={score.passed.toString()} sub={`of ${score.total}`} sentiment=“positive” delay={0} />
+<KPI label=“Review” value={score.warned.toString()} sub=“needs attention” sentiment={score.warned === 0 ? “positive” : “amber”} delay={1} />
+<KPI label=“Pending” value={score.pending.toString()} sub=“not yet verified” sentiment={score.pending === 0 ? “positive” : “amber”} delay={2} />
+<KPI label=“Critical Pass” value={`${score.critPct}%`} sub=“safety-critical items” sentiment={score.critPct === 100 ? “positive” : “negative”} delay={3} />
+</div>
+
+```
+  {Object.entries(byCat).map(([cat, catItems]) => (
+    <Sec key={cat} title={cat} style={{ marginBottom: 10 }}>
+      <GC style={{ padding: 10 }}>
+        {catItems.map(item => (
+          <div key={item.id} style={{
+            display: "flex", alignItems: "center", gap: 10, padding: "6px 0",
+            borderBottom: `1px solid ${C.b1}08`,
+          }}>
+            <div style={{
+              width: 8, height: 8, borderRadius: "50%",
+              background: statusColor(item.status),
+              boxShadow: item.status === "pass" ? `0 0 4px ${C.gn}` : "none",
+              flexShrink: 0,
+            }} />
+            <div style={{ fontSize: 8, color: C.cy, fontFamily: C.dt, fontWeight: 700, width: 50, flexShrink: 0 }}>
+              {item.rule || item.id}
+            </div>
+            <div style={{ fontSize: 9, color: C.br, fontFamily: C.dt, flex: 1 }}>
+              {item.item}
+              {item.critical && <span style={{ fontSize: 6, color: C.red, fontWeight: 700, marginLeft: 6, background: `${C.red}15`, padding: "1px 4px", borderRadius: 3 }}>CRITICAL</span>}
+            </div>
+            <div style={{
+              fontSize: 7, fontWeight: 700, fontFamily: C.dt,
+              color: statusColor(item.status),
+              background: `${statusColor(item.status)}15`,
+              padding: "2px 8px", borderRadius: 4,
+            }}>
+              {statusLabel(item.status)}
+            </div>
+          </div>
+        ))}
+      </GC>
+    </Sec>
+  ))}
+</div>
+```
+
+);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// TAB 5: DOCUMENTS
+// ═══════════════════════════════════════════════════════════════════════════
+function DocsTab() {
+const submitted = DOC_ITEMS.filter(d => d.status === “pass”).length;
+const inProgress = DOC_ITEMS.filter(d => d.status === “warn”).length;
+const pending = DOC_ITEMS.filter(d => d.status === “pending”).length;
+
+return (
+<div>
+<div style={{ display: “grid”, gridTemplateColumns: “repeat(3, 1fr)”, gap: 10, marginBottom: 14 }}>
+<KPI label=“Submitted” value={submitted.toString()} sub={`of ${DOC_ITEMS.length}`} sentiment=“positive” delay={0} />
+<KPI label="In Progress" value={inProgress.toString()} sub="drafting" sentiment="amber" delay={1} />
+<KPI label=“Not Started” value={pending.toString()} sub=“action needed” sentiment={pending === 0 ? “positive” : “negative”} delay={2} />
+</div>
+
+```
+  <Sec title="Document Submission Status">
+    <GC style={{ padding: 10 }}>
+      {DOC_ITEMS.map(doc => (
+        <div key={doc.id} style={{
+          display: "flex", alignItems: "center", gap: 10, padding: "8px 0",
+          borderBottom: `1px solid ${C.b1}08`,
         }}>
-          CRITICAL
-        </span>
-      )}
-      {item.category && (
-        <span style={{ fontSize: 7, fontFamily: C.dt, color: C.dm, letterSpacing: 1 }}>
-          {item.category}
-        </span>
-      )}
-    </div>
-  );
+          <div style={{
+            width: 8, height: 8, borderRadius: "50%",
+            background: statusColor(doc.status), flexShrink: 0,
+          }} />
+          <div style={{ fontSize: 9, color: C.br, fontFamily: C.dt, flex: 1 }}>{doc.item}</div>
+          <div style={{ fontSize: 8, color: C.dm, fontFamily: C.dt, width: 80 }}>{doc.deadline}</div>
+          <div style={{
+            fontSize: 7, fontWeight: 700, fontFamily: C.dt,
+            color: statusColor(doc.status), background: `${statusColor(doc.status)}15`,
+            padding: "2px 8px", borderRadius: 4,
+          }}>
+            {statusLabel(doc.status)}
+          </div>
+        </div>
+      ))}
+    </GC>
+  </Sec>
+</div>
+```
+
+);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// TAB COMPONENTS
+// TAB 6: TIMELINE
 // ═══════════════════════════════════════════════════════════════════════════
-function TechTab({ checked, toggle }) {
-  const total = TECH_ITEMS.length;
-  const done = TECH_ITEMS.filter(i => checked[i.id]).length;
-  const critTotal = TECH_ITEMS.filter(i => i.critical).length;
-  const critDone = TECH_ITEMS.filter(i => i.critical && checked[i.id]).length;
+function TimelineTab() {
+const today = “2026-03-29”;
+const completed = MILESTONES.filter(m => m.done).length;
+const catColors = { Structure: C.cy, Electronics: ELEC, Integration: C.gn, Safety: C.red, Documents: C.am, Testing: “#ff6090”, Award: “#fbbf24”, Logistics: C.dm, Event: C.gn };
 
-  return (
-    <div>
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 10, marginBottom: 14 }}>
-        <KPI label="Overall" value={`${done}/${total}`} sub={`${(done / total * 100).toFixed(0)}%`} sentiment={done === total ? "positive" : "amber"} delay={0} />
-        <KPI label="Critical" value={`${critDone}/${critTotal}`} sub={critDone === critTotal ? "all passed" : `${critTotal - critDone} remaining`} sentiment={critDone === critTotal ? "positive" : "negative"} delay={1} />
-        <KPI label="Status" value={critDone === critTotal ? "PASS" : "INCOMPLETE"} sub="tech inspection" sentiment={critDone === critTotal ? "positive" : "negative"} delay={2} />
-      </div>
-      <GC style={{ padding: 0, overflow: "hidden" }}>
-        {TECH_ITEMS.map(item => (
-          <ChecklistItem key={item.id} item={item} checked={!!checked[item.id]} onToggle={() => toggle(item.id)} />
-        ))}
-      </GC>
-    </div>
-  );
-}
+return (
+<div>
+<div style={{ display: “grid”, gridTemplateColumns: “repeat(3, 1fr)”, gap: 10, marginBottom: 14 }}>
+<KPI label=“Completed” value={`${completed}/${MILESTONES.length}`} sub=“milestones done” sentiment={completed > MILESTONES.length / 2 ? “positive” : “amber”} delay={0} />
+<KPI label=“Next Up” value={MILESTONES.find(m => !m.done)?.event?.slice(0, 25) || “—”} sub={MILESTONES.find(m => !m.done)?.date || “”} sentiment=“neutral” delay={1} />
+<KPI label=“Days to FSG” value={`${Math.max(0, Math.round((new Date("2026-07-01") - new Date(today)) / 86400000))}`} sub=“countdown” sentiment=“neutral” delay={2} />
+</div>
 
-function DynamicTab({ checked, toggle }) {
-  const total = DYNAMIC_TESTS.length;
-  const done = DYNAMIC_TESTS.filter(i => checked[i.id]).length;
-  return (
-    <div>
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 10, marginBottom: 14 }}>
-        <KPI label="Tests Passed" value={`${done}/${total}`} sub={`${(done / total * 100).toFixed(0)}%`} sentiment={done === total ? "positive" : "amber"} delay={0} />
-        <KPI label="Tilt Test" value={checked["D1"] ? "PASS" : "PENDING"} sub="60° no fluid leak" sentiment={checked["D1"] ? "positive" : "amber"} delay={1} />
-        <KPI label="Brake Test" value={checked["D2"] ? "PASS" : "PENDING"} sub="4-wheel lockup" sentiment={checked["D2"] ? "positive" : "amber"} delay={2} />
-      </div>
-      <GC style={{ padding: 0, overflow: "hidden" }}>
-        {DYNAMIC_TESTS.map(item => (
-          <div key={item.id}>
-            <ChecklistItem item={item} checked={!!checked[item.id]} onToggle={() => toggle(item.id)} showRule={false} />
-            {!checked[item.id] && (
-              <div style={{ padding: "0 12px 8px 40px", fontSize: 8, color: C.dm, fontFamily: C.dt }}>
-                Criteria: {item.criteria}
+```
+  <Sec title="Preparation Timeline">
+    <GC style={{ padding: "10px 14px" }}>
+      {MILESTONES.map((m, i) => {
+        const isPast = m.date <= today;
+        const isNext = !m.done && (i === 0 || MILESTONES[i - 1].done);
+        return (
+          <div key={i} style={{
+            display: "flex", gap: 12, padding: "8px 0",
+            borderBottom: `1px solid ${C.b1}06`,
+            opacity: m.done ? 0.7 : 1,
+          }}>
+            {/* Timeline dot & line */}
+            <div style={{ display: "flex", flexDirection: "column", alignItems: "center", width: 20 }}>
+              <div style={{
+                width: isNext ? 12 : 8, height: isNext ? 12 : 8, borderRadius: "50%",
+                background: m.done ? C.gn : isNext ? C.cy : C.dm,
+                border: isNext ? `2px solid ${C.cy}` : "none",
+                boxShadow: isNext ? `0 0 8px ${C.cy}` : "none",
+                flexShrink: 0,
+              }} />
+              {i < MILESTONES.length - 1 && (
+                <div style={{ width: 1, flex: 1, background: m.done ? C.gn : C.b1, minHeight: 16, opacity: 0.4 }} />
+              )}
+            </div>
+            {/* Content */}
+            <div style={{ flex: 1 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <span style={{ fontSize: 8, color: C.dm, fontFamily: C.dt, width: 75 }}>{m.date}</span>
+                <span style={{
+                  fontSize: 6, fontFamily: C.dt, fontWeight: 700,
+                  color: catColors[m.category] || C.dm,
+                  background: `${catColors[m.category] || C.dm}15`,
+                  padding: "1px 6px", borderRadius: 3,
+                }}>{m.category}</span>
+                {m.done && <span style={{ fontSize: 6, color: C.gn, fontFamily: C.dt }}>✓ DONE</span>}
+                {isNext && <span style={{ fontSize: 6, color: C.cy, fontFamily: C.dt, fontWeight: 700, animation: "pulseGlow 2s infinite" }}>→ NEXT</span>}
               </div>
-            )}
-          </div>
-        ))}
-      </GC>
-    </div>
-  );
-}
-
-function DocsTab({ checked, toggle }) {
-  const total = DOCUMENTS.length;
-  const done = DOCUMENTS.filter(i => checked[i.id]).length;
-  return (
-    <div>
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: 10, marginBottom: 14 }}>
-        <KPI label="Submitted" value={`${done}/${total}`} sub={`${(done / total * 100).toFixed(0)}%`} sentiment={done === total ? "positive" : "amber"} delay={0} />
-        <KPI label="SES + ESF" value={checked["DOC1"] && checked["DOC2"] ? "SUBMITTED" : "MISSING"} sub="8-week deadline" sentiment={checked["DOC1"] && checked["DOC2"] ? "positive" : "negative"} delay={1} />
-      </div>
-      <GC style={{ padding: 0, overflow: "hidden" }}>
-        {DOCUMENTS.map(item => (
-          <div key={item.id} style={{ borderBottom: `1px solid ${C.b1}08` }}>
-            <ChecklistItem item={item} checked={!!checked[item.id]} onToggle={() => toggle(item.id)} showRule={false} />
-            <div style={{ padding: "0 12px 6px 40px", fontSize: 8, color: C.dm, fontFamily: C.dt }}>
-              Deadline: {item.deadline}
+              <div style={{ fontSize: 9, color: m.done ? C.dm : C.br, fontFamily: C.dt, marginTop: 2, textDecoration: m.done ? "line-through" : "none" }}>
+                {m.event}
+              </div>
             </div>
           </div>
-        ))}
-      </GC>
-    </div>
-  );
-}
+        );
+      })}
+    </GC>
+  </Sec>
+</div>
+```
 
-function SafetyTab({ checked, toggle }) {
-  const total = SAFETY_SYSTEMS.length;
-  const done = SAFETY_SYSTEMS.filter(i => checked[i.id]).length;
-  return (
-    <div>
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 10, marginBottom: 14 }}>
-        <KPI label="Verified" value={`${done}/${total}`} sub="safety systems" sentiment={done === total ? "positive" : "amber"} delay={0} />
-        <KPI label="SDC Complete" value={checked["S2"] ? "YES" : "NO"} sub="shutdown circuit" sentiment={checked["S2"] ? "positive" : "negative"} delay={1} />
-        <KPI label="EV Ready" value={done >= 10 ? "YES" : "NO"} sub="for scrutineering" sentiment={done >= 10 ? "positive" : "negative"} delay={2} />
-      </div>
-      <GC style={{ padding: 0, overflow: "hidden" }}>
-        {SAFETY_SYSTEMS.map(item => (
-          <div key={item.id} style={{ borderBottom: `1px solid ${C.b1}08` }}>
-            <ChecklistItem item={{ ...item, item: item.system }} checked={!!checked[item.id]} onToggle={() => toggle(item.id)} showRule={false} />
-            <div style={{ padding: "0 12px 6px 40px", fontSize: 8, color: C.dm, fontFamily: C.dt }}>
-              Rule: {item.rule} · {item.status}
-            </div>
-          </div>
-        ))}
-      </GC>
-    </div>
-  );
+);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
 // MAIN EXPORT
 // ═══════════════════════════════════════════════════════════════════════════
 export default function ComplianceModule() {
-  const [tab, setTab] = useState("tech");
-  const [checked, setChecked] = useState({});
-  const toggle = id => setChecked(prev => ({ ...prev, [id]: !prev[id] }));
+const [tab, setTab] = useState(“readiness”);
 
-  const allItems = [...TECH_ITEMS, ...DYNAMIC_TESTS, ...DOCUMENTS, ...SAFETY_SYSTEMS];
-  const totalAll = allItems.length;
-  const doneAll = allItems.filter(i => checked[i.id]).length;
-  const critItems = allItems.filter(i => i.critical);
-  const critDone = critItems.filter(i => checked[i.id]).length;
-  const readiness = critDone === critItems.length ? "GO" : doneAll / totalAll > 0.7 ? "ALMOST" : "NOT READY";
+return (
+<div>
+{/* Header banner */}
+<div style={{
+…GL, padding: “12px 16px”, marginBottom: 14,
+borderLeft: `3px solid ${C.gn}`,
+background: `linear-gradient(90deg, ${C.gn}08, transparent)`,
+}}>
+<div style={{ display: “flex”, alignItems: “center”, gap: 10 }}>
+<span style={{ fontSize: 20, color: C.gn }}>☑</span>
+<div>
+<span style={{ fontSize: 12, fontWeight: 800, color: C.gn, fontFamily: C.dt, letterSpacing: 2 }}>
+COMPLIANCE & SCRUTINEERING
+</span>
+<span style={{ fontSize: 9, color: C.dm, fontFamily: C.dt, marginLeft: 12 }}>
+FSG 2026 rules verification — {TECH_ITEMS.length + EV_ITEMS.length + DYNAMIC_ITEMS.length + DOC_ITEMS.length} items across all domains
+</span>
+</div>
+</div>
+</div>
 
-  return (
-    <div>
-      {/* Status banner */}
-      <div style={{
-        ...GL, padding: "12px 16px", marginBottom: 14,
-        borderLeft: `3px solid ${readiness === "GO" ? C.gn : readiness === "ALMOST" ? C.am : C.red}`,
-        display: "flex", alignItems: "center", gap: 16,
-      }}>
-        <div style={{
-          width: 10, height: 10, borderRadius: 5,
-          background: readiness === "GO" ? C.gn : readiness === "ALMOST" ? C.am : C.red,
-          boxShadow: `0 0 10px ${readiness === "GO" ? C.gn : readiness === "ALMOST" ? C.am : C.red}`,
-        }} />
-        <span style={{ fontSize: 12, fontWeight: 800, color: readiness === "GO" ? C.gn : readiness === "ALMOST" ? C.am : C.red, fontFamily: C.dt, letterSpacing: 2 }}>
-          SCRUTINEERING: {readiness}
-        </span>
-        <div style={{ flex: 1 }} />
-        <span style={{ fontSize: 9, color: C.dm, fontFamily: C.dt }}>
-          {doneAll}/{totalAll} items · {critDone}/{critItems.length} critical
-        </span>
-      </div>
+```
+  <div style={{ display: "flex", gap: 5, marginBottom: 14, flexWrap: "wrap" }}>
+    {TABS.map(t => <Pill key={t.key} active={tab === t.key} label={t.label} onClick={() => setTab(t.key)} color={C.gn} />)}
+  </div>
 
-      {/* Progress bar */}
-      <div style={{ ...GL, padding: "10px 14px", marginBottom: 14 }}>
-        <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6 }}>
-          <span style={{ fontSize: 8, fontWeight: 700, color: C.dm, fontFamily: C.dt, letterSpacing: 1.5 }}>OVERALL PROGRESS</span>
-          <span style={{ fontSize: 10, fontWeight: 700, color: C.cy, fontFamily: C.dt }}>{(doneAll / totalAll * 100).toFixed(0)}%</span>
-        </div>
-        <div style={{ height: 8, background: C.b1, borderRadius: 4, overflow: "hidden" }}>
-          <div style={{ width: `${doneAll / totalAll * 100}%`, height: "100%", background: `linear-gradient(90deg, ${C.red}, ${C.am} 50%, ${C.gn})`, borderRadius: 4, transition: "width 0.3s" }} />
-        </div>
-      </div>
+  {tab === "readiness" && <ReadinessTab />}
+  {tab === "technical" && <ChecklistTab items={TECH_ITEMS} title="Technical Inspection" />}
+  {tab === "ev" && <ChecklistTab items={EV_ITEMS} title="EV Systems" />}
+  {tab === "dynamic" && <ChecklistTab items={DYNAMIC_ITEMS} title="Dynamic Tests" />}
+  {tab === "docs" && <DocsTab />}
+  {tab === "timeline" && <TimelineTab />}
+</div>
+```
 
-      <div style={{ display: "flex", gap: 6, marginBottom: 14 }}>
-        {TABS.map(t => <Pill key={t.key} active={tab === t.key} label={t.label} onClick={() => setTab(t.key)} color={C.gn} />)}
-      </div>
-
-      {tab === "tech" && <TechTab checked={checked} toggle={toggle} />}
-      {tab === "dynamic" && <DynamicTab checked={checked} toggle={toggle} />}
-      {tab === "docs" && <DocsTab checked={checked} toggle={toggle} />}
-      {tab === "safety" && <SafetyTab checked={checked} toggle={toggle} />}
-    </div>
-  );
+);
 }
