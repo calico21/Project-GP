@@ -6,25 +6,25 @@
 // This is the Siemens Digital Twin award differentiator.
 //
 // CHANGES v4.2 → v5.0:
-//   - REMOVED: “Aero Balance” tab (migrated to AerodynamicsModule)
-//   - ADDED:   “∇ Coupling” tab — inter-subsystem gradient interaction matrix
-//   - ADDED:   “Controllability” tab — Gramian-based controllability analysis
+//   - REMOVED: "Aero Balance" tab (migrated to AerodynamicsModule)
+//   - ADDED:   "∇ Coupling" tab — inter-subsystem gradient interaction matrix
+//   - ADDED:   "Controllability" tab — Gramian-based controllability analysis
 //   - ADDED:   Cross-link card to Aerodynamics module
 //
 // Integration:
-//   NAV: { key: “diff”, label: “∇ Insights”, icon: “∂” }
-//   Import: import DifferentiableInsightsModule from “./DifferentiableInsightsModule.jsx”
-//   Route: case “diff”: return <DifferentiableInsightsModule />
+//   NAV: { key: "diff", label: "∇ Insights", icon: "∂" }
+//   Import: import DifferentiableInsightsModule from "./DifferentiableInsightsModule.jsx"
+//   Route: case "diff": return <DifferentiableInsightsModule />
 // ═══════════════════════════════════════════════════════════════════════════
 
-import React, { useState, useMemo, useCallback } from “react”;
+import React, { useState, useMemo, useCallback } from "react";
 import {
 LineChart, Line, AreaChart, Area, BarChart, Bar, ScatterChart, Scatter,
 ComposedChart, XAxis, YAxis, CartesianGrid, Tooltip,
 ResponsiveContainer, ReferenceLine, ReferenceArea, Cell, Legend,
-} from “recharts”;
-import { C, GL, GS, TT } from “./theme.js”;
-import { KPI, Sec, GC, Pill } from “./components.jsx”;
+} from "recharts";
+import { C, GL, GS, TT } from "./theme.js";
+import { KPI, Sec, GC, Pill } from "./components.jsx";
 
 // ═══════════════════════════════════════════════════════════════════════════
 // SEEDED RNG
@@ -38,25 +38,25 @@ return () => { s = (s * 16807 + 0) % 2147483647; return (s & 0x7fffffff) / 0x7ff
 // PARAMETER & STATE LABELS
 // ═══════════════════════════════════════════════════════════════════════════
 const SETUP_NAMES = [
-“k_f”,“k_r”,“arb_f”,“arb_r”,“c_low_f”,“c_low_r”,“c_hi_f”,“c_hi_r”,
-“v_knee_f”,“v_knee_r”,“reb_f”,“reb_r”,“h_ride_f”,“h_ride_r”,
-“camber_f”,“camber_r”,“toe_f”,“toe_r”,“castor”,“anti_sq”,
-“anti_dive_f”,“anti_dive_r”,“anti_lift”,“diff_lock”,“brake_bias”,
-“h_cg”,“bs_f”,“bs_r”,
+"k_f","k_r","arb_f","arb_r","c_low_f","c_low_r","c_hi_f","c_hi_r",
+"v_knee_f","v_knee_r","reb_f","reb_r","h_ride_f","h_ride_r",
+"camber_f","camber_r","toe_f","toe_r","castor","anti_sq",
+"anti_dive_f","anti_dive_r","anti_lift","diff_lock","brake_bias",
+"h_cg","bs_f","bs_r",
 ];
 const STATE_GROUPS = [
-{ label: “Pos (x,y,z,φ,θ,ψ)”, indices: [0,1,2,3,4,5], color: C.cy },
-{ label: “Susp (z_fl..z_rr)”, indices: [6,7,8,9], color: C.gn },
-{ label: “Wheel (ω_fl..ω_rr)”, indices: [10,11,12,13], color: C.am },
-{ label: “Vel (14-27)”, indices: Array.from({length:14},(*,i)=>14+i), color: “#e879f9” },
-{ label: “Thermal (28-37)”, indices: Array.from({length:10},(*,i)=>28+i), color: C.red },
-{ label: “Slip (38-45)”, indices: Array.from({length:8},(_,i)=>38+i), color: “#fbbf24” },
+{ label: "Pos (x,y,z,φ,θ,ψ)", indices: [0,1,2,3,4,5], color: C.cy },
+{ label: "Susp (z_fl..z_rr)", indices: [6,7,8,9], color: C.gn },
+{ label: "Wheel (ω_fl..ω_rr)", indices: [10,11,12,13], color: C.am },
+{ label: "Vel (14-27)", indices: Array.from({length:14},(*,i)=>14+i), color: "#e879f9" },
+{ label: "Thermal (28-37)", indices: Array.from({length:10},(*,i)=>28+i), color: C.red },
+{ label: "Slip (38-45)", indices: Array.from({length:8},(_,i)=>38+i), color: "#fbbf24" },
 ];
 const STATE_NAMES = [
-“x”,“y”,“z”,“φ”,“θ”,“ψ”,“z_fl”,“z_fr”,“z_rl”,“z_rr”,“ω_fl”,“ω_fr”,“ω_rl”,“ω_rr”,
-“ẋ”,“ẏ”,“ż”,“φ̇”,“θ̇”,“ψ̇”,“ż_fl”,“ż_fr”,“ż_rl”,“ż_rr”,“ω̇_fl”,“ω̇_fr”,“ω̇_rl”,“ω̇_rr”,
-“T_fl_s”,“T_fl_b”,“T_fl_c”,“T_fr_s”,“T_fr_b”,“T_rr_s”,“T_rr_b”,“T_rl_s”,“T_rl_b”,“T_rl_c”,
-“κ_fl”,“κ_fr”,“κ_rl”,“κ_rr”,“α_fl”,“α_fr”,“α_rl”,“α_rr”,
+"x","y","z","φ","θ","ψ","z_fl","z_fr","z_rl","z_rr","ω_fl","ω_fr","ω_rl","ω_rr",
+"ẋ","ẏ","ż","φ̇","θ̇","ψ̇","ż_fl","ż_fr","ż_rl","ż_rr","ω̇_fl","ω̇_fr","ω̇_rl","ω̇_rr",
+"T_fl_s","T_fl_b","T_fl_c","T_fr_s","T_fr_b","T_rr_s","T_rr_b","T_rl_s","T_rl_b","T_rl_c",
+"κ_fl","κ_fr","κ_rl","κ_rr","α_fl","α_fr","α_rl","α_rr",
 ];
 
 const ax = () => ({ tick: { fontSize: 8, fill: C.dm, fontFamily: C.dt }, stroke: C.b1, tickLine: false });
@@ -105,18 +105,18 @@ return J;
 function gEigenvalues() {
 const R = srng(2001);
 const modes = [
-{ name: “Heave”, real: -18 + R()*3, imag: 28 + R()*4, desc: “Body bounce” },
-{ name: “Pitch”, real: -15 + R()*2, imag: 24 + R()*3, desc: “Nose dive/squat” },
-{ name: “Roll”, real: -12 + R()*2, imag: 20 + R()*3, desc: “Body roll” },
-{ name: “Warp”, real: -8 + R()*2, imag: 15 + R()*2, desc: “Chassis twist” },
-{ name: “WheelHop FL”, real: -45 + R()*5, imag: 52 + R()*6, desc: “Unsprung bounce” },
-{ name: “WheelHop FR”, real: -44 + R()*5, imag: 51 + R()*6, desc: “Unsprung bounce” },
-{ name: “WheelHop RL”, real: -48 + R()*5, imag: 55 + R()*6, desc: “Unsprung bounce” },
-{ name: “WheelHop RR”, real: -47 + R()*5, imag: 54 + R()*6, desc: “Unsprung bounce” },
-{ name: “Yaw”, real: -6 + R()*1.5, imag: 8 + R()*2, desc: “Directional stability” },
-{ name: “Lateral”, real: -3 + R()*1, imag: 4 + R()*1.5, desc: “Sideslip” },
-{ name: “Longitudinal”, real: -2 + R()*0.5, imag: 0, desc: “Speed mode (real)” },
-{ name: “Steer compliance”, real: -22 + R()*3, imag: 30 + R()*4, desc: “Steering elasticity” },
+{ name: "Heave", real: -18 + R()*3, imag: 28 + R()*4, desc: "Body bounce" },
+{ name: "Pitch", real: -15 + R()*2, imag: 24 + R()*3, desc: "Nose dive/squat" },
+{ name: "Roll", real: -12 + R()*2, imag: 20 + R()*3, desc: "Body roll" },
+{ name: "Warp", real: -8 + R()*2, imag: 15 + R()*2, desc: "Chassis twist" },
+{ name: "WheelHop FL", real: -45 + R()*5, imag: 52 + R()*6, desc: "Unsprung bounce" },
+{ name: "WheelHop FR", real: -44 + R()*5, imag: 51 + R()*6, desc: "Unsprung bounce" },
+{ name: "WheelHop RL", real: -48 + R()*5, imag: 55 + R()*6, desc: "Unsprung bounce" },
+{ name: "WheelHop RR", real: -47 + R()*5, imag: 54 + R()*6, desc: "Unsprung bounce" },
+{ name: "Yaw", real: -6 + R()*1.5, imag: 8 + R()*2, desc: "Directional stability" },
+{ name: "Lateral", real: -3 + R()*1, imag: 4 + R()*1.5, desc: "Sideslip" },
+{ name: "Longitudinal", real: -2 + R()*0.5, imag: 0, desc: "Speed mode (real)" },
+{ name: "Steer compliance", real: -22 + R()*3, imag: 30 + R()*4, desc: "Steering elasticity" },
 ];
 return modes.map(m => ({
 …m,
@@ -148,7 +148,7 @@ return {
 param: name,
 dtLap: +baseSens.toFixed(4),
 absSens: +Math.abs(baseSens).toFixed(4),
-sign: baseSens < 0 ? “faster” : “slower”,
+sign: baseSens < 0 ? "faster" : "slower",
 rank: 0,
 };
 }).sort((a, b) => b.absSens - a.absSens).map((d, i) => ({ …d, rank: i + 1 }));
@@ -224,8 +224,8 @@ gradNorm: +(0.001 + 0.01 * R() * (baseIter > 10 ? 5 : 1)).toFixed(4),
 function gGradientCoupling() {
 const R = srng(8001);
 const subsystems = [
-“Chassis 6DOF”, “Suspension”, “Tire Slip”, “Tire Thermal”,
-“Aero Surrogate”, “WMPC Control”, “Powertrain”, “EKF States”,
+"Chassis 6DOF", "Suspension", "Tire Slip", "Tire Thermal",
+"Aero Surrogate", "WMPC Control", "Powertrain", "EKF States",
 ];
 const n = subsystems.length;
 const matrix = [];
@@ -265,14 +265,14 @@ return { matrix, subsystems, outgoing };
 // 9. NEW: Controllability Gramian analysis
 function gControllability() {
 const R = srng(9001);
-const inputs = [“δ_steer”, “T_throttle”, “P_brake”, “TV_bias”];
+const inputs = ["δ_steer", "T_throttle", "P_brake", "TV_bias"];
 const states = STATE_NAMES.slice(0, 14); // mechanical DOFs
 const gramianDiag = states.map((s, i) => {
 // Steering controls yaw/lateral strongly, throttle controls longitudinal
-const steerSens = (s.includes(“ψ”) || s.includes(“y”) || s.includes(“z_f”)) ? 0.8 + R() * 0.2 : 0.1 + R() * 0.15;
-const throttleSens = (s.includes(“ω”) || s.includes(“x”)) ? 0.7 + R() * 0.2 : 0.05 + R() * 0.1;
-const brakeSens = (s.includes(“ω”) || s.includes(“x”)) ? 0.65 + R() * 0.2 : 0.08 + R() * 0.12;
-const tvSens = (s.includes(“ψ”) || s.includes(“ω”)) ? 0.5 + R() * 0.2 : 0.02 + R() * 0.08;
+const steerSens = (s.includes("ψ") || s.includes("y") || s.includes("z_f")) ? 0.8 + R() * 0.2 : 0.1 + R() * 0.15;
+const throttleSens = (s.includes("ω") || s.includes("x")) ? 0.7 + R() * 0.2 : 0.05 + R() * 0.1;
+const brakeSens = (s.includes("ω") || s.includes("x")) ? 0.65 + R() * 0.2 : 0.08 + R() * 0.12;
+const tvSens = (s.includes("ψ") || s.includes("ω")) ? 0.5 + R() * 0.2 : 0.02 + R() * 0.08;
 const total = steerSens + throttleSens + brakeSens + tvSens;
 return {
 state: s, idx: i,
@@ -286,18 +286,18 @@ return { gramianDiag, inputs };
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// TABS — v5.0: removed “aero”, added “coupling” and “control”
+// TABS — v5.0: removed "aero", added "coupling" and "control"
 // ═══════════════════════════════════════════════════════════════════════════
 const TABS = [
-{ key: “jacobian”,  label: “∂ẋ/∂setup Jacobian” },
-{ key: “eigen”,     label: “Eigenvalue Map” },
-{ key: “lapSens”,   label: “∂t_lap/∂param” },
-{ key: “hnetGrad”,  label: “∇H_net Field” },
-{ key: “fim”,       label: “FIM Spectrum” },
-{ key: “wmpcCost”,  label: “WMPC Cost” },
-{ key: “solver”,    label: “Solver Health” },
-{ key: “coupling”,  label: “∇ Coupling” },
-{ key: “control”,   label: “Controllability” },
+{ key: "jacobian",  label: "∂ẋ/∂setup Jacobian" },
+{ key: "eigen",     label: "Eigenvalue Map" },
+{ key: "lapSens",   label: "∂t_lap/∂param" },
+{ key: "hnetGrad",  label: "∇H_net Field" },
+{ key: "fim",       label: "FIM Spectrum" },
+{ key: "wmpcCost",  label: "WMPC Cost" },
+{ key: "solver",    label: "Solver Health" },
+{ key: "coupling",  label: "∇ Coupling" },
+{ key: "control",   label: "Controllability" },
 ];
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -312,16 +312,16 @@ const cellColor = useCallback((val) => {
 const norm = Math.abs(val) / maxVal;
 if (val > 0) return `rgba(35,209,96,${0.1 + norm * 0.8})`;
 if (val < 0) return `rgba(255,56,56,${0.1 + norm * 0.8})`;
-return “transparent”;
+return "transparent";
 }, [maxVal]);
 
 const cellW = 18, cellH = 10, labelW = 42, labelH = 50;
 
 return (
 <div>
-<div style={{ display: “grid”, gridTemplateColumns: “repeat(3, 1fr)”, gap: 10, marginBottom: 14 }}>
+<div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 10, marginBottom: 14 }}>
 <KPI label="Matrix Size" value="46 × 28" sub="state × setup" sentiment="neutral" delay={0} />
-<KPI label=“Sparsity” value={`${(jacobian.flat().filter(v => Math.abs(v) < 0.05).length / (46*28) * 100).toFixed(0)}%`} sub=“entries < 0.05” sentiment=“positive” delay={1} />
+<KPI label="Sparsity" value={`${(jacobian.flat().filter(v => Math.abs(v) < 0.05).length / (46*28) * 100).toFixed(0)}%`} sub="entries < 0.05" sentiment="positive" delay={1} />
 <KPI label="Max |∂ẋ/∂p|" value={maxVal.toFixed(3)} sub="peak sensitivity" sentiment="neutral" delay={2} />
 </div>
 
@@ -405,11 +405,11 @@ const minDamping = Math.min(…eigenvalues.map(e => e.damping));
 
 return (
 <div>
-<div style={{ display: “grid”, gridTemplateColumns: “repeat(4, 1fr)”, gap: 10, marginBottom: 14 }}>
-<KPI label=“System” value={allStable ? “STABLE” : “UNSTABLE”} sub=“all Re(λ) < 0” sentiment={allStable ? “positive” : “negative”} delay={0} />
+<div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 10, marginBottom: 14 }}>
+<KPI label="System" value={allStable ? "STABLE" : "UNSTABLE"} sub="all Re(λ) < 0" sentiment={allStable ? "positive" : "negative"} delay={0} />
 <KPI label="Modes" value={eigenvalues.length} sub="complex pairs" sentiment="neutral" delay={1} />
-<KPI label="Min Damping" value={minDamping.toFixed(3)} sub="ζ_min" sentiment={minDamping > 0.1 ? “positive” : “amber”} delay={2} />
-<KPI label=“Slowest Mode” value={`${eigenvalues.find(e => Math.abs(e.real) === Math.min(...eigenvalues.map(ee => Math.abs(ee.real))))?.name}`} sub=“least damped” sentiment=“neutral” delay={3} />
+<KPI label="Min Damping" value={minDamping.toFixed(3)} sub="ζ_min" sentiment={minDamping > 0.1 ? "positive" : "amber"} delay={2} />
+<KPI label="Slowest Mode" value={`${eigenvalues.find(e => Math.abs(e.real) === Math.min(...eigenvalues.map(ee => Math.abs(ee.real))))?.name}`} sub="least damped" sentiment="neutral" delay={3} />
 </div>
 
 ```
@@ -470,12 +470,12 @@ const maxAbsSens = Math.max(…sensData.map(s => s.absSens));
 
 return (
 <div>
-<div style={{ display: “grid”, gridTemplateColumns: “repeat(5, 1fr)”, gap: 10, marginBottom: 14 }}>
+<div style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 10, marginBottom: 14 }}>
 {top5.map((d) => (
 <KPI key={d.param} label={`#${d.rank} ${d.param}`}
 value={`${d.dtLap > 0 ? "+" : ""}${(d.dtLap * 1000).toFixed(1)} ms`}
-sub={d.sign === “faster” ? “decrease → faster” : “decrease → slower”}
-sentiment={d.dtLap < 0 ? “positive” : “amber”} delay={d.rank - 1} />
+sub={d.sign === "faster" ? "decrease → faster" : "decrease → slower"}
+sentiment={d.dtLap < 0 ? "positive" : "amber"} delay={d.rank - 1} />
 ))}
 </div>
 
@@ -519,10 +519,10 @@ const res = 20;
 
 return (
 <div>
-<div style={{ display: “grid”, gridTemplateColumns: “repeat(3, 1fr)”, gap: 10, marginBottom: 14 }}>
-<KPI label=“Peak |∇H|” value={`${maxGrad} N`} sub=“max restoring force” sentiment=“neutral” delay={0} />
+<div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 10, marginBottom: 14 }}>
+<KPI label="Peak |∇H|" value={`${maxGrad} N`} sub="max restoring force" sentiment="neutral" delay={0} />
 <KPI label="H at equilibrium" value="~0 J" sub="z_eq gate active" sentiment="positive" delay={1} />
-<KPI label=“Grid Resolution” value={`${res} × ${res}`} sub=“q_front × q_rear” sentiment=“neutral” delay={2} />
+<KPI label="Grid Resolution" value={`${res} × ${res}`} sub="q_front × q_rear" sentiment="neutral" delay={2} />
 </div>
 
 ```
@@ -577,10 +577,10 @@ const identifiable = fimData.filter(d => d.identifiable).length;
 
 return (
 <div>
-<div style={{ display: “grid”, gridTemplateColumns: “repeat(3, 1fr)”, gap: 10, marginBottom: 14 }}>
-<KPI label=“Identifiable” value={`${identifiable}/28`} sub=“eigenvalue > 5” sentiment={identifiable > 20 ? “positive” : “amber”} delay={0} />
-<KPI label=“Condition #” value={`${(fimData[0].eigenval / fimData[fimData.length - 1].eigenval).toFixed(0)}`} sub=“λ_max / λ_min” sentiment=“neutral” delay={1} />
-<KPI label=“Effective DOF” value={`~${identifiable}`} sub=“active parameters” sentiment=“positive” delay={2} />
+<div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 10, marginBottom: 14 }}>
+<KPI label="Identifiable" value={`${identifiable}/28`} sub="eigenvalue > 5" sentiment={identifiable > 20 ? "positive" : "amber"} delay={0} />
+<KPI label="Condition #" value={`${(fimData[0].eigenval / fimData[fimData.length - 1].eigenval).toFixed(0)}`} sub="λ_max / λ_min" sentiment="neutral" delay={1} />
+<KPI label="Effective DOF" value={`~${identifiable}`} sub="active parameters" sentiment="positive" delay={2} />
 </div>
 
 ```
@@ -614,13 +614,13 @@ return (
 <GC><ResponsiveContainer width="100%" height={320}>
 <AreaChart data={costData} margin={{ top: 8, right: 16, bottom: 24, left: 12 }}>
 <CartesianGrid strokeDasharray="3 3" stroke={GS} />
-<XAxis dataKey=“step” {…ax()} label={{ value: “Horizon Step”, position: “bottom”, fill: C.dm, fontSize: 9 }} />
+<XAxis dataKey="step" {…ax()} label={{ value: "Horizon Step", position: "bottom", fill: C.dm, fontSize: 9 }} />
 <YAxis {…ax()} />
 <Tooltip contentStyle={TT} />
-<Area type=“monotone” dataKey=“costLap” stackId=“1” stroke={C.cy} fill={`${C.cy}20`} strokeWidth={1} name=“Lap Time” />
-<Area type=“monotone” dataKey=“costTrack” stackId=“1” stroke={C.red} fill={`${C.red}20`} strokeWidth={1} name=“Track Limits” />
-<Area type=“monotone” dataKey=“costSmooth” stackId=“1” stroke={C.am} fill={`${C.am}20`} strokeWidth={1} name=“Smoothness” />
-<Area type=“monotone” dataKey=“costGrip” stackId=“1” stroke={C.gn} fill={`${C.gn}20`} strokeWidth={1} name=“Grip Margin” />
+<Area type="monotone" dataKey="costLap" stackId="1" stroke={C.cy} fill={`${C.cy}20`} strokeWidth={1} name="Lap Time" />
+<Area type="monotone" dataKey="costTrack" stackId="1" stroke={C.red} fill={`${C.red}20`} strokeWidth={1} name="Track Limits" />
+<Area type="monotone" dataKey="costSmooth" stackId="1" stroke={C.am} fill={`${C.am}20`} strokeWidth={1} name="Smoothness" />
+<Area type="monotone" dataKey="costGrip" stackId="1" stroke={C.gn} fill={`${C.gn}20`} strokeWidth={1} name="Grip Margin" />
 <Legend wrapperStyle={{ fontSize: 8, fontFamily: C.hd }} />
 </AreaChart>
 </ResponsiveContainer></GC>
@@ -639,11 +639,11 @@ const avgMs = solverData.reduce((a, d) => a + d.solveMs, 0) / solverData.length;
 
 return (
 <div>
-<div style={{ display: “grid”, gridTemplateColumns: “repeat(4, 1fr)”, gap: 10, marginBottom: 14 }}>
-<KPI label=“Avg Iterations” value={avgIters.toFixed(1)} sub=“L-BFGS-B per step” sentiment={avgIters < 12 ? “positive” : “amber”} delay={0} />
-<KPI label=“Conv. Rate” value={`${convRate.toFixed(1)}%`} sub=“steps converged” sentiment={convRate > 95 ? “positive” : “amber”} delay={1} />
-<KPI label=“Avg Solve” value={`${avgMs.toFixed(1)} ms`} sub=“per MPC step” sentiment={avgMs < 8 ? “positive” : “amber”} delay={2} />
-<KPI label=“100 Hz OK” value={avgMs < 10 ? “YES” : “NO”} sub=”< 10ms budget” sentiment={avgMs < 10 ? “positive” : “amber”} delay={3} />
+<div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 10, marginBottom: 14 }}>
+<KPI label="Avg Iterations" value={avgIters.toFixed(1)} sub="L-BFGS-B per step" sentiment={avgIters < 12 ? "positive" : "amber"} delay={0} />
+<KPI label="Conv. Rate" value={`${convRate.toFixed(1)}%`} sub="steps converged" sentiment={convRate > 95 ? "positive" : "amber"} delay={1} />
+<KPI label="Avg Solve" value={`${avgMs.toFixed(1)} ms`} sub="per MPC step" sentiment={avgMs < 8 ? "positive" : "amber"} delay={2} />
+<KPI label="100 Hz OK" value={avgMs < 10 ? "YES" : "NO"} sub="< 10ms budget" sentiment={avgMs < 10 ? "positive" : "amber"} delay={3} />
 </div>
 
 ```
@@ -695,11 +695,11 @@ const strongestLink = matrix.filter(m => m.fi !== m.ti).sort((a, b) => b.strengt
 
 return (
 <div>
-<div style={{ display: “grid”, gridTemplateColumns: “repeat(4, 1fr)”, gap: 10, marginBottom: 14 }}>
+<div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 10, marginBottom: 14 }}>
 <KPI label="Subsystems" value={n.toString()} sub="in gradient graph" sentiment="neutral" delay={0} />
-<KPI label=“Strongest Link” value={`${strongestLink.from.split(" ")[0]}→${strongestLink.to.split(" ")[0]}`} sub={`strength: ${strongestLink.strength}`} sentiment=“neutral” delay={1} />
-<KPI label=“Avg Coupling” value={(matrix.filter(m => m.fi !== m.ti).reduce((a, m) => a + m.strength, 0) / (n * n - n)).toFixed(3)} sub=“off-diagonal mean” sentiment=“neutral” delay={2} />
-<KPI label=“Sparsity” value={`${(matrix.filter(m => m.fi !== m.ti && m.strength < 0.1).length / (n * n - n) * 100).toFixed(0)}%`} sub=”< 0.1 threshold” sentiment=“positive” delay={3} />
+<KPI label="Strongest Link" value={`${strongestLink.from.split(" ")[0]}→${strongestLink.to.split(" ")[0]}`} sub={`strength: ${strongestLink.strength}`} sentiment="neutral" delay={1} />
+<KPI label="Avg Coupling" value={(matrix.filter(m => m.fi !== m.ti).reduce((a, m) => a + m.strength, 0) / (n * n - n)).toFixed(3)} sub="off-diagonal mean" sentiment="neutral" delay={2} />
+<KPI label="Sparsity" value={`${(matrix.filter(m => m.fi !== m.ti && m.strength < 0.1).length / (n * n - n) * 100).toFixed(0)}%`} sub="< 0.1 threshold" sentiment="positive" delay={3} />
 </div>
 
 ```
@@ -787,11 +787,11 @@ const controllableCount = gramianDiag.filter(d => d.controllable).length;
 
 return (
 <div>
-<div style={{ display: “grid”, gridTemplateColumns: “repeat(4, 1fr)”, gap: 10, marginBottom: 14 }}>
-<KPI label=“Controllable” value={`${controllableCount}/${gramianDiag.length}`} sub=“states reachable” sentiment={controllableCount > 10 ? “positive” : “amber”} delay={0} />
+<div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 10, marginBottom: 14 }}>
+<KPI label="Controllable" value={`${controllableCount}/${gramianDiag.length}`} sub="states reachable" sentiment={controllableCount > 10 ? "positive" : "amber"} delay={0} />
 <KPI label="Inputs" value={inputs.length.toString()} sub="control channels" sentiment="neutral" delay={1} />
 <KPI label="Best Actuator" value="δ_steer" sub="highest total reach" sentiment="neutral" delay={2} />
-<KPI label=“Weakest State” value={gramianDiag.sort((a, b) => a.total - b.total)[0]?.state} sub=“hardest to control” sentiment=“neutral” delay={3} />
+<KPI label="Weakest State" value={gramianDiag.sort((a, b) => a.total - b.total)[0]?.state} sub="hardest to control" sentiment="neutral" delay={3} />
 </div>
 
 ```
@@ -826,17 +826,17 @@ return (
 // MAIN EXPORT
 // ═══════════════════════════════════════════════════════════════════════════
 export default function DifferentiableInsightsModule() {
-const [tab, setTab] = useState(“jacobian”);
+const [tab, setTab] = useState("jacobian");
 
 return (
 <div>
 {/* Header banner */}
 <div style={{
-…GL, padding: “12px 16px”, marginBottom: 14,
+…GL, padding: "12px 16px", marginBottom: 14,
 borderLeft: `3px solid ${C.cy}`,
 background: `linear-gradient(90deg, ${C.cy}08, transparent)`,
 }}>
-<div style={{ display: “flex”, alignItems: “center”, gap: 10 }}>
+<div style={{ display: "flex", alignItems: "center", gap: 10 }}>
 <span style={{ fontSize: 20, color: C.cy }}>∂</span>
 <div>
 <span style={{ fontSize: 12, fontWeight: 800, color: C.cy, fontFamily: C.dt, letterSpacing: 2 }}>
