@@ -260,16 +260,16 @@ const aeroData = useMemo(() => gAeroMap(), []);
 const [sliceRh, setSliceRh] = useState(30);
 const [slicePitch, setSlicePitch] = useState(0);
 
-const maxCL = Math.max(…aeroData.map(d => d.CL));
+const maxCL = Math.max(...aeroData.map(d => d.CL));
 const bestPt = aeroData.find(d => d.CL >= maxCL - 0.0001);
-const maxLD = Math.max(…aeroData.map(d => d.LD));
+const maxLD = Math.max(...aeroData.map(d => d.LD));
 
 const pitchSlice = useMemo(() => aeroData.filter(d => Math.abs(d.rh - sliceRh) < 1), [aeroData, sliceRh]);
 const rhSlice = useMemo(() => aeroData.filter(d => Math.abs(d.pitch - slicePitch) < 0.15), [aeroData, slicePitch]);
 
 // Heatmap data: unique pitch values, for each -> CL at varying rh
-const pitchVals = useMemo(() => […new Set(aeroData.map(d => d.pitch))], [aeroData]);
-const rhVals = useMemo(() => […new Set(aeroData.map(d => d.rh))], [aeroData]);
+const pitchVals = useMemo(() => [...new Set(aeroData.map(d => d.pitch))], [aeroData]);
+const rhVals = useMemo(() => [...new Set(aeroData.map(d => d.rh))], [aeroData]);
 const heatmapCL = useMemo(() => {
 const map = {};
 aeroData.forEach(d => { map[`${d.pitch}_${d.rh}`] = d.CL; });
@@ -286,7 +286,7 @@ return (
 <KPI label="Operating Range" value={`${pitchVals.length}×${rhVals.length}`} sub="pitch × rh grid" sentiment="neutral" delay={4} />
 </div>
 
-```
+
   {/* Heatmap canvas */}
   <Sec title="C_L Contour — Pitch × Ride Height">
     <GC style={{ padding: 8 }}>
@@ -387,7 +387,7 @@ return (
     </ResponsiveContainer></GC>
   </Sec>
 </div>
-```
+
 
 );
 }
@@ -397,10 +397,10 @@ return (
 // ═══════════════════════════════════════════════════════════════════════════
 function ForcesTab() {
 const forces = useMemo(() => gForceDecomp(), []);
-const maxDF = Math.max(…forces.map(f => f.total));
+const maxDF = Math.max(...forces.map(f => f.total));
 const avgLD = forces.reduce((a, f) => a + f.LD, 0) / forces.length;
 const avgFrontPct = forces.reduce((a, f) => a + f.frontPct, 0) / forces.length;
-const maxDrag = Math.max(…forces.map(f => f.drag_total));
+const maxDrag = Math.max(...forces.map(f => f.drag_total));
 
 // Drag breakdown averages
 const avgDrag = forces.reduce((a, f) => a + f.drag_total, 0) / forces.length;
@@ -421,7 +421,7 @@ return (
 <KPI label="Drag @ 80 kph" value={`${(0.5 * 1.225 * 22.2 * 22.2 * 1.15 * 4.554).toFixed(0)} N`} sub="estimated" sentiment="neutral" delay={4} />
 </div>
 
-```
+
   <Sec title="Downforce Decomposition Over Lap [N]">
     <GC><ResponsiveContainer width="100%" height={260}>
       <AreaChart data={forces} margin={{ top: 8, right: 16, bottom: 8, left: 8 }}>
@@ -479,7 +479,7 @@ return (
     </Sec>
   </div>
 </div>
-```
+
 
 );
 }
@@ -490,7 +490,7 @@ return (
 function CoPTab() {
 const cop = useMemo(() => gCoPTrace(), []);
 const meanCoP = cop.reduce((a, c) => a + c.CoPx, 0) / cop.length;
-const copRange = Math.max(…cop.map(c => c.CoPx)) - Math.min(…cop.map(c => c.CoPx));
+const copRange = Math.max(...cop.map(c => c.CoPx)) - Math.min(...cop.map(c => c.CoPx));
 const targetCoP = 0.480;
 
 return (
@@ -502,7 +502,7 @@ return (
 <KPI label="Deviation" value={`${((meanCoP - targetCoP) * 1550).toFixed(1)} mm`} sub="from target" sentiment={Math.abs(meanCoP - targetCoP) < 0.015 ? "positive" : "amber"} delay={3} />
 </div>
 
-```
+
   <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
     <Sec title="CoP_x Over Lap Distance">
       <GC><ResponsiveContainer width="100%" height={220}>
@@ -560,7 +560,7 @@ return (
     </Sec>
   </div>
 </div>
-```
+
 
 );
 }
@@ -572,7 +572,7 @@ function PlatformTab() {
 const platform = useMemo(() => gPlatform(), []);
 const meanRhF = platform.reduce((a, p) => a + p.rh_f, 0) / platform.length;
 const meanRhR = platform.reduce((a, p) => a + p.rh_r, 0) / platform.length;
-const maxPitch = Math.max(…platform.map(p => Math.abs(p.pitch)));
+const maxPitch = Math.max(...platform.map(p => Math.abs(p.pitch)));
 const stallEvents = platform.filter(p => p.stallRisk).length;
 const bsEventsF = platform.filter(p => p.bsF).length;
 
@@ -586,7 +586,7 @@ return (
 <KPI label="Bump Stop F" value={bsEventsF} sub="front engagements" sentiment={bsEventsF < 5 ? "positive" : "amber"} delay={4} />
 </div>
 
-```
+
   <Sec title="Ride Height — Front & Rear [mm]">
     <GC><ResponsiveContainer width="100%" height={240}>
       <ComposedChart data={platform.filter((_, i) => i % 2 === 0)} margin={{ top: 8, right: 16, bottom: 8, left: 8 }}>
@@ -631,7 +631,7 @@ return (
     </Sec>
   </div>
 </div>
-```
+
 
 );
 }
@@ -642,7 +642,7 @@ return (
 function SensitivityTab() {
 const sens = useMemo(() => gAeroSens(), []);
 const top15 = sens.slice(0, 15);
-const maxSens = Math.max(…top15.map(s => Math.abs(s.dCL)));
+const maxSens = Math.max(...top15.map(s => Math.abs(s.dCL)));
 const mostSens = sens[0];
 
 return (
@@ -654,7 +654,7 @@ return (
 <KPI label="Setup Leverage" value={`${(maxSens * 28 * 100).toFixed(0)}%`} sub="total C_L range" sentiment="positive" delay={3} />
 </div>
 
-```
+
   <Sec title="∂C_L / ∂(setup param) — Tornado Chart (Top 15)">
     <GC><ResponsiveContainer width="100%" height={380}>
       <BarChart data={top15} layout="vertical" margin={{ top: 8, right: 16, bottom: 8, left: 90 }}>
@@ -702,7 +702,7 @@ return (
     </Sec>
   </div>
 </div>
-```
+
 
 );
 }
@@ -716,7 +716,7 @@ const residuals = data.map(d => d.residual);
 const rmse = Math.sqrt(residuals.reduce((a, r) => a + r * r, 0) / residuals.length);
 const r2 = 1 - residuals.reduce((a, r) => a + r * r, 0) / data.reduce((a, d) => a + Math.pow(d.actual - data.reduce((s, dd) => s + dd.actual, 0) / data.length, 2), 0);
 const coverage = data.filter(d => d.inHull).length / data.length * 100;
-const maxRes = Math.max(…data.map(d => d.absResidual));
+const maxRes = Math.max(...data.map(d => d.absResidual));
 
 // Residual histogram
 const bins = 20;
@@ -735,7 +735,7 @@ return (
 <KPI label="Max |Residual|" value={maxRes.toFixed(4)} sub="worst-case error" sentiment={maxRes < 0.1 ? "positive" : "amber"} delay={3} />
 </div>
 
-```
+
   <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
     <Sec title="Parity Plot — Surrogate vs CFD C_L">
       <GC><ResponsiveContainer width="100%" height={280}>
@@ -782,7 +782,7 @@ return (
     </ResponsiveContainer></GC>
   </Sec>
 </div>
-```
+
 
 );
 }
@@ -792,13 +792,13 @@ return (
 // ═══════════════════════════════════════════════════════════════════════════
 function YawTab() {
 const cw = useMemo(() => gCrosswind(), []);
-const maxCY = Math.max(…cw.map(c => Math.abs(c.CY)));
-const maxCN = Math.max(…cw.map(c => Math.abs(c.CN)));
+const maxCY = Math.max(...cw.map(c => Math.abs(c.CY)));
+const maxCN = Math.max(...cw.map(c => Math.abs(c.CN)));
 // Stability derivatives at yaw=0
 const atZero = cw.find(c => Math.abs(c.yaw) < 0.5) || cw[12];
 const dCYdyaw = atZero.dCY_dyaw;
 const dCNdyaw = atZero.dCN_dyaw;
-const maxCLloss = Math.min(…cw.map(c => c.dCL));
+const maxCLloss = Math.min(...cw.map(c => c.dCL));
 
 return (
 <div>
@@ -810,7 +810,7 @@ return (
 <KPI label="C_L Loss @10°" value={`${(maxCLloss * 100).toFixed(1)}%`} sub="downforce degradation" sentiment={maxCLloss > -0.2 ? "positive" : "amber"} delay={4} />
 </div>
 
-```
+
   <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
     <Sec title="Side Force Coefficient C_Y vs Yaw Angle">
       <GC><ResponsiveContainer width="100%" height={240}>
@@ -867,7 +867,7 @@ return (
     </Sec>
   </div>
 </div>
-```
+
 
 );
 }
@@ -889,7 +889,7 @@ return (
 <KPI label="Optimal L/D" value={optCL.LD} sub="at peak grip utility" sentiment="neutral" delay={3} />
 </div>
 
-```
+
   <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
     <Sec title="Grip Utilization [%] vs Downforce Coefficient">
       <GC><ResponsiveContainer width="100%" height={260}>
@@ -945,7 +945,7 @@ return (
     </Sec>
   </div>
 </div>
-```
+
 
 );
 }
@@ -960,7 +960,7 @@ return (
 <div>
 {/* Header banner */}
 <div style={{
-…GL, padding: "12px 16px", marginBottom: 14,
+...GL, padding: "12px 16px", marginBottom: 14,
 borderLeft: `3px solid ${AERO}`,
 background: `linear-gradient(90deg, ${AERO}08, transparent)`,
 }}>
@@ -977,7 +977,7 @@ AERODYNAMICS
 </div>
 </div>
 
-```
+
   <div style={{ display: "flex", gap: 5, marginBottom: 14, flexWrap: "wrap" }}>
     {TABS.map(t => <Pill key={t.key} active={tab === t.key} label={t.label} onClick={() => setTab(t.key)} color={AERO} />)}
   </div>
@@ -991,7 +991,7 @@ AERODYNAMICS
   {tab === "yaw" && <YawTab />}
   {tab === "coupling" && <CouplingTab />}
 </div>
-```
+
 
 );
 }
