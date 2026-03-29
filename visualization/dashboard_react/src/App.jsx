@@ -242,7 +242,6 @@ energy={energy}
 />
 );
 
-```
   case "setup":
     return (
       <SetupModule
@@ -287,7 +286,7 @@ energy={energy}
   default:
     return <OverviewModule pareto={pareto} conv={conv} />;
 }
-```
+
 
 };
 
@@ -301,7 +300,7 @@ minHeight: "100vh", display: "flex",
 <link href={FONTS_URL} rel="stylesheet" />
 <style>{`* { margin: 0; padding: 0; box-sizing: border-box; } ::-webkit-scrollbar { width: 4px; } ::-webkit-scrollbar-track { background: ${C.bg}; } ::-webkit-scrollbar-thumb { background: ${C.b2}; border-radius: 2px; } @keyframes pulseGlow { 0%,100% { opacity: 1; } 50% { opacity: 0.5; } }`}</style>
 
-```
+
     {/* ═══ SIDEBAR ═══════════════════════════════════════════════ */}
     <div style={{
       width: 220, minHeight: "100vh",
@@ -486,7 +485,7 @@ minHeight: "100vh", display: "flex",
     </div>
   </div>
 </SelectionProvider>
-```
+
 
 );
 }
