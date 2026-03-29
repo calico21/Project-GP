@@ -175,7 +175,7 @@ const finishers = results.filter(r => r.finished);
 const minTime = Math.min(...finishers.map(r => r.totalTime));
 const maxTime = Math.max(...finishers.map(r => r.totalTime));
 const bins = 25;
-const timeHist = Array.from({ length: bins }, (*, i) => {
+const timeHist = Array.from({ length: bins }, (_, i) => {
 const lo = minTime + (i / bins) * (maxTime - minTime);
 const hi = lo + (maxTime - minTime) / bins;
 return {
