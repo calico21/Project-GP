@@ -107,7 +107,7 @@ setComparisonId(null);
 
 // ── Aero slice updater — merges partial updates ─────────────────────
 const updateAeroSlice = useCallback((partial) => {
-setAeroSlice(prev => ({ …prev, …partial }));
+setAeroSlice(prev => ({ ...prev, ...partial }));
 }, []);
 
 const value = {
