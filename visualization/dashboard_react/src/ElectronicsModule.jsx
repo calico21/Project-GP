@@ -322,7 +322,7 @@ return (
 <KPI label="R_internal" value={`${acc[acc.length - 1].Ri.toFixed(3)} Ω`} sub="at end state" sentiment={acc[acc.length - 1].Ri < 0.012 ? "positive" : "amber"} delay={4} />
 </div>
 
-```
+
   <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
     <Sec title="State of Charge [%]">
       <GC><ResponsiveContainer width="100%" height={220}>
@@ -409,7 +409,7 @@ return (
     </Sec>
   </div>
 </div>
-```
+
 
 );
 }
@@ -443,7 +443,7 @@ return (
 <KPI label="Peak Power" value="80 kW" sub="FSG limit" sentiment="neutral" delay={4} />
 </div>
 
-```
+
   {/* Efficiency map as scatter heatmap */}
   <Sec title="Motor Efficiency Map — Torque × Speed [%]">
     <GC style={{ padding: 8 }}>
@@ -517,7 +517,7 @@ return (
     </Sec>
   </div>
 </div>
-```
+
 
 );
 }
@@ -540,7 +540,7 @@ return (
 <KPI label="Allocation" value="Convex" sub="global optimum guarantee" sentiment="positive" delay={3} />
 </div>
 
-```
+
   <Sec title="Yaw Moment — Demand vs Actual [Nm]">
     <GC><ResponsiveContainer width="100%" height={240}>
       <LineChart data={tv.filter((_, i) => i % 2 === 0)} margin={{ top: 8, right: 16, bottom: 8, left: 8 }}>
@@ -585,7 +585,7 @@ return (
     </Sec>
   </div>
 </div>
-```
+
 
 );
 }
@@ -609,7 +609,7 @@ return (
 <KPI label="Max C-Rate" value={`${maxCRate.toFixed(2)}C`} sub="charge rate" sentiment={maxCRate < 3 ? "positive" : "amber"} delay={3} />
 </div>
 
-```
+
   <Sec title="Power Flow — Consumption vs Regen [kW]">
     <GC><ResponsiveContainer width="100%" height={240}>
       <ComposedChart data={regen.filter((_, i) => i % 2 === 0)} margin={{ top: 8, right: 16, bottom: 8, left: 8 }}>
@@ -654,7 +654,7 @@ return (
     </Sec>
   </div>
 </div>
-```
+
 
 );
 }
@@ -675,7 +675,7 @@ return (
 <KPI label="Total Trips" value={circuits.reduce((a, c) => a + c.faults, 0).toString()} sub="lifetime" sentiment="neutral" delay={2} />
 </div>
 
-```
+
   {/* Circuit status cards */}
   <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 10, marginBottom: 14 }}>
     {circuits.map(c => (
@@ -719,7 +719,7 @@ return (
     </GC>
   </Sec>
 </div>
-```
+
 
 );
 }
@@ -742,7 +742,7 @@ return (
 <KPI label="Active Nodes" value={nodeHealth.filter(n => n.status === "OK").length + "/" + nodeHealth.length} sub="heartbeat OK" sentiment="positive" delay={3} />
 </div>
 
-```
+
   <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
     <Sec title="Bus Load Over Time [%]">
       <GC><ResponsiveContainer width="100%" height={220}>
@@ -797,7 +797,7 @@ return (
     </GC>
   </Sec>
 </div>
-```
+
 
 );
 }
@@ -820,7 +820,7 @@ return (
 <KPI label="GPS HDOP" value={sensors[sensors.length - 1].gpsHDOP.toFixed(1)} sub="satellite geometry" sentiment={sensors[sensors.length - 1].gpsHDOP < 2 ? "positive" : "amber"} delay={3} />
 </div>
 
-```
+
   <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
     <Sec title="EKF Innovations — a_x, ω_z, v_y">
       <GC><ResponsiveContainer width="100%" height={220}>
@@ -881,7 +881,7 @@ return (
     </Sec>
   </div>
 </div>
-```
+
 
 );
 }
@@ -904,7 +904,7 @@ return (
 <KPI label="ΔT Radiator" value={`${(coolant[coolant.length - 1].radIn - coolant[coolant.length - 1].radOut).toFixed(1)}°C`} sub="cooling capacity" sentiment="neutral" delay={3} />
 </div>
 
-```
+
   <Sec title="Coolant Loop Temperatures [°C]">
     <GC><ResponsiveContainer width="100%" height={260}>
       <LineChart data={coolant.filter((_, i) => i % 2 === 0)} margin={{ top: 8, right: 16, bottom: 8, left: 8 }}>
@@ -952,7 +952,7 @@ return (
     </Sec>
   </div>
 </div>
-```
+
 
 );
 }
@@ -989,7 +989,7 @@ return (
 <KPI label="LV Draw" value={`${(avgLV * 1000).toFixed(0)} W`} sub="12V subsystem" sentiment={avgLV < 0.25 ? "positive" : "amber"} delay={3} />
 </div>
 
-```
+
   {/* Stacked loss waterfall */}
   <Sec title="Power Flow Breakdown [kW avg]">
     <GC><ResponsiveContainer width="100%" height={220}>
@@ -1034,7 +1034,7 @@ return (
     </Sec>
   </div>
 </div>
-```
+
 
 );
 }
@@ -1066,7 +1066,7 @@ HV system monitoring — accumulator, inverters, motors, torque vectoring, safet
 </div>
 </div>
 
-```
+
   <div style={{ display: "flex", gap: 5, marginBottom: 14, flexWrap: "wrap" }}>
     {TABS.map(t => <Pill key={t.key} active={tab === t.key} label={t.label} onClick={() => setTab(t.key)} color={ELEC} />)}
   </div>
@@ -1081,7 +1081,7 @@ HV system monitoring — accumulator, inverters, motors, torque vectoring, safet
   {tab === "thermal" && <ThermalMgmtTab />}
   {tab === "power" && <PowerBudgetTab />}
 </div>
-```
+
 
 );
 }
