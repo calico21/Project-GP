@@ -119,7 +119,7 @@ const modes = [
 { name: "Steer compliance", real: -22 + R()*3, imag: 30 + R()*4, desc: "Steering elasticity" },
 ];
 return modes.map(m => ({
-…m,
+...m,
 real: +m.real.toFixed(2),
 imag: +m.imag.toFixed(2),
 freq: +(m.imag / (2 * Math.PI)).toFixed(2),
@@ -151,7 +151,7 @@ absSens: +Math.abs(baseSens).toFixed(4),
 sign: baseSens < 0 ? "faster" : "slower",
 rank: 0,
 };
-}).sort((a, b) => b.absSens - a.absSens).map((d, i) => ({ …d, rank: i + 1 }));
+}).sort((a, b) => b.absSens - a.absSens).map((d, i) => ({ ...d, rank: i + 1 }));
 }
 
 // 4. H_net gradient field
@@ -306,7 +306,7 @@ const TABS = [
 function JacobianTab() {
 const jacobian = useMemo(() => gJacobian(), []);
 const [hoveredCell, setHoveredCell] = useState(null);
-const maxVal = useMemo(() => Math.max(…jacobian.flat().map(Math.abs)), [jacobian]);
+const maxVal = useMemo(() => Math.max(...jacobian.flat().map(Math.abs)), [jacobian]);
 
 const cellColor = useCallback((val) => {
 const norm = Math.abs(val) / maxVal;
@@ -401,7 +401,7 @@ return (
 function EigenTab() {
 const eigenvalues = useMemo(() => gEigenvalues(), []);
 const allStable = eigenvalues.every(e => e.stable);
-const minDamping = Math.min(…eigenvalues.map(e => e.damping));
+const minDamping = Math.min(...eigenvalues.map(e => e.damping));
 
 return (
 <div>
@@ -466,7 +466,7 @@ return (
 function LapSensTab() {
 const sensData = useMemo(() => gLapTimeSens(), []);
 const top5 = sensData.slice(0, 5);
-const maxAbsSens = Math.max(…sensData.map(s => s.absSens));
+const maxAbsSens = Math.max(...sensData.map(s => s.absSens));
 
 return (
 <div>
@@ -514,7 +514,7 @@ sentiment={d.dtLap < 0 ? "positive" : "amber"} delay={d.rank - 1} />
 function HnetGradTab() {
 const gradField = useMemo(() => gHnetGradField(), []);
 const slice = useMemo(() => gradField.filter(d => Math.abs(d.qr) < 0.5), [gradField]);
-const maxGrad = Math.max(…gradField.map(d => d.gradMag));
+const maxGrad = Math.max(...gradField.map(d => d.gradMag));
 const res = 20;
 
 return (
@@ -614,8 +614,8 @@ return (
 <GC><ResponsiveContainer width="100%" height={320}>
 <AreaChart data={costData} margin={{ top: 8, right: 16, bottom: 24, left: 12 }}>
 <CartesianGrid strokeDasharray="3 3" stroke={GS} />
-<XAxis dataKey="step" {…ax()} label={{ value: "Horizon Step", position: "bottom", fill: C.dm, fontSize: 9 }} />
-<YAxis {…ax()} />
+<XAxis dataKey="step" {...ax()} label={{ value: "Horizon Step", position: "bottom", fill: C.dm, fontSize: 9 }} />
+<YAxis {...ax()} />
 <Tooltip contentStyle={TT} />
 <Area type="monotone" dataKey="costLap" stackId="1" stroke={C.cy} fill={`${C.cy}20`} strokeWidth={1} name="Lap Time" />
 <Area type="monotone" dataKey="costTrack" stackId="1" stroke={C.red} fill={`${C.red}20`} strokeWidth={1} name="Track Limits" />
@@ -690,7 +690,7 @@ return (
 function CouplingTab() {
 const { matrix, subsystems, outgoing } = useMemo(() => gGradientCoupling(), []);
 const n = subsystems.length;
-const maxStrength = Math.max(…matrix.filter(m => m.fi !== m.ti).map(m => m.strength));
+const maxStrength = Math.max(...matrix.filter(m => m.fi !== m.ti).map(m => m.strength));
 const strongestLink = matrix.filter(m => m.fi !== m.ti).sort((a, b) => b.strength - a.strength)[0];
 
 return (
@@ -832,7 +832,7 @@ return (
 <div>
 {/* Header banner */}
 <div style={{
-…GL, padding: "12px 16px", marginBottom: 14,
+...GL, padding: "12px 16px", marginBottom: 14,
 borderLeft: `3px solid ${C.cy}`,
 background: `linear-gradient(90deg, ${C.cy}08, transparent)`,
 }}>
