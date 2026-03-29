@@ -162,7 +162,7 @@ function ReadinessTab() {
 const techScore = computeScore(TECH_ITEMS);
 const evScore = computeScore(EV_ITEMS);
 const dynScore = computeScore(DYNAMIC_ITEMS);
-const docScore = computeScore(DOC_ITEMS.map(d => ({ …d, critical: false })));
+const docScore = computeScore(DOC_ITEMS.map(d => ({ ...d, critical: false })));
 
 const overallPct = Math.round((techScore.passed + evScore.passed + dynScore.passed + docScore.passed) /
 (techScore.total + evScore.total + dynScore.total + docScore.total) * 100);
@@ -177,10 +177,10 @@ const radarData = [
 ];
 
 const subsystems = [
-{ name: "Technical Inspection", …techScore, color: C.cy },
-{ name: "EV Systems", …evScore, color: ELEC },
-{ name: "Dynamic Tests", …dynScore, color: C.am },
-{ name: "Documents", …docScore, color: C.gn },
+{ name: "Technical Inspection", ...techScore, color: C.cy },
+{ name: "EV Systems", ...evScore, color: ELEC },
+{ name: "Dynamic Tests", ...dynScore, color: C.am },
+{ name: "Documents", ...docScore, color: C.gn },
 ];
 
 return (
@@ -426,7 +426,7 @@ return (
 <div>
 {/* Header banner */}
 <div style={{
-…GL, padding: "12px 16px", marginBottom: 14,
+...GL, padding: "12px 16px", marginBottom: 14,
 borderLeft: `3px solid ${C.gn}`,
 background: `linear-gradient(90deg, ${C.gn}08, transparent)`,
 }}>
