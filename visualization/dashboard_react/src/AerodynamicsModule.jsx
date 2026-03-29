@@ -16,36 +16,36 @@
 //   8. Aero × Grip     — Downforce-to-tire-grip coupling analysis
 //
 // Integration (3 lines in App.jsx):
-//   NAV: { key: “aero”, label: “Aerodynamics”, icon: “▽” }
-//   Import: import AerodynamicsModule from “./AerodynamicsModule.jsx”
-//   Route: case “aero”: return <AerodynamicsModule />
+//   NAV: { key: "aero", label: "Aerodynamics", icon: "▽" }
+//   Import: import AerodynamicsModule from "./AerodynamicsModule.jsx"
+//   Route: case "aero": return <AerodynamicsModule />
 // ═══════════════════════════════════════════════════════════════════════════
 
-import React, { useState, useMemo, useCallback } from “react”;
+import React, { useState, useMemo, useCallback } from "react";
 import {
 LineChart, Line, AreaChart, Area, BarChart, Bar, ScatterChart, Scatter,
 ComposedChart, XAxis, YAxis, CartesianGrid, Tooltip,
 ResponsiveContainer, ReferenceLine, ReferenceArea, Cell, Legend,
-} from “recharts”;
-import { C, GL, GS, TT, AX } from “./theme.js”;
-import { KPI, Sec, GC, Pill } from “./components.jsx”;
+} from "recharts";
+import { C, GL, GS, TT, AX } from "./theme.js";
+import { KPI, Sec, GC, Pill } from "./components.jsx";
 
 // ═══════════════════════════════════════════════════════════════════════════
 // CONSTANTS
 // ═══════════════════════════════════════════════════════════════════════════
-const AERO = “#ff6090”;
-const AERO_G = “rgba(255,96,144,0.10)”;
+const AERO = "#ff6090";
+const AERO_G = "rgba(255,96,144,0.10)";
 const ax = () => ({ tick: { fontSize: 8, fill: C.dm, fontFamily: C.dt }, stroke: C.b1, tickLine: false });
 
 const TABS = [
-{ key: “maps”,        label: “Aero Maps” },
-{ key: “forces”,      label: “Force Balance” },
-{ key: “cop”,         label: “CoP Tracker” },
-{ key: “platform”,    label: “Platform” },
-{ key: “sensitivity”, label: “Sensitivity” },
-{ key: “fidelity”,    label: “Fidelity” },
-{ key: “yaw”,         label: “Yaw & Crosswind” },
-{ key: “coupling”,    label: “Aero × Grip” },
+{ key: "maps",        label: "Aero Maps" },
+{ key: "forces",      label: "Force Balance" },
+{ key: "cop",         label: "CoP Tracker" },
+{ key: "platform",    label: "Platform" },
+{ key: "sensitivity", label: "Sensitivity" },
+{ key: "fidelity",    label: "Fidelity" },
+{ key: "yaw",         label: "Yaw & Crosswind" },
+{ key: "coupling",    label: "Aero × Grip" },
 ];
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -132,7 +132,7 @@ const CoPy = 0.500 + 0.008 * Math.sin(i * 0.025) + 0.003 * R();
 return {
 s: +s.toFixed(0), CoPx: +CoPx.toFixed(4), CoPy: +CoPy.toFixed(4),
 latG: +latG.toFixed(3), lonG: +lonG.toFixed(3), speed: +speed.toFixed(1),
-zone: braking ? “Braking” : cornering ? “Cornering” : “Straight”,
+zone: braking ? "Braking" : cornering ? "Cornering" : "Straight",
 };
 });
 }
@@ -163,21 +163,21 @@ bsF, bsR, stallRisk,
 function gAeroSens() {
 const R = srng(3301);
 const PARAMS = [
-“k_f”,“k_r”,“arb_f”,“arb_r”,“c_low_f”,“c_low_r”,“c_hi_f”,“c_hi_r”,
-“v_knee_f”,“v_knee_r”,“reb_f”,“reb_r”,“h_ride_f”,“h_ride_r”,
-“camber_f”,“camber_r”,“toe_f”,“toe_r”,“castor”,“anti_sq”,
-“anti_dive_f”,“anti_dive_r”,“anti_lift”,“diff_lock”,“brake_bias”,
-“h_cg”,“bs_f”,“bs_r”,
+"k_f","k_r","arb_f","arb_r","c_low_f","c_low_r","c_hi_f","c_hi_r",
+"v_knee_f","v_knee_r","reb_f","reb_r","h_ride_f","h_ride_r",
+"camber_f","camber_r","toe_f","toe_r","castor","anti_sq",
+"anti_dive_f","anti_dive_r","anti_lift","diff_lock","brake_bias",
+"h_cg","bs_f","bs_r",
 ];
 const sens = PARAMS.map(p => {
 // Ride height and spring rates dominate aero sensitivity
 let base = 0.001 + R() * 0.005;
-if (p.includes(“ride”)) base = 0.08 + R() * 0.04;
-else if (p.includes(“k_”)) base = 0.03 + R() * 0.02;
-else if (p.includes(“arb”)) base = 0.015 + R() * 0.01;
-else if (p.includes(“h_cg”)) base = 0.025 + R() * 0.015;
-else if (p.includes(“bs_”)) base = 0.02 + R() * 0.01;
-const sign = p.includes(“ride_f”) ? 1 : (R() > 0.5 ? 1 : -1);
+if (p.includes("ride")) base = 0.08 + R() * 0.04;
+else if (p.includes("k_")) base = 0.03 + R() * 0.02;
+else if (p.includes("arb")) base = 0.015 + R() * 0.01;
+else if (p.includes("h_cg")) base = 0.025 + R() * 0.015;
+else if (p.includes("bs_")) base = 0.02 + R() * 0.01;
+const sign = p.includes("ride_f") ? 1 : (R() > 0.5 ? 1 : -1);
 return {
 param: p,
 dCL: +(sign * base).toFixed(4),
@@ -278,12 +278,12 @@ return map;
 
 return (
 <div>
-<div style={{ display: “grid”, gridTemplateColumns: “repeat(5, 1fr)”, gap: 10, marginBottom: 14 }}>
-<KPI label=“Peak C_L” value={maxCL.toFixed(3)} sub={`pitch=${bestPt?.pitch}°, rh=${bestPt?.rh}mm`} sentiment=“positive” delay={0} />
+<div style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 10, marginBottom: 14 }}>
+<KPI label="Peak C_L" value={maxCL.toFixed(3)} sub={`pitch=${bestPt?.pitch}°, rh=${bestPt?.rh}mm`} sentiment="positive" delay={0} />
 <KPI label="Peak L/D" value={maxLD.toFixed(2)} sub="aerodynamic efficiency" sentiment="positive" delay={1} />
-<KPI label=“Peak ClA” value={`${(maxCL * 4.554).toFixed(1)} m²`} sub=“downforce area” sentiment=“positive” delay={2} />
-<KPI label=“CoP at Peak” value={`${((bestPt?.CoPx || 0.48) * 100).toFixed(1)}%`} sub=“from front axle” sentiment=“neutral” delay={3} />
-<KPI label=“Operating Range” value={`${pitchVals.length}×${rhVals.length}`} sub=“pitch × rh grid” sentiment=“neutral” delay={4} />
+<KPI label="Peak ClA" value={`${(maxCL * 4.554).toFixed(1)} m²`} sub="downforce area" sentiment="positive" delay={2} />
+<KPI label="CoP at Peak" value={`${((bestPt?.CoPx || 0.48) * 100).toFixed(1)}%`} sub="from front axle" sentiment="neutral" delay={3} />
+<KPI label="Operating Range" value={`${pitchVals.length}×${rhVals.length}`} sub="pitch × rh grid" sentiment="neutral" delay={4} />
 </div>
 
 ```
@@ -405,20 +405,20 @@ const maxDrag = Math.max(…forces.map(f => f.drag_total));
 // Drag breakdown averages
 const avgDrag = forces.reduce((a, f) => a + f.drag_total, 0) / forces.length;
 const dragBreakdown = [
-{ component: “Body/Wheels”, drag: +(avgDrag * 0.40).toFixed(0), color: C.dm },
-{ component: “Rear Wing”, drag: +(avgDrag * 0.30).toFixed(0), color: C.am },
-{ component: “Front Wing”, drag: +(avgDrag * 0.18).toFixed(0), color: AERO },
-{ component: “Floor”, drag: +(avgDrag * 0.12).toFixed(0), color: C.gn },
+{ component: "Body/Wheels", drag: +(avgDrag * 0.40).toFixed(0), color: C.dm },
+{ component: "Rear Wing", drag: +(avgDrag * 0.30).toFixed(0), color: C.am },
+{ component: "Front Wing", drag: +(avgDrag * 0.18).toFixed(0), color: AERO },
+{ component: "Floor", drag: +(avgDrag * 0.12).toFixed(0), color: C.gn },
 ];
 
 return (
 <div>
-<div style={{ display: “grid”, gridTemplateColumns: “repeat(5, 1fr)”, gap: 10, marginBottom: 14 }}>
-<KPI label=“Peak Downforce” value={`${maxDF} N`} sub=“at max speed” sentiment=“positive” delay={0} />
-<KPI label="Avg L/D" value={avgLD.toFixed(2)} sub="lap average" sentiment={avgLD > 2.5 ? “positive” : “amber”} delay={1} />
-<KPI label=“F/R Balance” value={`${avgFrontPct.toFixed(1)}%`} sub=“front downforce” sentiment={Math.abs(avgFrontPct - 48) < 4 ? “positive” : “amber”} delay={2} />
-<KPI label=“Peak Drag” value={`${maxDrag} N`} sub=“total aero drag” sentiment=“neutral” delay={3} />
-<KPI label=“Drag @ 80 kph” value={`${(0.5 * 1.225 * 22.2 * 22.2 * 1.15 * 4.554).toFixed(0)} N`} sub=“estimated” sentiment=“neutral” delay={4} />
+<div style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 10, marginBottom: 14 }}>
+<KPI label="Peak Downforce" value={`${maxDF} N`} sub="at max speed" sentiment="positive" delay={0} />
+<KPI label="Avg L/D" value={avgLD.toFixed(2)} sub="lap average" sentiment={avgLD > 2.5 ? "positive" : "amber"} delay={1} />
+<KPI label="F/R Balance" value={`${avgFrontPct.toFixed(1)}%`} sub="front downforce" sentiment={Math.abs(avgFrontPct - 48) < 4 ? "positive" : "amber"} delay={2} />
+<KPI label="Peak Drag" value={`${maxDrag} N`} sub="total aero drag" sentiment="neutral" delay={3} />
+<KPI label="Drag @ 80 kph" value={`${(0.5 * 1.225 * 22.2 * 22.2 * 1.15 * 4.554).toFixed(0)} N`} sub="estimated" sentiment="neutral" delay={4} />
 </div>
 
 ```
@@ -495,11 +495,11 @@ const targetCoP = 0.480;
 
 return (
 <div>
-<div style={{ display: “grid”, gridTemplateColumns: “repeat(4, 1fr)”, gap: 10, marginBottom: 14 }}>
-<KPI label=“Mean CoP_x” value={`${(meanCoP * 100).toFixed(1)}%`} sub=“from front axle” sentiment={Math.abs(meanCoP - targetCoP) < 0.02 ? “positive” : “amber”} delay={0} />
-<KPI label=“CoP Migration” value={`${(copRange * 1550).toFixed(1)} mm`} sub=“total range over lap” sentiment={copRange < 0.05 ? “positive” : “amber”} delay={1} />
-<KPI label=“Target CoP” value={`${(targetCoP * 100).toFixed(1)}%`} sub=“design target” sentiment=“neutral” delay={2} />
-<KPI label=“Deviation” value={`${((meanCoP - targetCoP) * 1550).toFixed(1)} mm`} sub=“from target” sentiment={Math.abs(meanCoP - targetCoP) < 0.015 ? “positive” : “amber”} delay={3} />
+<div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 10, marginBottom: 14 }}>
+<KPI label="Mean CoP_x" value={`${(meanCoP * 100).toFixed(1)}%`} sub="from front axle" sentiment={Math.abs(meanCoP - targetCoP) < 0.02 ? "positive" : "amber"} delay={0} />
+<KPI label="CoP Migration" value={`${(copRange * 1550).toFixed(1)} mm`} sub="total range over lap" sentiment={copRange < 0.05 ? "positive" : "amber"} delay={1} />
+<KPI label="Target CoP" value={`${(targetCoP * 100).toFixed(1)}%`} sub="design target" sentiment="neutral" delay={2} />
+<KPI label="Deviation" value={`${((meanCoP - targetCoP) * 1550).toFixed(1)} mm`} sub="from target" sentiment={Math.abs(meanCoP - targetCoP) < 0.015 ? "positive" : "amber"} delay={3} />
 </div>
 
 ```
@@ -578,12 +578,12 @@ const bsEventsF = platform.filter(p => p.bsF).length;
 
 return (
 <div>
-<div style={{ display: “grid”, gridTemplateColumns: “repeat(5, 1fr)”, gap: 10, marginBottom: 14 }}>
-<KPI label=“Mean rh_f” value={`${meanRhF.toFixed(1)} mm`} sub=“front ride height” sentiment={meanRhF > 20 ? “positive” : “amber”} delay={0} />
-<KPI label=“Mean rh_r” value={`${meanRhR.toFixed(1)} mm`} sub=“rear ride height” sentiment={meanRhR > 22 ? “positive” : “amber”} delay={1} />
-<KPI label=“Max |Pitch|” value={`${maxPitch.toFixed(2)}°`} sub=“peak pitch angle” sentiment={maxPitch < 1.5 ? “positive” : “amber”} delay={2} />
-<KPI label=“Stall Risk” value={stallEvents} sub=“timesteps below 15mm” sentiment={stallEvents === 0 ? “positive” : “negative”} delay={3} />
-<KPI label=“Bump Stop F” value={bsEventsF} sub=“front engagements” sentiment={bsEventsF < 5 ? “positive” : “amber”} delay={4} />
+<div style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 10, marginBottom: 14 }}>
+<KPI label="Mean rh_f" value={`${meanRhF.toFixed(1)} mm`} sub="front ride height" sentiment={meanRhF > 20 ? "positive" : "amber"} delay={0} />
+<KPI label="Mean rh_r" value={`${meanRhR.toFixed(1)} mm`} sub="rear ride height" sentiment={meanRhR > 22 ? "positive" : "amber"} delay={1} />
+<KPI label="Max |Pitch|" value={`${maxPitch.toFixed(2)}°`} sub="peak pitch angle" sentiment={maxPitch < 1.5 ? "positive" : "amber"} delay={2} />
+<KPI label="Stall Risk" value={stallEvents} sub="timesteps below 15mm" sentiment={stallEvents === 0 ? "positive" : "negative"} delay={3} />
+<KPI label="Bump Stop F" value={bsEventsF} sub="front engagements" sentiment={bsEventsF < 5 ? "positive" : "amber"} delay={4} />
 </div>
 
 ```
@@ -647,11 +647,11 @@ const mostSens = sens[0];
 
 return (
 <div>
-<div style={{ display: “grid”, gridTemplateColumns: “repeat(4, 1fr)”, gap: 10, marginBottom: 14 }}>
-<KPI label=“Most Sensitive” value={mostSens.param} sub={`∂C_L = ${mostSens.dCL}`} sentiment=“neutral” delay={0} />
+<div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 10, marginBottom: 14 }}>
+<KPI label="Most Sensitive" value={mostSens.param} sub={`∂C_L = ${mostSens.dCL}`} sentiment="neutral" delay={0} />
 <KPI label="Max |∂C_L/∂p|" value={maxSens.toFixed(4)} sub="sensitivity magnitude" sentiment="neutral" delay={1} />
-<KPI label=“Active Params” value={sens.filter(s => Math.abs(s.dCL) > 0.01).length} sub=“above threshold” sentiment=“positive” delay={2} />
-<KPI label=“Setup Leverage” value={`${(maxSens * 28 * 100).toFixed(0)}%`} sub=“total C_L range” sentiment=“positive” delay={3} />
+<KPI label="Active Params" value={sens.filter(s => Math.abs(s.dCL) > 0.01).length} sub="above threshold" sentiment="positive" delay={2} />
+<KPI label="Setup Leverage" value={`${(maxSens * 28 * 100).toFixed(0)}%`} sub="total C_L range" sentiment="positive" delay={3} />
 </div>
 
 ```
@@ -728,11 +728,11 @@ return { bin: +((lo + hi) / 2).toFixed(3), count: data.filter(d => d.residual >=
 
 return (
 <div>
-<div style={{ display: “grid”, gridTemplateColumns: “repeat(4, 1fr)”, gap: 10, marginBottom: 14 }}>
-<KPI label="R²" value={r2.toFixed(4)} sub="coefficient of determination" sentiment={r2 > 0.97 ? “positive” : r2 > 0.93 ? “amber” : “negative”} delay={0} />
-<KPI label=“RMSE” value={rmse.toFixed(4)} sub=“root mean square error” sentiment={rmse < 0.05 ? “positive” : “amber”} delay={1} />
-<KPI label=“Coverage” value={`${coverage.toFixed(1)}%`} sub=“training hull” sentiment={coverage > 85 ? “positive” : “amber”} delay={2} />
-<KPI label=“Max |Residual|” value={maxRes.toFixed(4)} sub=“worst-case error” sentiment={maxRes < 0.1 ? “positive” : “amber”} delay={3} />
+<div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 10, marginBottom: 14 }}>
+<KPI label="R²" value={r2.toFixed(4)} sub="coefficient of determination" sentiment={r2 > 0.97 ? "positive" : r2 > 0.93 ? "amber" : "negative"} delay={0} />
+<KPI label="RMSE" value={rmse.toFixed(4)} sub="root mean square error" sentiment={rmse < 0.05 ? "positive" : "amber"} delay={1} />
+<KPI label="Coverage" value={`${coverage.toFixed(1)}%`} sub="training hull" sentiment={coverage > 85 ? "positive" : "amber"} delay={2} />
+<KPI label="Max |Residual|" value={maxRes.toFixed(4)} sub="worst-case error" sentiment={maxRes < 0.1 ? "positive" : "amber"} delay={3} />
 </div>
 
 ```
@@ -802,12 +802,12 @@ const maxCLloss = Math.min(…cw.map(c => c.dCL));
 
 return (
 <div>
-<div style={{ display: “grid”, gridTemplateColumns: “repeat(5, 1fr)”, gap: 10, marginBottom: 14 }}>
+<div style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 10, marginBottom: 14 }}>
 <KPI label="∂C_Y/∂β" value={dCYdyaw.toFixed(4)} sub="side force derivative" sentiment="neutral" delay={0} />
-<KPI label="∂C_N/∂β" value={dCNdyaw.toFixed(5)} sub="yaw moment derivative" sentiment={dCNdyaw > 0 ? “positive” : “negative”} delay={1} />
+<KPI label="∂C_N/∂β" value={dCNdyaw.toFixed(5)} sub="yaw moment derivative" sentiment={dCNdyaw > 0 ? "positive" : "negative"} delay={1} />
 <KPI label="Max |C_Y|" value={maxCY.toFixed(3)} sub="at ±10° yaw" sentiment="neutral" delay={2} />
 <KPI label="Max |C_N|" value={maxCN.toFixed(4)} sub="yaw moment coefficient" sentiment="neutral" delay={3} />
-<KPI label=“C_L Loss @10°” value={`${(maxCLloss * 100).toFixed(1)}%`} sub=“downforce degradation” sentiment={maxCLloss > -0.2 ? “positive” : “amber”} delay={4} />
+<KPI label="C_L Loss @10°" value={`${(maxCLloss * 100).toFixed(1)}%`} sub="downforce degradation" sentiment={maxCLloss > -0.2 ? "positive" : "amber"} delay={4} />
 </div>
 
 ```
@@ -882,10 +882,10 @@ const dimReturns = ag.find(c => c.CL > 2.8 && c.gripUtil < ag.find(d => d.CL > 2
 
 return (
 <div>
-<div style={{ display: “grid”, gridTemplateColumns: “repeat(4, 1fr)”, gap: 10, marginBottom: 14 }}>
-<KPI label=“Optimal C_L” value={optCL.CL.toFixed(3)} sub={`max grip util: ${optCL.gripUtil}%`} sentiment=“positive” delay={0} />
-<KPI label=“Grip Gain” value={`+${(optCL.gripUtil - ag[0].gripUtil).toFixed(1)}%`} sub=“from baseline to optimal” sentiment=“positive” delay={1} />
-<KPI label=“Diminishing Returns” value={dimReturns ? `CL>${dimReturns.CL.toFixed(2)}` : “none”} sub=“grip starts declining” sentiment=“neutral” delay={2} />
+<div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 10, marginBottom: 14 }}>
+<KPI label="Optimal C_L" value={optCL.CL.toFixed(3)} sub={`max grip util: ${optCL.gripUtil}%`} sentiment="positive" delay={0} />
+<KPI label="Grip Gain" value={`+${(optCL.gripUtil - ag[0].gripUtil).toFixed(1)}%`} sub="from baseline to optimal" sentiment="positive" delay={1} />
+<KPI label="Diminishing Returns" value={dimReturns ? `CL>${dimReturns.CL.toFixed(2)}` : "none"} sub="grip starts declining" sentiment="neutral" delay={2} />
 <KPI label="Optimal L/D" value={optCL.LD} sub="at peak grip utility" sentiment="neutral" delay={3} />
 </div>
 
@@ -954,17 +954,17 @@ return (
 // MAIN EXPORT
 // ═══════════════════════════════════════════════════════════════════════════
 export default function AerodynamicsModule() {
-const [tab, setTab] = useState(“maps”);
+const [tab, setTab] = useState("maps");
 
 return (
 <div>
 {/* Header banner */}
 <div style={{
-…GL, padding: “12px 16px”, marginBottom: 14,
+…GL, padding: "12px 16px", marginBottom: 14,
 borderLeft: `3px solid ${AERO}`,
 background: `linear-gradient(90deg, ${AERO}08, transparent)`,
 }}>
-<div style={{ display: “flex”, alignItems: “center”, gap: 10 }}>
+<div style={{ display: "flex", alignItems: "center", gap: 10 }}>
 <span style={{ fontSize: 20, color: AERO }}>▽</span>
 <div>
 <span style={{ fontSize: 12, fontWeight: 800, color: AERO, fontFamily: C.dt, letterSpacing: 2 }}>
