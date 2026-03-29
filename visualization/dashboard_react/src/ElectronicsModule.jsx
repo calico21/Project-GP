@@ -82,8 +82,8 @@ seg: si + 1,
 voltage: +(packVoltage / nSegments + (R() - 0.5) * 2).toFixed(2),
 temp: +(cellTemp + (R() - 0.5) * 4 + (si === 3 || si === 4 ? 2 : 0)).toFixed(1),
 }));
-const maxSegT = Math.max(…segments.map(s => s.temp));
-const minSegV = Math.min(…segments.map(s => s.voltage));
+const maxSegT = Math.max(...segments.map(s => s.temp));
+const minSegV = Math.min(...segments.map(s => s.voltage));
 data.push({
 lap, soc: +soc.toFixed(1), packVoltage: +packVoltage.toFixed(1),
 current: +current.toFixed(1), cellTemp: +cellTemp.toFixed(1),
@@ -308,8 +308,8 @@ totalEff: +totalEff.toFixed(3),
 function AccumulatorTab() {
 const acc = useMemo(() => gAccumulator(), []);
 const finalSoC = acc[acc.length - 1].soc;
-const maxTemp = Math.max(…acc.map(a => a.cellTemp));
-const minVoltage = Math.min(…acc.map(a => a.packVoltage));
+const maxTemp = Math.max(...acc.map(a => a.cellTemp));
+const minVoltage = Math.min(...acc.map(a => a.packVoltage));
 const totalRegen = acc.reduce((a, d) => a + d.regenRecov, 0);
 
 return (
@@ -420,10 +420,10 @@ return (
 function InverterTab() {
 const effMap = useMemo(() => gMotorEffMap(), []);
 const thermal = useMemo(() => gInvMotorThermal(), []);
-const maxMotT = Math.max(…thermal.map(t => Math.max(t.motL, t.motR)));
-const maxInvT = Math.max(…thermal.map(t => Math.max(t.invL, t.invR)));
-const peakDerate = Math.max(…thermal.map(t => t.derating));
-const peakEff = Math.max(…effMap.map(e => e.eff));
+const maxMotT = Math.max(...thermal.map(t => Math.max(t.motL, t.motR)));
+const maxInvT = Math.max(...thermal.map(t => Math.max(t.invL, t.invR)));
+const peakDerate = Math.max(...thermal.map(t => t.derating));
+const peakEff = Math.max(...effMap.map(e => e.eff));
 
 // Operating trace — simulated lap
 const R = srng(5150);
@@ -528,7 +528,7 @@ return (
 function TVTab() {
 const tv = useMemo(() => gTVAlloc(), []);
 const rmseTV = Math.sqrt(tv.reduce((a, t) => a + t.tvError * t.tvError, 0) / tv.length);
-const maxErr = Math.max(…tv.map(t => Math.abs(t.tvError)));
+const maxErr = Math.max(...tv.map(t => Math.abs(t.tvError)));
 const trackingRate = tv.filter(t => Math.abs(t.tvError) < 5).length / tv.length * 100;
 
 return (
@@ -597,8 +597,8 @@ function RegenTab() {
 const regen = useMemo(() => gRegenData(), []);
 const totalRecov = regen[regen.length - 1].cumRecovered;
 const totalConsumed = regen[regen.length - 1].cumConsumed;
-const peakRegen = Math.max(…regen.map(r => r.regenPower));
-const maxCRate = Math.max(…regen.map(r => Math.abs(r.cRate)));
+const peakRegen = Math.max(...regen.map(r => r.regenPower));
+const maxCRate = Math.max(...regen.map(r => Math.abs(r.cRate)));
 
 return (
 <div>
@@ -809,7 +809,7 @@ function SensorsTab() {
 const sensors = useMemo(() => gSensorHealth(), []);
 const avgConf = sensors.reduce((a, s) => a + s.confidence, 0) / sensors.length;
 const faults = sensors.filter(s => s.sensorFault).length;
-const maxInnov = Math.max(…sensors.map(s => Math.abs(s.innovAx)));
+const maxInnov = Math.max(...sensors.map(s => Math.abs(s.innovAx)));
 
 return (
 <div>
@@ -891,9 +891,9 @@ return (
 // ═══════════════════════════════════════════════════════════════════════════
 function ThermalMgmtTab() {
 const coolant = useMemo(() => gCoolantLoop(), []);
-const minMargin = Math.min(…coolant.map(c => c.thermalMargin));
-const maxMotJ = Math.max(…coolant.map(c => c.motJacket));
-const maxPump = Math.max(…coolant.map(c => c.pumpDuty));
+const minMargin = Math.min(...coolant.map(c => c.thermalMargin));
+const maxMotJ = Math.max(...coolant.map(c => c.motJacket));
+const maxPump = Math.max(...coolant.map(c => c.pumpDuty));
 
 return (
 <div>
@@ -1049,7 +1049,7 @@ return (
 <div>
 {/* Header banner */}
 <div style={{
-…GL, padding: "12px 16px", marginBottom: 14,
+...GL, padding: "12px 16px", marginBottom: 14,
 borderLeft: `3px solid ${ELEC}`,
 background: `linear-gradient(90deg, ${ELEC}08, transparent)`,
 }}>
