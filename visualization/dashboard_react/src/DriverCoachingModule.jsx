@@ -245,7 +245,7 @@ return (
 </ResponsiveContainer></GC>
 </Sec>
 
-```
+
     <Sec title="Throttle Application [0–1]">
       <GC><ResponsiveContainer width="100%" height={200}>
         <AreaChart data={sparse} margin={{ top: 8, right: 12, bottom: 8, left: 8 }}>
@@ -289,7 +289,7 @@ return (
     </ResponsiveContainer></GC>
   </Sec>
 </div>
-```
+
 
 );
 }
@@ -315,7 +315,7 @@ return (
 </ResponsiveContainer></GC>
 </Sec>
 
-```
+
   <Sec title="Sector Breakdown" style={{ marginTop: 10 }}>
     <GC style={{ padding: 10 }}>
       <div style={{ display: "grid", gridTemplateColumns: "60px 100px 65px 65px 55px 65px 65px 65px", gap: 0, fontSize: 8, fontFamily: C.dt }}>
@@ -338,7 +338,7 @@ return (
     </GC>
   </Sec>
 </div>
-```
+
 
 );
 }
@@ -360,7 +360,7 @@ return (
 <KPI label="Consistency" value={`${(100 - (stdDev / avgLap) * 100).toFixed(1)}%`} sub="σ/μ metric" sentiment="positive" delay={3} />
 </div>
 
-```
+
   <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
     <Sec title="Lap Times">
       <GC><ResponsiveContainer width="100%" height={220}>
@@ -394,7 +394,7 @@ return (
     </Sec>
   </div>
 </div>
-```
+
 
 );
 }
@@ -415,7 +415,7 @@ return (
 <KPI label="Avg Decel" value={`${(brakingPts.reduce((a, b) => a + +b.decel, 0) / brakingPts.length).toFixed(2)}G`} sub="braking force" sentiment="neutral" delay={3} />
 </div>
 
-```
+
   <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
     <Sec title="Brake Point Accuracy [m error]">
       <GC><ResponsiveContainer width="100%" height={240}>
@@ -448,7 +448,7 @@ return (
     </Sec>
   </div>
 </div>
-```
+
 
 );
 }
@@ -473,7 +473,7 @@ return (
 <KPI label="Max Combined G" value={`${Math.max(...gg.map(g => +g.utilized)).toFixed(2)}G`} sub="peak grip use" sentiment="positive" delay={3} />
 </div>
 
-```
+
   <div style={{ display: "grid", gridTemplateColumns: "1.2fr 0.8fr", gap: 10 }}>
     <Sec title="g-g Diagram — Friction Circle Utilization">
       <GC><ResponsiveContainer width="100%" height={340}>
@@ -504,7 +504,7 @@ return (
     </Sec>
   </div>
 </div>
-```
+
 
 );
 }
@@ -541,7 +541,7 @@ return (
 </GC>
 </Sec>
 
-```
+
   <Sec title="Speed Through Corners — Optimal vs Actual" style={{ marginTop: 10 }}>
     <GC><ResponsiveContainer width="100%" height={240}>
       <BarChart data={corners} margin={{ top: 8, right: 16, bottom: 8, left: 8 }}>
@@ -558,7 +558,7 @@ return (
     </ResponsiveContainer></GC>
   </Sec>
 </div>
-```
+
 
 );
 }
@@ -580,7 +580,7 @@ return (
 <KPI label="Trend" value={+scores[scores.length - 1].overall > +scores[0].overall ? "IMPROVING" : "DECLINING"} sub="first → last" sentiment={+scores[scores.length - 1].overall > +scores[0].overall ? "positive" : "amber"} delay={4} />
 </div>
 
-```
+
   <Sec title="Pedal Skill Scores Per Lap [/100]">
     <GC><ResponsiveContainer width="100%" height={280}>
       <LineChart data={scores} margin={{ top: 8, right: 16, bottom: 8, left: 8 }}>
@@ -598,7 +598,7 @@ return (
     </ResponsiveContainer></GC>
   </Sec>
 </div>
-```
+
 
 );
 }
@@ -619,7 +619,7 @@ return (
 <KPI label="Max Deviation" value={`${(Math.max(...lineData.map(l => +l.absDeviation)) * 100).toFixed(0)} cm`} sub="worst point" sentiment="neutral" delay={2} />
 </div>
 
-```
+
   <Sec title="Racing Line Deviation [m] — with Track Width">
     <GC><ResponsiveContainer width="100%" height={260}>
       <AreaChart data={lineData} margin={{ top: 8, right: 16, bottom: 8, left: 8 }}>
@@ -635,7 +635,7 @@ return (
     </ResponsiveContainer></GC>
   </Sec>
 </div>
-```
+
 
 );
 }
@@ -679,7 +679,7 @@ return (
 <KPI label="Strongest" value={skills.sort((a, b) => b.value - a.value)[0].skill} sub={`${skills.sort((a, b) => b.value - a.value)[0].value.toFixed(0)}/100`} sentiment="positive" delay={3} />
 </div>
 
-```
+
   <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
     <Sec title="Skill Radar">
       <GC><ResponsiveContainer width="100%" height={300}>
@@ -710,7 +710,7 @@ return (
     </Sec>
   </div>
 </div>
-```
+
 
 );
 }
@@ -748,7 +748,7 @@ MPC-optimal vs actual — actionable feedback for driver development
 </div>
 </div>
 
-```
+
   <div style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 10, marginBottom: 14 }}>
     <KPI label="Time Delta" value={`${totalDelta > 0 ? "+" : ""}${(totalDelta * 10).toFixed(2)}s`} sub="vs MPC optimal" sentiment={totalDelta <= 0 ? "positive" : "negative"} delay={0} />
     <KPI label="Steer RMS" value={`${steerRMS.toFixed(1)}°`} sub="error vs optimal" sentiment={steerRMS < 5 ? "positive" : "amber"} delay={1} />
@@ -771,7 +771,7 @@ MPC-optimal vs actual — actionable feedback for driver development
   {tab === "line" && <LineTab />}
   {tab === "report" && <ReportTab lap={lap} sectors={sectors} brakingPts={brakingPts} laps={laps} />}
 </div>
-```
+
 
 );
 }
