@@ -51,47 +51,47 @@ import ElectronicsModule from "./ElectronicsModule.jsx";
 // ═════════════════════════════════════════════════════════════════════════════
 
 const NAV_GROUPS = [
-{
-label: "OVERVIEW", accent: C.cy, items: [
-{ key: "overview",   label: "Overview",    icon: "⬡" },
-],
-},
-{
-label: "TELEMETRY", accent: C.gn, items: [
-{ key: "telemetry",  label: "Telemetry",   icon: "◇" },
-],
-},
-{
-label: "VEHICLE DYNAMICS", accent: C.am, items: [
-{ key: "setup",      label: "Setup Opt",   icon: "◆" },
-{ key: "suspension", label: "Suspension",  icon: "△" },
-{ key: "tire",       label: "Tire Physics", icon: "⊗" },
-{ key: "weight",     label: "Weight & CG", icon: "⊿" },
-],
-},
-{
-label: "AERODYNAMICS", accent: "#ff6090", items: [
-{ key: "aero",       label: "Aerodynamics", icon: "▽" },
-],
-},
-{
-label: "ELECTRONICS", accent: "#7c3aed", items: [
-{ key: "electronics", label: "Electronics", icon: "⚡" },
-],
-},
-{
-label: "CONTROLS & AI", accent: C.cy, items: [
-{ key: "energy",     label: "Energy Audit", icon: "⊕" },
-{ key: "diff",       label: "∇ Insights",   icon: "∂" },
-],
-},
-{
-label: "PERFORMANCE", accent: C.red, items: [
-{ key: "coaching",   label: "Coaching",     icon: "◈" },
-{ key: "endurance",  label: "Endurance",    icon: "⏱" },
-{ key: "compliance", label: "Compliance",   icon: "☑" },
-],
-},
+  {
+    label: "OVERVIEW", accent: C.cy, items: [
+      { key: "overview",   label: "Overview",    icon: "⬡" },
+    ],
+  },
+  {
+    label: "TELEMETRY", accent: C.gn, items: [
+      { key: "telemetry",  label: "Telemetry",   icon: "◇" },
+    ],
+  },
+  {
+    label: "VEHICLE DYNAMICS", accent: C.am, items: [
+      { key: "setup",      label: "Setup Opt",   icon: "◆" },
+      { key: "suspension", label: "Suspension",  icon: "△" },
+      { key: "tire",       label: "Tire Physics", icon: "⊗" },
+      { key: "weight",     label: "Weight & CG", icon: "⊿" },
+    ],
+  },
+  {
+    label: "AERODYNAMICS", accent: "#ff6090", items: [
+      { key: "aero",       label: "Aerodynamics", icon: "▽" },
+    ],
+  },
+  {
+    label: "ELECTRONICS", accent: "#7c3aed", items: [
+      { key: "electronics", label: "Electronics", icon: "⌁" }, // Swapped ⚡ for ⌁ (Technical Spark)
+    ],
+  },
+  {
+    label: "CONTROLS & AI", accent: C.cy, items: [
+      { key: "energy",     label: "Energy Audit", icon: "⊕" },
+      { key: "diff",       label: "∇ Insights",   icon: "∂" },
+    ],
+  },
+  {
+    label: "PERFORMANCE", accent: C.red, items: [
+      { key: "coaching",   label: "Coaching",     icon: "◈" },
+      { key: "endurance",  label: "Endurance",    icon: "◷" }, // Swapped ⏱ for ◷ (Geometric Clock)
+      { key: "compliance", label: "Compliance",   icon: "✓" }, // Swapped ☑ for ✓ (Simple Check)
+    ],
+  },
 ];
 
 // Flat list for lookups
