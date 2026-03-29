@@ -23,20 +23,20 @@
 //   9. Report Card     — Session summary with grades per skill
 //
 // Integration:
-//   NAV: { key: “coaching”, label: “Coaching”, icon: “◈” }
-//   Import: import DriverCoachingModule from “./DriverCoachingModule.jsx”
-//   Route: case “coaching”: return <DriverCoachingModule />
+//   NAV: { key: "coaching", label: "Coaching", icon: "◈" }
+//   Import: import DriverCoachingModule from "./DriverCoachingModule.jsx"
+//   Route: case "coaching": return <DriverCoachingModule />
 // ═══════════════════════════════════════════════════════════════════════════
 
-import React, { useState, useMemo } from “react”;
+import React, { useState, useMemo } from "react";
 import {
 LineChart, Line, AreaChart, Area, BarChart, Bar, ScatterChart, Scatter,
 ComposedChart, XAxis, YAxis, CartesianGrid, Tooltip,
 ResponsiveContainer, ReferenceLine, ReferenceArea, Cell, Legend,
 RadarChart, Radar, PolarGrid, PolarAngleAxis, PolarRadiusAxis,
-} from “recharts”;
-import { C, GL, GS, TT } from “./theme.js”;
-import { KPI, Sec, GC, Pill } from “./components.jsx”;
+} from "recharts";
+import { C, GL, GS, TT } from "./theme.js";
+import { KPI, Sec, GC, Pill } from "./components.jsx";
 
 // ═══════════════════════════════════════════════════════════════════════════
 // SEEDED RNG
@@ -48,15 +48,15 @@ return () => { s = (s * 16807 + 0) % 2147483647; return (s & 0x7fffffff) / 0x7ff
 const ax = () => ({ tick: { fontSize: 8, fill: C.dm, fontFamily: C.dt }, stroke: C.b1, tickLine: false });
 
 const TABS = [
-{ key: “inputs”,     label: “Driver Inputs” },
-{ key: “sectors”,    label: “Sectors” },
-{ key: “consistency”,label: “Consistency” },
-{ key: “braking”,    label: “Braking” },
-{ key: “gg”,         label: “g-g Diagram” },
-{ key: “cornering”,  label: “Cornering” },
-{ key: “pedals”,     label: “Pedal Score” },
-{ key: “line”,       label: “Racing Line” },
-{ key: “report”,     label: “Report Card” },
+{ key: "inputs",     label: "Driver Inputs" },
+{ key: "sectors",    label: "Sectors" },
+{ key: "consistency",label: "Consistency" },
+{ key: "braking",    label: "Braking" },
+{ key: "gg",         label: "g-g Diagram" },
+{ key: "cornering",  label: "Cornering" },
+{ key: "pedals",     label: "Pedal Score" },
+{ key: "line",       label: "Racing Line" },
+{ key: "report",     label: "Report Card" },
 ];
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -96,14 +96,14 @@ lineDeviation: +lineDeviation.toFixed(3), curvature: +curvature.toFixed(4),
 
 function gSectorAnalysis(lap) {
 const sectorDefs = [
-{ sector: “S1”, sectorName: “Accel Zone”, start: 0, end: 170 },
-{ sector: “S2”, sectorName: “Hairpin Entry”, start: 170, end: 340 },
-{ sector: “S3”, sectorName: “Chicane”, start: 340, end: 520 },
-{ sector: “S4”, sectorName: “Fast Sweep”, start: 520, end: 700 },
-{ sector: “S5”, sectorName: “Slalom”, start: 700, end: 870 },
-{ sector: “S6”, sectorName: “Final Corner”, start: 870, end: 1050 },
-{ sector: “S7”, sectorName: “Accel Out”, start: 1050, end: 1200 },
-{ sector: “S8”, sectorName: “Last Chicane”, start: 1200, end: 1370 },
+{ sector: "S1", sectorName: "Accel Zone", start: 0, end: 170 },
+{ sector: "S2", sectorName: "Hairpin Entry", start: 170, end: 340 },
+{ sector: "S3", sectorName: "Chicane", start: 340, end: 520 },
+{ sector: "S4", sectorName: "Fast Sweep", start: 520, end: 700 },
+{ sector: "S5", sectorName: "Slalom", start: 700, end: 870 },
+{ sector: "S6", sectorName: "Final Corner", start: 870, end: 1050 },
+{ sector: "S7", sectorName: "Accel Out", start: 1050, end: 1200 },
+{ sector: "S8", sectorName: "Last Chicane", start: 1200, end: 1370 },
 ];
 const R = srng(6101);
 return sectorDefs.map(sd => {
@@ -165,18 +165,18 @@ return {
 latG: +latG.toFixed(3), lonG: +lonG.toFixed(3),
 utilized: +utilized.toFixed(3),
 utilPct: +(utilized / maxAvailable * 100).toFixed(1),
-quadrant: lonG > 0 ? (latG > 0 ? “Accel+Right” : “Accel+Left”) : (latG > 0 ? “Brake+Right” : “Brake+Left”),
+quadrant: lonG > 0 ? (latG > 0 ? "Accel+Right" : "Accel+Left") : (latG > 0 ? "Brake+Right" : "Brake+Left"),
 };
 });
 }
 
 function gCorneringData() {
 const R = srng(6501);
-const types = [“Hairpin”, “Medium”, “Fast Sweep”, “Chicane L”, “Chicane R”, “Slalom”];
+const types = ["Hairpin", "Medium", "Fast Sweep", "Chicane L", "Chicane R", "Slalom"];
 return types.map(type => {
-const entrySpeedOpt = type === “Hairpin” ? 8 : type.includes(“Fast”) ? 18 : 12 + R() * 4;
-const midSpeedOpt = entrySpeedOpt * (type === “Hairpin” ? 0.7 : 0.85);
-const exitSpeedOpt = entrySpeedOpt * (type === “Hairpin” ? 1.1 : 1.05);
+const entrySpeedOpt = type === "Hairpin" ? 8 : type.includes("Fast") ? 18 : 12 + R() * 4;
+const midSpeedOpt = entrySpeedOpt * (type === "Hairpin" ? 0.7 : 0.85);
+const exitSpeedOpt = entrySpeedOpt * (type === "Hairpin" ? 1.1 : 1.05);
 return {
 type,
 entrySpeedOpt: +entrySpeedOpt.toFixed(1),
@@ -218,7 +218,7 @@ return {
 s: +s.toFixed(0), deviation: +actual.toFixed(3),
 trackWidthL: +width.toFixed(2), trackWidthR: +(-width).toFixed(2),
 absDeviation: +Math.abs(actual).toFixed(3),
-zone: Math.abs(actual) < 0.15 ? “optimal” : Math.abs(actual) < 0.35 ? “acceptable” : “off-line”,
+zone: Math.abs(actual) < 0.15 ? "optimal" : Math.abs(actual) < 0.35 ? "acceptable" : "off-line",
 };
 });
 }
@@ -230,12 +230,12 @@ function InputsTab({ lap }) {
 const sparse = useMemo(() => lap.filter((_, i) => i % 2 === 0), [lap]);
 return (
 <div>
-<div style={{ display: “grid”, gridTemplateColumns: “1fr 1fr 1fr”, gap: 10 }}>
+<div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10 }}>
 <Sec title="Steering — Actual vs Optimal [°]">
 <GC><ResponsiveContainer width="100%" height={200}>
 <LineChart data={sparse} margin={{ top: 8, right: 12, bottom: 8, left: 8 }}>
 <CartesianGrid strokeDasharray="3 3" stroke={GS} />
-<XAxis dataKey=“s” {…ax()} />
+<XAxis dataKey="s" {…ax()} />
 <YAxis {…ax()} />
 <Tooltip contentStyle={TT} />
 <Line type="monotone" dataKey="optSteer" stroke={C.gn} strokeWidth={2} dot={false} name="MPC Optimal" />
@@ -304,11 +304,11 @@ return (
 <GC><ResponsiveContainer width="100%" height={220}>
 <BarChart data={sectors} margin={{ top: 8, right: 16, bottom: 8, left: 8 }}>
 <CartesianGrid strokeDasharray="3 3" stroke={GS} />
-<XAxis dataKey=“sector” {…ax()} />
+<XAxis dataKey="sector" {…ax()} />
 <YAxis {…ax()} />
 <Tooltip contentStyle={TT} />
 <ReferenceLine y={0} stroke={C.dm} />
-<Bar dataKey=“delta” barSize={20} radius={[4, 4, 0, 0]} name=“Δ Time [s]”>
+<Bar dataKey="delta" barSize={20} radius={[4, 4, 0, 0]} name="Δ Time [s]">
 {sectors.map((s, i) => <Cell key={i} fill={+s.delta <= 0 ? C.gn : C.red} fillOpacity={0.7} />)}
 </Bar>
 </BarChart>
@@ -353,11 +353,11 @@ const stdDev = Math.sqrt(laps.reduce((a, l) => a + (+l.time - avgLap) ** 2, 0) /
 
 return (
 <div>
-<div style={{ display: “grid”, gridTemplateColumns: “repeat(4, 1fr)”, gap: 10, marginBottom: 14 }}>
-<KPI label=“Best Lap” value={`${bestLap}s`} sub=“session best” sentiment=“positive” delay={0} />
-<KPI label=“Average” value={`${avgLap.toFixed(2)}s`} sub={`Δ +${(avgLap - bestLap).toFixed(2)}s`} sentiment=“neutral” delay={1} />
-<KPI label=“Std Dev” value={`${stdDev.toFixed(3)}s`} sub={stdDev < 0.3 ? “excellent” : “needs work”} sentiment={stdDev < 0.3 ? “positive” : “amber”} delay={2} />
-<KPI label=“Consistency” value={`${(100 - (stdDev / avgLap) * 100).toFixed(1)}%`} sub=“σ/μ metric” sentiment=“positive” delay={3} />
+<div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 10, marginBottom: 14 }}>
+<KPI label="Best Lap" value={`${bestLap}s`} sub="session best" sentiment="positive" delay={0} />
+<KPI label="Average" value={`${avgLap.toFixed(2)}s`} sub={`Δ +${(avgLap - bestLap).toFixed(2)}s`} sentiment="neutral" delay={1} />
+<KPI label="Std Dev" value={`${stdDev.toFixed(3)}s`} sub={stdDev < 0.3 ? "excellent" : "needs work"} sentiment={stdDev < 0.3 ? "positive" : "amber"} delay={2} />
+<KPI label="Consistency" value={`${(100 - (stdDev / avgLap) * 100).toFixed(1)}%`} sub="σ/μ metric" sentiment="positive" delay={3} />
 </div>
 
 ```
@@ -408,11 +408,11 @@ const avgTrail = brakingPts.reduce((a, b) => a + +b.trailScore, 0) / brakingPts.
 
 return (
 <div>
-<div style={{ display: “grid”, gridTemplateColumns: “repeat(4, 1fr)”, gap: 10, marginBottom: 14 }}>
-<KPI label=“Avg Brake Pt Error” value={`${avgDistErr.toFixed(1)}m`} sub=“distance from optimal” sentiment={avgDistErr < 2 ? “positive” : “amber”} delay={0} />
-<KPI label=“Trail Brake Score” value={`${avgTrail.toFixed(0)}/100`} sub=“modulation quality” sentiment={avgTrail > 80 ? “positive” : “amber”} delay={1} />
-<KPI label=“Late Brakers” value={brakingPts.filter(b => +b.distError > 2).length.toString()} sub=“of 15 zones” sentiment=“neutral” delay={2} />
-<KPI label=“Avg Decel” value={`${(brakingPts.reduce((a, b) => a + +b.decel, 0) / brakingPts.length).toFixed(2)}G`} sub=“braking force” sentiment=“neutral” delay={3} />
+<div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 10, marginBottom: 14 }}>
+<KPI label="Avg Brake Pt Error" value={`${avgDistErr.toFixed(1)}m`} sub="distance from optimal" sentiment={avgDistErr < 2 ? "positive" : "amber"} delay={0} />
+<KPI label="Trail Brake Score" value={`${avgTrail.toFixed(0)}/100`} sub="modulation quality" sentiment={avgTrail > 80 ? "positive" : "amber"} delay={1} />
+<KPI label="Late Brakers" value={brakingPts.filter(b => +b.distError > 2).length.toString()} sub="of 15 zones" sentiment="neutral" delay={2} />
+<KPI label="Avg Decel" value={`${(brakingPts.reduce((a, b) => a + +b.decel, 0) / brakingPts.length).toFixed(2)}G`} sub="braking force" sentiment="neutral" delay={3} />
 </div>
 
 ```
@@ -461,16 +461,16 @@ const gg = useMemo(() => gGGDiagram(), []);
 const avgUtil = gg.reduce((a, g) => a + +g.utilPct, 0) / gg.length;
 const highUtil = gg.filter(g => +g.utilPct > 85).length / gg.length * 100;
 const deadZone = gg.filter(g => +g.utilPct < 30).length / gg.length * 100;
-const quadrants = [“Accel+Right”, “Accel+Left”, “Brake+Right”, “Brake+Left”];
+const quadrants = ["Accel+Right", "Accel+Left", "Brake+Right", "Brake+Left"];
 const qData = quadrants.map(q => ({ q, count: gg.filter(g => g.quadrant === q).length, avgUtil: +(gg.filter(g => g.quadrant === q).reduce((a, g) => a + +g.utilPct, 0) / (gg.filter(g => g.quadrant === q).length || 1)).toFixed(1) }));
 
 return (
 <div>
-<div style={{ display: “grid”, gridTemplateColumns: “repeat(4, 1fr)”, gap: 10, marginBottom: 14 }}>
-<KPI label=“Avg Utilization” value={`${avgUtil.toFixed(1)}%`} sub=“of friction circle” sentiment={avgUtil > 70 ? “positive” : “amber”} delay={0} />
-<KPI label=“High Util (>85%)” value={`${highUtil.toFixed(0)}%`} sub=“of data points” sentiment={highUtil > 30 ? “positive” : “amber”} delay={1} />
-<KPI label=“Dead Zone (<30%)” value={`${deadZone.toFixed(0)}%`} sub=“wasted capacity” sentiment={deadZone < 15 ? “positive” : “amber”} delay={2} />
-<KPI label=“Max Combined G” value={`${Math.max(...gg.map(g => +g.utilized)).toFixed(2)}G`} sub=“peak grip use” sentiment=“positive” delay={3} />
+<div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 10, marginBottom: 14 }}>
+<KPI label="Avg Utilization" value={`${avgUtil.toFixed(1)}%`} sub="of friction circle" sentiment={avgUtil > 70 ? "positive" : "amber"} delay={0} />
+<KPI label="High Util (>85%)" value={`${highUtil.toFixed(0)}%`} sub="of data points" sentiment={highUtil > 30 ? "positive" : "amber"} delay={1} />
+<KPI label="Dead Zone (<30%)" value={`${deadZone.toFixed(0)}%`} sub="wasted capacity" sentiment={deadZone < 15 ? "positive" : "amber"} delay={2} />
+<KPI label="Max Combined G" value={`${Math.max(...gg.map(g => +g.utilized)).toFixed(2)}G`} sub="peak grip use" sentiment="positive" delay={3} />
 </div>
 
 ```
@@ -519,22 +519,22 @@ return (
 <div>
 <Sec title="Cornering Technique — Entry / Mid / Exit Speed Analysis">
 <GC style={{ padding: 10 }}>
-<div style={{ display: “grid”, gridTemplateColumns: “90px 70px 70px 70px 70px 70px 70px 55px 55px 55px”, gap: 0, fontSize: 8, fontFamily: C.dt }}>
-{[“Type”, “Entry Opt”, “Entry Act”, “Mid Opt”, “Mid Act”, “Exit Opt”, “Exit Act”, “Apex %”, “Trail %”, “Δt [s]”].map(h => (
-<div key={h} style={{ color: C.dm, fontWeight: 700, letterSpacing: 0.5, padding: “6px 3px”, borderBottom: `1px solid ${C.b1}` }}>{h}</div>
+<div style={{ display: "grid", gridTemplateColumns: "90px 70px 70px 70px 70px 70px 70px 55px 55px 55px", gap: 0, fontSize: 8, fontFamily: C.dt }}>
+{["Type", "Entry Opt", "Entry Act", "Mid Opt", "Mid Act", "Exit Opt", "Exit Act", "Apex %", "Trail %", "Δt [s]"].map(h => (
+<div key={h} style={{ color: C.dm, fontWeight: 700, letterSpacing: 0.5, padding: "6px 3px", borderBottom: `1px solid ${C.b1}` }}>{h}</div>
 ))}
 {corners.map(c => (
 <React.Fragment key={c.type}>
-<div style={{ color: C.cy, fontWeight: 600, padding: “5px 3px”, borderBottom: `1px solid ${C.b1}08` }}>{c.type}</div>
-<div style={{ color: C.gn, padding: “5px 3px”, borderBottom: `1px solid ${C.b1}08` }}>{c.entrySpeedOpt}</div>
-<div style={{ color: +c.entrySpeedAct > +c.entrySpeedOpt + 1 ? C.am : C.br, padding: “5px 3px”, borderBottom: `1px solid ${C.b1}08` }}>{c.entrySpeedAct}</div>
-<div style={{ color: C.gn, padding: “5px 3px”, borderBottom: `1px solid ${C.b1}08` }}>{c.midSpeedOpt}</div>
-<div style={{ color: C.br, padding: “5px 3px”, borderBottom: `1px solid ${C.b1}08` }}>{c.midSpeedAct}</div>
-<div style={{ color: C.gn, padding: “5px 3px”, borderBottom: `1px solid ${C.b1}08` }}>{c.exitSpeedOpt}</div>
-<div style={{ color: C.br, padding: “5px 3px”, borderBottom: `1px solid ${C.b1}08` }}>{c.exitSpeedAct}</div>
-<div style={{ color: +c.apexHitPct > 85 ? C.gn : C.am, fontWeight: 600, padding: “5px 3px”, borderBottom: `1px solid ${C.b1}08` }}>{c.apexHitPct}%</div>
-<div style={{ color: +c.trailBrakePct > 75 ? C.gn : C.am, padding: “5px 3px”, borderBottom: `1px solid ${C.b1}08` }}>{c.trailBrakePct}%</div>
-<div style={{ color: C.red, padding: “5px 3px”, borderBottom: `1px solid ${C.b1}08` }}>+{c.timeLost}</div>
+<div style={{ color: C.cy, fontWeight: 600, padding: "5px 3px", borderBottom: `1px solid ${C.b1}08` }}>{c.type}</div>
+<div style={{ color: C.gn, padding: "5px 3px", borderBottom: `1px solid ${C.b1}08` }}>{c.entrySpeedOpt}</div>
+<div style={{ color: +c.entrySpeedAct > +c.entrySpeedOpt + 1 ? C.am : C.br, padding: "5px 3px", borderBottom: `1px solid ${C.b1}08` }}>{c.entrySpeedAct}</div>
+<div style={{ color: C.gn, padding: "5px 3px", borderBottom: `1px solid ${C.b1}08` }}>{c.midSpeedOpt}</div>
+<div style={{ color: C.br, padding: "5px 3px", borderBottom: `1px solid ${C.b1}08` }}>{c.midSpeedAct}</div>
+<div style={{ color: C.gn, padding: "5px 3px", borderBottom: `1px solid ${C.b1}08` }}>{c.exitSpeedOpt}</div>
+<div style={{ color: C.br, padding: "5px 3px", borderBottom: `1px solid ${C.b1}08` }}>{c.exitSpeedAct}</div>
+<div style={{ color: +c.apexHitPct > 85 ? C.gn : C.am, fontWeight: 600, padding: "5px 3px", borderBottom: `1px solid ${C.b1}08` }}>{c.apexHitPct}%</div>
+<div style={{ color: +c.trailBrakePct > 75 ? C.gn : C.am, padding: "5px 3px", borderBottom: `1px solid ${C.b1}08` }}>{c.trailBrakePct}%</div>
+<div style={{ color: C.red, padding: "5px 3px", borderBottom: `1px solid ${C.b1}08` }}>+{c.timeLost}</div>
 </React.Fragment>
 ))}
 </div>
@@ -572,12 +572,12 @@ const avgOverall = scores.reduce((a, s) => a + +s.overall, 0) / scores.length;
 
 return (
 <div>
-<div style={{ display: “grid”, gridTemplateColumns: “repeat(5, 1fr)”, gap: 10, marginBottom: 14 }}>
-<KPI label=“Overall” value={`${avgOverall.toFixed(0)}/100`} sub=“average score” sentiment={avgOverall > 80 ? “positive” : avgOverall > 65 ? “amber” : “negative”} delay={0} />
-<KPI label=“Throttle” value={`${(scores.reduce((a, s) => a + +s.throttleSmoothness, 0) / scores.length).toFixed(0)}`} sub=“smoothness” sentiment=“neutral” delay={1} />
-<KPI label=“Brake Mod” value={`${(scores.reduce((a, s) => a + +s.brakeModulation, 0) / scores.length).toFixed(0)}`} sub=“modulation” sentiment=“neutral” delay={2} />
-<KPI label=“Trail Brake” value={`${(scores.reduce((a, s) => a + +s.trailBraking, 0) / scores.length).toFixed(0)}`} sub=“technique” sentiment=“neutral” delay={3} />
-<KPI label=“Trend” value={+scores[scores.length - 1].overall > +scores[0].overall ? “IMPROVING” : “DECLINING”} sub=“first → last” sentiment={+scores[scores.length - 1].overall > +scores[0].overall ? “positive” : “amber”} delay={4} />
+<div style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 10, marginBottom: 14 }}>
+<KPI label="Overall" value={`${avgOverall.toFixed(0)}/100`} sub="average score" sentiment={avgOverall > 80 ? "positive" : avgOverall > 65 ? "amber" : "negative"} delay={0} />
+<KPI label="Throttle" value={`${(scores.reduce((a, s) => a + +s.throttleSmoothness, 0) / scores.length).toFixed(0)}`} sub="smoothness" sentiment="neutral" delay={1} />
+<KPI label="Brake Mod" value={`${(scores.reduce((a, s) => a + +s.brakeModulation, 0) / scores.length).toFixed(0)}`} sub="modulation" sentiment="neutral" delay={2} />
+<KPI label="Trail Brake" value={`${(scores.reduce((a, s) => a + +s.trailBraking, 0) / scores.length).toFixed(0)}`} sub="technique" sentiment="neutral" delay={3} />
+<KPI label="Trend" value={+scores[scores.length - 1].overall > +scores[0].overall ? "IMPROVING" : "DECLINING"} sub="first → last" sentiment={+scores[scores.length - 1].overall > +scores[0].overall ? "positive" : "amber"} delay={4} />
 </div>
 
 ```
@@ -609,14 +609,14 @@ return (
 function LineTab() {
 const lineData = useMemo(() => gLineDeviation(), []);
 const avgDev = lineData.reduce((a, l) => a + +l.absDeviation, 0) / lineData.length;
-const offLine = lineData.filter(l => l.zone === “off-line”).length / lineData.length * 100;
+const offLine = lineData.filter(l => l.zone === "off-line").length / lineData.length * 100;
 
 return (
 <div>
-<div style={{ display: “grid”, gridTemplateColumns: “repeat(3, 1fr)”, gap: 10, marginBottom: 14 }}>
-<KPI label=“Avg Deviation” value={`${(avgDev * 100).toFixed(0)} cm`} sub=“from optimal line” sentiment={avgDev < 0.2 ? “positive” : “amber”} delay={0} />
-<KPI label=“Off-Line %” value={`${offLine.toFixed(0)}%`} sub=”>35cm deviation” sentiment={offLine < 10 ? “positive” : “amber”} delay={1} />
-<KPI label=“Max Deviation” value={`${(Math.max(...lineData.map(l => +l.absDeviation)) * 100).toFixed(0)} cm`} sub=“worst point” sentiment=“neutral” delay={2} />
+<div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 10, marginBottom: 14 }}>
+<KPI label="Avg Deviation" value={`${(avgDev * 100).toFixed(0)} cm`} sub="from optimal line" sentiment={avgDev < 0.2 ? "positive" : "amber"} delay={0} />
+<KPI label="Off-Line %" value={`${offLine.toFixed(0)}%`} sub=">35cm deviation" sentiment={offLine < 10 ? "positive" : "amber"} delay={1} />
+<KPI label="Max Deviation" value={`${(Math.max(...lineData.map(l => +l.absDeviation)) * 100).toFixed(0)} cm`} sub="worst point" sentiment="neutral" delay={2} />
 </div>
 
 ```
@@ -650,33 +650,33 @@ const bestLap = Math.min(…laps.map(l => +l.time));
 const stdDev = Math.sqrt(laps.reduce((a, l) => a + (+l.time - laps.reduce((aa, ll) => aa + +ll.time, 0) / laps.length) ** 2, 0) / laps.length);
 
 const grade = (v, thresholds) => {
-if (v >= thresholds[0]) return { letter: “A”, color: C.gn };
-if (v >= thresholds[1]) return { letter: “B”, color: C.cy };
-if (v >= thresholds[2]) return { letter: “C”, color: C.am };
-return { letter: “D”, color: C.red };
+if (v >= thresholds[0]) return { letter: "A", color: C.gn };
+if (v >= thresholds[1]) return { letter: "B", color: C.cy };
+if (v >= thresholds[2]) return { letter: "C", color: C.am };
+return { letter: "D", color: C.red };
 };
 
 const skills = [
-{ skill: “Steering Precision”, value: Math.max(0, 100 - steerRMS * 10), …grade(Math.max(0, 100 - steerRMS * 10), [85, 70, 55]), advice: steerRMS < 3 ? “Excellent — minimal correction” : “Reduce steering corrections; aim for smoother input” },
-{ skill: “Braking Accuracy”, value: Math.max(0, 100 - brakingPts.reduce((a, b) => a + Math.abs(+b.distError), 0) / brakingPts.length * 15), …grade(Math.max(0, 100 - brakingPts.reduce((a, b) => a + Math.abs(+b.distError), 0) / brakingPts.length * 15), [80, 65, 50]), advice: “Work on hitting brake markers consistently” },
-{ skill: “Trail Braking”, value: avgTrail, …grade(avgTrail, [85, 70, 55]), advice: avgTrail > 80 ? “Strong trail braking technique” : “Practice releasing brake pressure gradually into the corner” },
-{ skill: “Consistency”, value: Math.max(0, 100 - stdDev * 100), …grade(Math.max(0, 100 - stdDev * 100), [85, 70, 55]), advice: stdDev < 0.3 ? “Very consistent driver” : “Focus on repeating the same line and inputs each lap” },
-{ skill: “Smoothness”, value: 78, …grade(78, [85, 70, 55]), advice: “Good overall smoothness — continue practicing weight transfer management” },
-{ skill: “Grip Utilization”, value: 72, …grade(72, [85, 70, 55]), advice: “Explore the friction circle more in braking+cornering transitions” },
+{ skill: "Steering Precision", value: Math.max(0, 100 - steerRMS * 10), …grade(Math.max(0, 100 - steerRMS * 10), [85, 70, 55]), advice: steerRMS < 3 ? "Excellent — minimal correction" : "Reduce steering corrections; aim for smoother input" },
+{ skill: "Braking Accuracy", value: Math.max(0, 100 - brakingPts.reduce((a, b) => a + Math.abs(+b.distError), 0) / brakingPts.length * 15), …grade(Math.max(0, 100 - brakingPts.reduce((a, b) => a + Math.abs(+b.distError), 0) / brakingPts.length * 15), [80, 65, 50]), advice: "Work on hitting brake markers consistently" },
+{ skill: "Trail Braking", value: avgTrail, …grade(avgTrail, [85, 70, 55]), advice: avgTrail > 80 ? "Strong trail braking technique" : "Practice releasing brake pressure gradually into the corner" },
+{ skill: "Consistency", value: Math.max(0, 100 - stdDev * 100), …grade(Math.max(0, 100 - stdDev * 100), [85, 70, 55]), advice: stdDev < 0.3 ? "Very consistent driver" : "Focus on repeating the same line and inputs each lap" },
+{ skill: "Smoothness", value: 78, …grade(78, [85, 70, 55]), advice: "Good overall smoothness — continue practicing weight transfer management" },
+{ skill: "Grip Utilization", value: 72, …grade(72, [85, 70, 55]), advice: "Explore the friction circle more in braking+cornering transitions" },
 ];
 
 const overallScore = skills.reduce((a, s) => a + s.value, 0) / skills.length;
 const overallGrade = grade(overallScore, [85, 70, 55]);
 
-const radarData = skills.map(s => ({ skill: s.skill.split(” “)[0], score: +s.value.toFixed(0) }));
+const radarData = skills.map(s => ({ skill: s.skill.split(" ")[0], score: +s.value.toFixed(0) }));
 
 return (
 <div>
-<div style={{ display: “grid”, gridTemplateColumns: “repeat(4, 1fr)”, gap: 10, marginBottom: 14 }}>
-<KPI label=“Overall Grade” value={overallGrade.letter} sub={`${overallScore.toFixed(0)}/100`} sentiment={overallGrade.letter === “A” ? “positive” : overallGrade.letter === “B” ? “positive” : “amber”} delay={0} />
-<KPI label=“Best Lap” value={`${bestLap}s`} sub=“session fastest” sentiment=“positive” delay={1} />
-<KPI label=“Weakest Skill” value={skills.sort((a, b) => a.value - b.value)[0].skill} sub={`${skills.sort((a, b) => a.value - b.value)[0].value.toFixed(0)}/100`} sentiment=“amber” delay={2} />
-<KPI label=“Strongest” value={skills.sort((a, b) => b.value - a.value)[0].skill} sub={`${skills.sort((a, b) => b.value - a.value)[0].value.toFixed(0)}/100`} sentiment=“positive” delay={3} />
+<div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 10, marginBottom: 14 }}>
+<KPI label="Overall Grade" value={overallGrade.letter} sub={`${overallScore.toFixed(0)}/100`} sentiment={overallGrade.letter === "A" ? "positive" : overallGrade.letter === "B" ? "positive" : "amber"} delay={0} />
+<KPI label="Best Lap" value={`${bestLap}s`} sub="session fastest" sentiment="positive" delay={1} />
+<KPI label="Weakest Skill" value={skills.sort((a, b) => a.value - b.value)[0].skill} sub={`${skills.sort((a, b) => a.value - b.value)[0].value.toFixed(0)}/100`} sentiment="amber" delay={2} />
+<KPI label="Strongest" value={skills.sort((a, b) => b.value - a.value)[0].skill} sub={`${skills.sort((a, b) => b.value - a.value)[0].value.toFixed(0)}/100`} sentiment="positive" delay={3} />
 </div>
 
 ```
@@ -719,7 +719,7 @@ return (
 // MAIN EXPORT
 // ═══════════════════════════════════════════════════════════════════════════
 export default function DriverCoachingModule() {
-const [tab, setTab] = useState(“inputs”);
+const [tab, setTab] = useState("inputs");
 
 const lap = useMemo(() => gDriverLap(), []);
 const sectors = useMemo(() => gSectorAnalysis(lap), [lap]);
@@ -733,11 +733,11 @@ return (
 <div>
 {/* Header banner */}
 <div style={{
-…GL, padding: “12px 16px”, marginBottom: 14,
+…GL, padding: "12px 16px", marginBottom: 14,
 borderLeft: `3px solid ${C.cy}`,
 background: `linear-gradient(90deg, ${C.cy}08, transparent)`,
 }}>
-<div style={{ display: “flex”, alignItems: “center”, gap: 10 }}>
+<div style={{ display: "flex", alignItems: "center", gap: 10 }}>
 <span style={{ fontSize: 20, color: C.cy }}>◈</span>
 <div>
 <span style={{ fontSize: 12, fontWeight: 800, color: C.cy, fontFamily: C.dt, letterSpacing: 2 }}>DRIVER COACHING</span>
