@@ -119,7 +119,7 @@ timeRange,       setTimeRange,
 hoveredParam,    setHoveredParam,
 liveStep,        setLiveStep,
 
-```
+
 // ── v5.0 fields ──────────────────────────────────────────────────
 aeroSlice,       setAeroSlice, updateAeroSlice,
 selectedCell,    setSelectedCell,
@@ -130,7 +130,7 @@ activeModule,    setActiveModule,
 // ── Utility ──────────────────────────────────────────────────────
 clearAll,
 DEFAULT_AERO_SLICE,
-```
+
 
 };
 
