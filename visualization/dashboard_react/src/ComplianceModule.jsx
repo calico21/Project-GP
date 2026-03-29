@@ -193,7 +193,7 @@ return (
 <KPI label="Documents" value={`${docScore.pct}%`} sub={`${docScore.passed}/${docScore.total}`} sentiment={docScore.pct > 70 ? "positive" : "amber"} delay={4} />
 </div>
 
-```
+
   {/* Cross-links */}
   <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 14 }}>
     <div style={{ ...GL, padding: "8px 14px", borderLeft: `2px solid ${ELEC}`, display: "flex", alignItems: "center", gap: 8, fontSize: 9, fontFamily: C.dt }}>
@@ -237,7 +237,7 @@ return (
     </Sec>
   </div>
 </div>
-```
+
 
 );
 }
@@ -259,7 +259,7 @@ return (
 <KPI label="Critical Pass" value={`${score.critPct}%`} sub="safety-critical items" sentiment={score.critPct === 100 ? "positive" : "negative"} delay={3} />
 </div>
 
-```
+
   {Object.entries(byCat).map(([cat, catItems]) => (
     <Sec key={cat} title={cat} style={{ marginBottom: 10 }}>
       <GC style={{ padding: 10 }}>
@@ -295,7 +295,7 @@ return (
     </Sec>
   ))}
 </div>
-```
+
 
 );
 }
@@ -316,7 +316,7 @@ return (
 <KPI label="Not Started" value={pending.toString()} sub="action needed" sentiment={pending === 0 ? "positive" : "negative"} delay={2} />
 </div>
 
-```
+
   <Sec title="Document Submission Status">
     <GC style={{ padding: 10 }}>
       {DOC_ITEMS.map(doc => (
@@ -342,7 +342,7 @@ return (
     </GC>
   </Sec>
 </div>
-```
+
 
 );
 }
@@ -363,7 +363,7 @@ return (
 <KPI label="Days to FSG" value={`${Math.max(0, Math.round((new Date("2026-07-01") - new Date(today)) / 86400000))}`} sub="countdown" sentiment="neutral" delay={2} />
 </div>
 
-```
+
   <Sec title="Preparation Timeline">
     <GC style={{ padding: "10px 14px" }}>
       {MILESTONES.map((m, i) => {
@@ -411,7 +411,7 @@ return (
     </GC>
   </Sec>
 </div>
-```
+
 
 );
 }
@@ -443,7 +443,7 @@ FSG 2026 rules verification — {TECH_ITEMS.length + EV_ITEMS.length + DYNAMIC_I
 </div>
 </div>
 
-```
+
   <div style={{ display: "flex", gap: 5, marginBottom: 14, flexWrap: "wrap" }}>
     {TABS.map(t => <Pill key={t.key} active={tab === t.key} label={t.label} onClick={() => setTab(t.key)} color={C.gn} />)}
   </div>
@@ -455,7 +455,7 @@ FSG 2026 rules verification — {TECH_ITEMS.length + EV_ITEMS.length + DYNAMIC_I
   {tab === "docs" && <DocsTab />}
   {tab === "timeline" && <TimelineTab />}
 </div>
-```
+
 
 );
 }
