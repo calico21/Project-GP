@@ -2,7 +2,7 @@
 // src/EnduranceStrategyModule.jsx — Project-GP Dashboard v5.0
 // ═══════════════════════════════════════════════════════════════════════════
 // Endurance event race strategy module. FSE = 22 km, ~16 laps of ~1.37 km.
-// Answers: “Will we finish? At what pace? What are the risks?”
+// Answers: "Will we finish? At what pace? What are the risks?"
 //
 // v5.0 CHANGES:
 //   - Battery/motor/inverter deep-dives → cross-link to Electronics module
@@ -24,20 +24,20 @@
 //   8. Conditions     — Ambient temp, track evolution, density altitude effects
 //
 // Integration:
-//   NAV: { key: “endurance”, label: “Endurance”, icon: “⏱” }
-//   Import: import EnduranceStrategyModule from “./EnduranceStrategyModule.jsx”
-//   Route: case “endurance”: return <EnduranceStrategyModule />
+//   NAV: { key: "endurance", label: "Endurance", icon: "⏱" }
+//   Import: import EnduranceStrategyModule from "./EnduranceStrategyModule.jsx"
+//   Route: case "endurance": return <EnduranceStrategyModule />
 // ═══════════════════════════════════════════════════════════════════════════
 
-import React, { useState, useMemo } from “react”;
+import React, { useState, useMemo } from "react";
 import {
 LineChart, Line, AreaChart, Area, ComposedChart, BarChart, Bar,
 ScatterChart, Scatter,
 XAxis, YAxis, CartesianGrid, Tooltip,
 ResponsiveContainer, ReferenceLine, ReferenceArea, Cell, Legend,
-} from “recharts”;
-import { C, GL, GS, TT } from “./theme.js”;
-import { KPI, Sec, GC, Pill } from “./components.jsx”;
+} from "recharts";
+import { C, GL, GS, TT } from "./theme.js";
+import { KPI, Sec, GC, Pill } from "./components.jsx";
 
 // ═══════════════════════════════════════════════════════════════════════════
 // SEEDED RNG & CONSTANTS
@@ -48,17 +48,17 @@ return () => { s = (s * 16807 + 0) % 2147483647; return (s & 0x7fffffff) / 0x7ff
 }
 const ax = () => ({ tick: { fontSize: 8, fill: C.dm, fontFamily: C.dt }, stroke: C.b1, tickLine: false });
 const CL = { fl: C.cy, fr: C.gn, rl: C.am, rr: C.red };
-const ELEC = “#7c3aed”;
+const ELEC = "#7c3aed";
 
 const TABS = [
-{ key: “overview”,  label: “Race Overview” },
-{ key: “energy”,    label: “Energy Budget” },
-{ key: “stint”,     label: “Stint Planner” },
-{ key: “montecarlo”,label: “Monte Carlo” },
-{ key: “brakes”,    label: “Brake Thermal” },
-{ key: “tires”,     label: “Tire Deg” },
-{ key: “pace”,      label: “Pace Strategy” },
-{ key: “conditions”,label: “Conditions” },
+{ key: "overview",  label: "Race Overview" },
+{ key: "energy",    label: "Energy Budget" },
+{ key: "stint",     label: "Stint Planner" },
+{ key: "montecarlo",label: "Monte Carlo" },
+{ key: "brakes",    label: "Brake Thermal" },
+{ key: "tires",     label: "Tire Deg" },
+{ key: "pace",      label: "Pace Strategy" },
+{ key: "conditions",label: "Conditions" },
 ];
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -198,14 +198,14 @@ return { results, timeHist, dnfByLap, finishProb, medianTime, p5Time, p95Time, n
 function gPaceStrategy(nLaps = 16) {
 const R = srng(801);
 // Three strategies: aggressive, balanced, conservative
-const strategies = [“Aggressive”, “Balanced”, “Conservative”];
+const strategies = ["Aggressive", "Balanced", "Conservative"];
 return strategies.map((name, si) => {
 const paceOffset = si * 0.6; // faster strategies use more energy
 const laps = Array.from({ length: nLaps }, (_, lap) => {
 const basePace = 62.0 + paceOffset + (si === 0 && lap > 10 ? (lap - 10) * 0.8 : 0); // aggressive fades
 const energy = 6.5 - lap * (0.38 - si * 0.02) + (si > 0 ? lap * 0.01 : 0);
 const motorT = 55 + lap * (4.5 - si * 0.8) + R() * 2;
-const risk = si === 0 ? (lap > 10 ? “HIGH” : “MED”) : si === 1 ? “LOW” : “NONE”;
+const risk = si === 0 ? (lap > 10 ? "HIGH" : "MED") : si === 1 ? "LOW" : "NONE";
 return {
 lap: lap + 1, pace: +basePace.toFixed(2), energy: +Math.max(0, energy).toFixed(2),
 motorT: +Math.min(160, motorT).toFixed(0), risk,
@@ -254,23 +254,23 @@ const maxBrake = Math.max(…brakes.map(b => b.maxTemp));
 const finalGrip = tireDeg[tireDeg.length - 1]?.avgGrip || 100;
 
 const subsystems = [
-{ name: “Battery SoC”, value: `${finalSoC.toFixed(0)}%`, limit: “>10%”, ok: finalSoC > 10, color: ELEC },
-{ name: “Motor Temp”, value: “→ Electronics”, limit: “<150°C”, ok: true, color: ELEC, crossLink: true },
-{ name: “Inverter”, value: “→ Electronics”, limit: “<110°C”, ok: true, color: ELEC, crossLink: true },
-{ name: “Brake Temp”, value: `${maxBrake}°C`, limit: “<380°C”, ok: maxBrake < 380, color: C.am },
-{ name: “Tire Grip”, value: `${finalGrip.toFixed(0)}%`, limit: “>85%”, ok: finalGrip > 85, color: C.gn },
-{ name: “Finish Prob”, value: `${mc.finishProb.toFixed(0)}%`, limit: “>95%”, ok: mc.finishProb > 95, color: C.cy },
+{ name: "Battery SoC", value: `${finalSoC.toFixed(0)}%`, limit: ">10%", ok: finalSoC > 10, color: ELEC },
+{ name: "Motor Temp", value: "→ Electronics", limit: "<150°C", ok: true, color: ELEC, crossLink: true },
+{ name: "Inverter", value: "→ Electronics", limit: "<110°C", ok: true, color: ELEC, crossLink: true },
+{ name: "Brake Temp", value: `${maxBrake}°C`, limit: "<380°C", ok: maxBrake < 380, color: C.am },
+{ name: "Tire Grip", value: `${finalGrip.toFixed(0)}%`, limit: ">85%", ok: finalGrip > 85, color: C.gn },
+{ name: "Finish Prob", value: `${mc.finishProb.toFixed(0)}%`, limit: ">95%", ok: mc.finishProb > 95, color: C.cy },
 ];
 const allOk = subsystems.filter(s => !s.crossLink).every(s => s.ok);
-const status = allOk && mc.finishProb > 90 ? “GO” : “CAUTION”;
+const status = allOk && mc.finishProb > 90 ? "GO" : "CAUTION";
 
 return (
 <div>
 {/* Status cards */}
-<div style={{ display: “grid”, gridTemplateColumns: `repeat(${subsystems.length}, 1fr)`, gap: 8, marginBottom: 14 }}>
+<div style={{ display: "grid", gridTemplateColumns: `repeat(${subsystems.length}, 1fr)`, gap: 8, marginBottom: 14 }}>
 {subsystems.map(s => (
 <div key={s.name} style={{
-…GL, padding: “10px 12px”,
+…GL, padding: "10px 12px",
 borderTop: `2px solid ${s.crossLink ? ELEC : s.ok ? C.gn : C.red}`,
 }}>
 <div style={{ fontSize: 8, color: C.dm, fontFamily: C.dt, letterSpacing: 1, marginBottom: 4 }}>{s.name}</div>
@@ -350,12 +350,12 @@ const totalConsumed = battery.reduce((a, b) => a + b.lapEnergy, 0);
 
 return (
 <div>
-<div style={{ display: “grid”, gridTemplateColumns: “repeat(5, 1fr)”, gap: 10, marginBottom: 14 }}>
-<KPI label=“Final SoC” value={`${finalSoC.toFixed(1)}%`} sub=“end of endurance” sentiment={finalSoC > 15 ? “positive” : finalSoC > 5 ? “amber” : “negative”} delay={0} />
-<KPI label=“Total Consumed” value={`${totalConsumed.toFixed(2)} kWh`} sub=“gross consumption” sentiment=“neutral” delay={1} />
-<KPI label=“Total Regen” value={`${totalRegen.toFixed(2)} kWh`} sub=“energy recovered” sentiment=“positive” delay={2} />
-<KPI label=“Regen Ratio” value={`${(totalRegen / totalConsumed * 100).toFixed(1)}%`} sub=“recovery efficiency” sentiment={totalRegen / totalConsumed > 0.08 ? “positive” : “amber”} delay={3} />
-<KPI label=“Avg Per Lap” value={`${(totalConsumed / 16).toFixed(3)} kWh`} sub=“net consumption” sentiment=“neutral” delay={4} />
+<div style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 10, marginBottom: 14 }}>
+<KPI label="Final SoC" value={`${finalSoC.toFixed(1)}%`} sub="end of endurance" sentiment={finalSoC > 15 ? "positive" : finalSoC > 5 ? "amber" : "negative"} delay={0} />
+<KPI label="Total Consumed" value={`${totalConsumed.toFixed(2)} kWh`} sub="gross consumption" sentiment="neutral" delay={1} />
+<KPI label="Total Regen" value={`${totalRegen.toFixed(2)} kWh`} sub="energy recovered" sentiment="positive" delay={2} />
+<KPI label="Regen Ratio" value={`${(totalRegen / totalConsumed * 100).toFixed(1)}%`} sub="recovery efficiency" sentiment={totalRegen / totalConsumed > 0.08 ? "positive" : "amber"} delay={3} />
+<KPI label="Avg Per Lap" value={`${(totalConsumed / 16).toFixed(3)} kWh`} sub="net consumption" sentiment="neutral" delay={4} />
 </div>
 
 ```
@@ -419,11 +419,11 @@ const liftCoastLaps = stintPlan.filter(s => s.liftCoast).length;
 
 return (
 <div>
-<div style={{ display: “grid”, gridTemplateColumns: “repeat(4, 1fr)”, gap: 10, marginBottom: 14 }}>
-<KPI label=“On Target” value={`${onTarget}/${stintPlan.length}`} sub=“within ±0.3s” sentiment={onTarget > 12 ? “positive” : “amber”} delay={0} />
-<KPI label=“Total Energy” value={`${totalEnergy.toFixed(2)} kWh`} sub=“planned consumption” sentiment={totalEnergy < 6.3 ? “positive” : “amber”} delay={1} />
-<KPI label=“Lift & Coast” value={`${liftCoastLaps} laps`} sub=“energy saving laps” sentiment=“neutral” delay={2} />
-<KPI label=“Target Avg” value={`${(stintPlan.reduce((a, s) => a + s.targetPace, 0) / stintPlan.length).toFixed(2)}s`} sub=“mean lap target” sentiment=“neutral” delay={3} />
+<div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 10, marginBottom: 14 }}>
+<KPI label="On Target" value={`${onTarget}/${stintPlan.length}`} sub="within ±0.3s" sentiment={onTarget > 12 ? "positive" : "amber"} delay={0} />
+<KPI label="Total Energy" value={`${totalEnergy.toFixed(2)} kWh`} sub="planned consumption" sentiment={totalEnergy < 6.3 ? "positive" : "amber"} delay={1} />
+<KPI label="Lift & Coast" value={`${liftCoastLaps} laps`} sub="energy saving laps" sentiment="neutral" delay={2} />
+<KPI label="Target Avg" value={`${(stintPlan.reduce((a, s) => a + s.targetPace, 0) / stintPlan.length).toFixed(2)}s`} sub="mean lap target" sentiment="neutral" delay={3} />
 </div>
 
 ```
@@ -481,12 +481,12 @@ return (
 function MonteCarloTab({ mc }) {
 return (
 <div>
-<div style={{ display: “grid”, gridTemplateColumns: “repeat(5, 1fr)”, gap: 10, marginBottom: 14 }}>
-<KPI label=“Finish Prob” value={`${mc.finishProb.toFixed(1)}%`} sub={`${mc.nRuns} simulations`} sentiment={mc.finishProb > 95 ? “positive” : mc.finishProb > 85 ? “amber” : “negative”} delay={0} />
-<KPI label=“Median Time” value={`${mc.medianTime.toFixed(1)}s`} sub=“P50 total race time” sentiment=“neutral” delay={1} />
-<KPI label=“P5 (Best)” value={`${mc.p5Time.toFixed(1)}s`} sub=“optimistic bound” sentiment=“positive” delay={2} />
-<KPI label=“P95 (Worst)” value={`${mc.p95Time.toFixed(1)}s`} sub=“pessimistic bound” sentiment=“neutral” delay={3} />
-<KPI label=“Spread” value={`${(mc.p95Time - mc.p5Time).toFixed(1)}s`} sub=“P95 − P5 range” sentiment={(mc.p95Time - mc.p5Time) < 30 ? “positive” : “amber”} delay={4} />
+<div style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 10, marginBottom: 14 }}>
+<KPI label="Finish Prob" value={`${mc.finishProb.toFixed(1)}%`} sub={`${mc.nRuns} simulations`} sentiment={mc.finishProb > 95 ? "positive" : mc.finishProb > 85 ? "amber" : "negative"} delay={0} />
+<KPI label="Median Time" value={`${mc.medianTime.toFixed(1)}s`} sub="P50 total race time" sentiment="neutral" delay={1} />
+<KPI label="P5 (Best)" value={`${mc.p5Time.toFixed(1)}s`} sub="optimistic bound" sentiment="positive" delay={2} />
+<KPI label="P95 (Worst)" value={`${mc.p95Time.toFixed(1)}s`} sub="pessimistic bound" sentiment="neutral" delay={3} />
+<KPI label="Spread" value={`${(mc.p95Time - mc.p5Time).toFixed(1)}s`} sub="P95 − P5 range" sentiment={(mc.p95Time - mc.p5Time) < 30 ? "positive" : "amber"} delay={4} />
 </div>
 
 ```
@@ -535,15 +535,15 @@ return (
 // ═══════════════════════════════════════════════════════════════════════════
 function BrakeTab({ brakes }) {
 const maxBrake = Math.max(…brakes.map(b => b.maxTemp));
-const fadeRisk = maxBrake > 400 ? “HIGH” : maxBrake > 350 ? “MODERATE” : “LOW”;
+const fadeRisk = maxBrake > 400 ? "HIGH" : maxBrake > 350 ? "MODERATE" : "LOW";
 
 return (
 <div>
-<div style={{ display: “grid”, gridTemplateColumns: “repeat(4, 1fr)”, gap: 10, marginBottom: 14 }}>
-<KPI label=“Peak Rotor” value={`${maxBrake}°C`} sub=“worst corner” sentiment={maxBrake < 380 ? “positive” : maxBrake < 430 ? “amber” : “negative”} delay={0} />
-<KPI label=“Fade Risk” value={fadeRisk} sub=“onset ~380°C” sentiment={fadeRisk === “LOW” ? “positive” : “negative”} delay={1} />
-<KPI label=“F/R Bias” value={`${((+brakes[brakes.length - 1]?.FL + +brakes[brakes.length - 1]?.FR) / (+brakes[brakes.length - 1]?.RL + +brakes[brakes.length - 1]?.RR)).toFixed(2)}`} sub=“front/rear temp ratio” sentiment=“neutral” delay={2} />
-<KPI label=“Cooling Rate” value={`~8%/lap`} sub=“Newton’s law fit” sentiment=“neutral” delay={3} />
+<div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 10, marginBottom: 14 }}>
+<KPI label="Peak Rotor" value={`${maxBrake}°C`} sub="worst corner" sentiment={maxBrake < 380 ? "positive" : maxBrake < 430 ? "amber" : "negative"} delay={0} />
+<KPI label="Fade Risk" value={fadeRisk} sub="onset ~380°C" sentiment={fadeRisk === "LOW" ? "positive" : "negative"} delay={1} />
+<KPI label="F/R Bias" value={`${((+brakes[brakes.length - 1]?.FL + +brakes[brakes.length - 1]?.FR) / (+brakes[brakes.length - 1]?.RL + +brakes[brakes.length - 1]?.RR)).toFixed(2)}`} sub="front/rear temp ratio" sentiment="neutral" delay={2} />
+<KPI label="Cooling Rate" value={`~8%/lap`} sub="Newton’s law fit" sentiment="neutral" delay={3} />
 </div>
 
 ```
@@ -580,11 +580,11 @@ const peakWear = Math.max(…tireDeg.filter(t => t.wearRate > 0).map(t => +t.wea
 
 return (
 <div>
-<div style={{ display: “grid”, gridTemplateColumns: “repeat(4, 1fr)”, gap: 10, marginBottom: 14 }}>
-<KPI label=“Final Grip” value={`${finalGrip.toFixed(1)}%`} sub=“average remaining” sentiment={finalGrip > 90 ? “positive” : “amber”} delay={0} />
-<KPI label=“Grip Lost” value={`${(100 - finalGrip).toFixed(1)}%`} sub=“total degradation” sentiment={100 - finalGrip < 10 ? “positive” : “amber”} delay={1} />
-<KPI label=“Lap Time Δ” value={`+${lapDelta.toFixed(2)}s`} sub=“deg cost” sentiment={lapDelta < 0.8 ? “positive” : “amber”} delay={2} />
-<KPI label=“Peak Wear” value={`${peakWear}%/lap`} sub=“highest rate” sentiment={peakWear < 0.7 ? “positive” : “amber”} delay={3} />
+<div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 10, marginBottom: 14 }}>
+<KPI label="Final Grip" value={`${finalGrip.toFixed(1)}%`} sub="average remaining" sentiment={finalGrip > 90 ? "positive" : "amber"} delay={0} />
+<KPI label="Grip Lost" value={`${(100 - finalGrip).toFixed(1)}%`} sub="total degradation" sentiment={100 - finalGrip < 10 ? "positive" : "amber"} delay={1} />
+<KPI label="Lap Time Δ" value={`+${lapDelta.toFixed(2)}s`} sub="deg cost" sentiment={lapDelta < 0.8 ? "positive" : "amber"} delay={2} />
+<KPI label="Peak Wear" value={`${peakWear}%/lap`} sub="highest rate" sentiment={peakWear < 0.7 ? "positive" : "amber"} delay={3} />
 </div>
 
 ```
@@ -630,15 +630,15 @@ return (
 function PaceTab({ strategies }) {
 return (
 <div>
-<div style={{ display: “grid”, gridTemplateColumns: “repeat(3, 1fr)”, gap: 10, marginBottom: 14 }}>
+<div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 10, marginBottom: 14 }}>
 {strategies.map((s, i) => (
-<div key={s.name} style={{ …GL, padding: “12px 14px”, borderTop: `2px solid ${i === 0 ? C.red : i === 1 ? C.gn : C.cy}` }}>
+<div key={s.name} style={{ …GL, padding: "12px 14px", borderTop: `2px solid ${i === 0 ? C.red : i === 1 ? C.gn : C.cy}` }}>
 <div style={{ fontSize: 12, fontWeight: 800, color: i === 0 ? C.red : i === 1 ? C.gn : C.cy, fontFamily: C.dt }}>{s.name}</div>
-<div style={{ display: “grid”, gridTemplateColumns: “1fr 1fr”, gap: 4, marginTop: 8, fontSize: 8, fontFamily: C.dt }}>
+<div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 4, marginTop: 8, fontSize: 8, fontFamily: C.dt }}>
 <div><span style={{ color: C.dm }}>Total: </span><span style={{ color: C.br }}>{s.totalTime.toFixed(1)}s</span></div>
 <div><span style={{ color: C.dm }}>End E: </span><span style={{ color: s.finishEnergy > 0 ? C.gn : C.red }}>{s.finishEnergy.toFixed(1)} kWh</span></div>
 <div><span style={{ color: C.dm }}>Peak T: </span><span style={{ color: s.peakMotorT < 140 ? C.gn : C.am }}>{s.peakMotorT}°C</span></div>
-<div><span style={{ color: C.dm }}>Risk: </span><span style={{ color: i === 0 ? C.red : C.gn }}>{i === 0 ? “HIGH” : i === 1 ? “LOW” : “NONE”}</span></div>
+<div><span style={{ color: C.dm }}>Risk: </span><span style={{ color: i === 0 ? C.red : C.gn }}>{i === 0 ? "HIGH" : i === 1 ? "LOW" : "NONE"}</span></div>
 </div>
 </div>
 ))}
@@ -693,11 +693,11 @@ const currentTemp = temps.find(t => t.hour === currentHour);
 
 return (
 <div>
-<div style={{ display: “grid”, gridTemplateColumns: “repeat(4, 1fr)”, gap: 10, marginBottom: 14 }}>
-<KPI label=“Ambient” value={`${currentTemp?.ambient || 23}°C`} sub=“at race time” sentiment=“neutral” delay={0} />
-<KPI label=“Track Surface” value={`${currentTemp?.trackSurface || 35}°C`} sub=“asphalt temp” sentiment=“neutral” delay={1} />
-<KPI label=“Humidity” value={`${currentTemp?.humidity || 55}%`} sub=“relative” sentiment=“neutral” delay={2} />
-<KPI label=“Air Density” value={`${currentTemp?.airDensity || 1.22} kg/m³`} sub=“for aero calc” sentiment=“neutral” delay={3} />
+<div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 10, marginBottom: 14 }}>
+<KPI label="Ambient" value={`${currentTemp?.ambient || 23}°C`} sub="at race time" sentiment="neutral" delay={0} />
+<KPI label="Track Surface" value={`${currentTemp?.trackSurface || 35}°C`} sub="asphalt temp" sentiment="neutral" delay={1} />
+<KPI label="Humidity" value={`${currentTemp?.humidity || 55}%`} sub="relative" sentiment="neutral" delay={2} />
+<KPI label="Air Density" value={`${currentTemp?.airDensity || 1.22} kg/m³`} sub="for aero calc" sentiment="neutral" delay={3} />
 </div>
 
 ```
@@ -756,7 +756,7 @@ return (
 // MAIN EXPORT
 // ═══════════════════════════════════════════════════════════════════════════
 export default function EnduranceStrategyModule() {
-const [tab, setTab] = useState(“overview”);
+const [tab, setTab] = useState("overview");
 
 const battery = useMemo(() => gBatteryTrace(), []);
 const brakes = useMemo(() => gBrakeThermal(), []);
@@ -769,24 +769,24 @@ const conditions = useMemo(() => gConditions(), []);
 const finalSoC = battery[battery.length - 1]?.soc || 0;
 const maxBrake = Math.max(…brakes.map(b => b.maxTemp));
 const finalGrip = tireDeg[tireDeg.length - 1]?.avgGrip || 100;
-const status = finalSoC > 10 && maxBrake < 450 && mc.finishProb > 85 ? “GO” : “CAUTION”;
+const status = finalSoC > 10 && maxBrake < 450 && mc.finishProb > 85 ? "GO" : "CAUTION";
 
 return (
 <div>
 {/* Status banner */}
 <div style={{
-…GL, padding: “12px 16px”, marginBottom: 14,
+…GL, padding: "12px 16px", marginBottom: 14,
 borderLeft: `3px solid ${status === "GO" ? C.gn : C.am}`,
-display: “flex”, alignItems: “center”, gap: 16,
+display: "flex", alignItems: "center", gap: 16,
 }}>
 <div style={{
 width: 10, height: 10, borderRadius: 5,
-background: status === “GO” ? C.gn : C.am,
+background: status === "GO" ? C.gn : C.am,
 boxShadow: `0 0 10px ${status === "GO" ? C.gn : C.am}`,
-animation: “pulseGlow 2s infinite”,
+animation: "pulseGlow 2s infinite",
 }} />
 <div>
-<span style={{ fontSize: 12, fontWeight: 800, color: status === “GO” ? C.gn : C.am, fontFamily: C.dt, letterSpacing: 2 }}>
+<span style={{ fontSize: 12, fontWeight: 800, color: status === "GO" ? C.gn : C.am, fontFamily: C.dt, letterSpacing: 2 }}>
 ENDURANCE: {status}
 </span>
 <span style={{ fontSize: 9, color: C.dm, fontFamily: C.dt, marginLeft: 16 }}>
