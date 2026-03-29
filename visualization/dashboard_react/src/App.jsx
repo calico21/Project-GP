@@ -10,42 +10,42 @@
 //               Groups: OVERVIEW, TELEMETRY, VEHICLE DYNAMICS, AERODYNAMICS,
 //               ELECTRONICS, CONTROLS & AI, PERFORMANCE.
 //
-// 3. ROUTING:   + case “aero”:        → <AerodynamicsModule />
-//               + case “electronics”:  → <ElectronicsModule />
+// 3. ROUTING:   + case "aero":        → <AerodynamicsModule />
+//               + case "electronics":  → <ElectronicsModule />
 //
 // 4. SYSTEM HEALTH: Updated status rows reflecting current subsystem state.
 //
 // 5. All v4.0 data hooks, props, and module routing are preserved exactly.
 // ═══════════════════════════════════════════════════════════════════════════════
 
-import React, { useState, useEffect, useMemo } from “react”;
-import { C, GL, FONTS_URL } from “./theme.js”;
-import { FadeSlide } from “./components.jsx”;
-import { SelectionProvider } from “./context/SelectionContext.jsx”;
+import React, { useState, useEffect, useMemo } from "react";
+import { C, GL, FONTS_URL } from "./theme.js";
+import { FadeSlide } from "./components.jsx";
+import { SelectionProvider } from "./context/SelectionContext.jsx";
 
 // ── Data generators ──────────────────────────────────────────────────────────
-import { gP, gCV, gTK, gTT, gSN, gSU } from “./data.js”;
+import { gP, gCV, gTK, gTT, gSN, gSU } from "./data.js";
 import {
 gP4, gCV4, gSN4,
 gThermal5, gEnergyBudgetPH, gALConstraints, gWaveletCoeffsMPC,
 gTubePoints, gHnetLandscape, gRMatrix,
 gGPEnvelope, gHysteresis, gLoadSensitivity, gEpisodes,
-} from “./data.js”;
+} from "./data.js";
 
 // ── Module imports ───────────────────────────────────────────────────────────
-import OverviewModule from “./OverviewModule.jsx”;
-import SetupModule from “./SetupModule.jsx”;
-import TelemetryModule from “./TelemetryModule.jsx”;
-import SuspensionModule from “./SuspensionModule.jsx”;
-import EnergyAuditModule from “./EnergyAuditModule.jsx”;
-import TirePhysicsModule from “./TirePhysicsModule.jsx”;
-import DriverCoachingModule from “./DriverCoachingModule.jsx”;
-import EnduranceStrategyModule from “./EnduranceStrategyModule.jsx”;
-import WeightBalanceModule from “./WeightBalanceModule.jsx”;
-import ComplianceModule from “./ComplianceModule.jsx”;
-import DifferentiableInsightsModule from “./DifferentiableInsightsModule.jsx”;
-import AerodynamicsModule from “./AerodynamicsModule.jsx”;
-import ElectronicsModule from “./ElectronicsModule.jsx”;
+import OverviewModule from "./OverviewModule.jsx";
+import SetupModule from "./SetupModule.jsx";
+import TelemetryModule from "./TelemetryModule.jsx";
+import SuspensionModule from "./SuspensionModule.jsx";
+import EnergyAuditModule from "./EnergyAuditModule.jsx";
+import TirePhysicsModule from "./TirePhysicsModule.jsx";
+import DriverCoachingModule from "./DriverCoachingModule.jsx";
+import EnduranceStrategyModule from "./EnduranceStrategyModule.jsx";
+import WeightBalanceModule from "./WeightBalanceModule.jsx";
+import ComplianceModule from "./ComplianceModule.jsx";
+import DifferentiableInsightsModule from "./DifferentiableInsightsModule.jsx";
+import AerodynamicsModule from "./AerodynamicsModule.jsx";
+import ElectronicsModule from "./ElectronicsModule.jsx";
 
 // ═════════════════════════════════════════════════════════════════════════════
 // GROUPED NAV CONFIGURATION — 7 groups, 13 modules
@@ -53,44 +53,44 @@ import ElectronicsModule from “./ElectronicsModule.jsx”;
 
 const NAV_GROUPS = [
 {
-label: “OVERVIEW”, accent: C.cy, items: [
-{ key: “overview”,   label: “Overview”,    icon: “⬡” },
+label: "OVERVIEW", accent: C.cy, items: [
+{ key: "overview",   label: "Overview",    icon: "⬡" },
 ],
 },
 {
-label: “TELEMETRY”, accent: C.gn, items: [
-{ key: “telemetry”,  label: “Telemetry”,   icon: “◇” },
+label: "TELEMETRY", accent: C.gn, items: [
+{ key: "telemetry",  label: "Telemetry",   icon: "◇" },
 ],
 },
 {
-label: “VEHICLE DYNAMICS”, accent: C.am, items: [
-{ key: “setup”,      label: “Setup Opt”,   icon: “◆” },
-{ key: “suspension”, label: “Suspension”,  icon: “△” },
-{ key: “tire”,       label: “Tire Physics”, icon: “⊗” },
-{ key: “weight”,     label: “Weight & CG”, icon: “⊿” },
+label: "VEHICLE DYNAMICS", accent: C.am, items: [
+{ key: "setup",      label: "Setup Opt",   icon: "◆" },
+{ key: "suspension", label: "Suspension",  icon: "△" },
+{ key: "tire",       label: "Tire Physics", icon: "⊗" },
+{ key: "weight",     label: "Weight & CG", icon: "⊿" },
 ],
 },
 {
-label: “AERODYNAMICS”, accent: “#ff6090”, items: [
-{ key: “aero”,       label: “Aerodynamics”, icon: “▽” },
+label: "AERODYNAMICS", accent: "#ff6090", items: [
+{ key: "aero",       label: "Aerodynamics", icon: "▽" },
 ],
 },
 {
-label: “ELECTRONICS”, accent: “#7c3aed”, items: [
-{ key: “electronics”, label: “Electronics”, icon: “⚡” },
+label: "ELECTRONICS", accent: "#7c3aed", items: [
+{ key: "electronics", label: "Electronics", icon: "⚡" },
 ],
 },
 {
-label: “CONTROLS & AI”, accent: C.cy, items: [
-{ key: “energy”,     label: “Energy Audit”, icon: “⊕” },
-{ key: “diff”,       label: “∇ Insights”,   icon: “∂” },
+label: "CONTROLS & AI", accent: C.cy, items: [
+{ key: "energy",     label: "Energy Audit", icon: "⊕" },
+{ key: "diff",       label: "∇ Insights",   icon: "∂" },
 ],
 },
 {
-label: “PERFORMANCE”, accent: C.red, items: [
-{ key: “coaching”,   label: “Coaching”,     icon: “◈” },
-{ key: “endurance”,  label: “Endurance”,    icon: “⏱” },
-{ key: “compliance”, label: “Compliance”,   icon: “☑” },
+label: "PERFORMANCE", accent: C.red, items: [
+{ key: "coaching",   label: "Coaching",     icon: "◈" },
+{ key: "endurance",  label: "Endurance",    icon: "⏱" },
+{ key: "compliance", label: "Compliance",   icon: "☑" },
 ],
 },
 ];
@@ -142,29 +142,29 @@ const ModeToggle = ({ mode, setMode }) => (
 
 function SystemHealth() {
 const rows = [
-[“Physics”,     “JAX NPH 46-DOF”,  C.gn],
-[“Integrator”,  “GLRK-4 Symplec.”, C.gn],
-[“Tire”,        “Pacejka+PINN+GP”, C.gn],
-[“WMPC”,        “64-step AL+UT”,   C.gn],
-[“Optimizer”,   “SB-TRPO 28D”,     C.cy],
-[“H_net”,       “Passivity OK”,    C.gn],
-[“Aero”,        “5D Surrogate”,    C.gn],
-[“Electronics”, “HV Loop CLOSED”,  C.gn],
-[“State”,       “46-dim”,          C.dm],
-[“Setup”,       “28-dim”,          C.dm],
+["Physics",     "JAX NPH 46-DOF",  C.gn],
+["Integrator",  "GLRK-4 Symplec.", C.gn],
+["Tire",        "Pacejka+PINN+GP", C.gn],
+["WMPC",        "64-step AL+UT",   C.gn],
+["Optimizer",   "SB-TRPO 28D",     C.cy],
+["H_net",       "Passivity OK",    C.gn],
+["Aero",        "5D Surrogate",    C.gn],
+["Electronics", "HV Loop CLOSED",  C.gn],
+["State",       "46-dim",          C.dm],
+["Setup",       "28-dim",          C.dm],
 ];
 
 return (
-<div style={{ padding: “12px 14px”, borderTop: `1px solid ${C.b1}` }}>
+<div style={{ padding: "12px 14px", borderTop: `1px solid ${C.b1}` }}>
 <div style={{
-display: “flex”, alignItems: “center”, gap: 5,
+display: "flex", alignItems: "center", gap: 5,
 marginBottom: 8,
 }}>
 <div style={{
-width: 6, height: 6, borderRadius: “50%”,
+width: 6, height: 6, borderRadius: "50%",
 background: C.gn,
 boxShadow: `0 0 8px ${C.gn}`,
-animation: “pulseGlow 2s infinite”,
+animation: "pulseGlow 2s infinite",
 }} />
 <span style={{
 fontSize: 8, fontWeight: 700, color: C.gn,
@@ -175,7 +175,7 @@ ALL SYSTEMS NOMINAL
 </div>
 {rows.map(([k, v, c]) => (
 <div key={k} style={{
-display: “flex”, justifyContent: “space-between”,
+display: "flex", justifyContent: "space-between",
 fontSize: 8, fontFamily: C.dt, marginBottom: 2,
 }}>
 <span style={{ color: C.dm, letterSpacing: 1 }}>{k}</span>
@@ -191,8 +191,8 @@ fontSize: 8, fontFamily: C.dt, marginBottom: 2,
 // ═════════════════════════════════════════════════════════════════════════════
 
 export default function App() {
-const [active, setActive] = useState(“overview”);
-const [mode, setMode]     = useState(“ANALYZE”);
+const [active, setActive] = useState("overview");
+const [mode, setMode]     = useState("ANALYZE");
 const [time, setTime]     = useState(new Date());
 
 useEffect(() => {
@@ -201,7 +201,7 @@ return () => clearInterval(id);
 }, []);
 
 // Determine which group the active module belongs to (auto-expand)
-const activeGroup = NAV_GROUPS.find(g => g.items.some(i => i.key === active))?.label || “”;
+const activeGroup = NAV_GROUPS.find(g => g.items.some(i => i.key === active))?.label || "";
 
 // ── v3 data ───────────────────────────────────────────────────────────────
 const track = useMemo(() => gTK(), []);
@@ -229,7 +229,7 @@ const loadSens  = useMemo(() => gLoadSensitivity(), []);
 // ── Content router ────────────────────────────────────────────────────────
 const renderContent = () => {
 switch (active) {
-case “telemetry”:
+case "telemetry":
 return (
 <TelemetryModule
 track={track}
@@ -297,7 +297,7 @@ return (
 <SelectionProvider>
 <div style={{
 background: C.bg, color: C.br, fontFamily: C.bd,
-minHeight: “100vh”, display: “flex”,
+minHeight: "100vh", display: "flex",
 }}>
 <link href={FONTS_URL} rel="stylesheet" />
 <style>{`* { margin: 0; padding: 0; box-sizing: border-box; } ::-webkit-scrollbar { width: 4px; } ::-webkit-scrollbar-track { background: ${C.bg}; } ::-webkit-scrollbar-thumb { background: ${C.b2}; border-radius: 2px; } @keyframes pulseGlow { 0%,100% { opacity: 1; } 50% { opacity: 0.5; } }`}</style>
