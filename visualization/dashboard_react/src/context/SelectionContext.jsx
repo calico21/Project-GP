@@ -20,13 +20,13 @@
 //
 // Usage in any module:
 //
-//   import { useSelection } from “../context/SelectionContext.jsx”;
+//   import { useSelection } from "../context/SelectionContext.jsx";
 //   const { selectedSetupId, aeroSlice, setAeroSlice } = useSelection();
 //
 // Wrap your <App> in <SelectionProvider> (done in App.jsx).
 // ═══════════════════════════════════════════════════════════════════════════════
 
-import React, { createContext, useContext, useState, useCallback } from “react”;
+import React, { createContext, useContext, useState, useCallback } from "react";
 
 const SelectionContext = createContext(null);
 
@@ -71,7 +71,7 @@ const [selectedCell, setSelectedCell] = useState(null); // { segment, cell } or 
 // ── Coolant loop thermal node ───────────────────────────────────────
 // Set by ElectronicsModule CoolantSchematic click.
 // Consumed by: Endurance thermal derating projection.
-const [thermalNode, setThermalNode] = useState(null); // string: “radIn”|“motJacket”|etc
+const [thermalNode, setThermalNode] = useState(null); // string: "radIn"|"motJacket"|etc
 
 // ── Power budget synced timestamp ───────────────────────────────────
 // Set by any time-series scrub that has power context.
@@ -81,7 +81,7 @@ const [powerTimestamp, setPowerTimestamp] = useState(null); // number or null
 // ── Active module tracking ──────────────────────────────────────────
 // Set by App.jsx on navigation. Allows modules to know who’s active
 // for conditional rendering or cross-link hover states.
-const [activeModule, setActiveModule] = useState(“overview”);
+const [activeModule, setActiveModule] = useState("overview");
 
 // ── Convenience: clear all selections at once ───────────────────────
 const clearAll = useCallback(() => {
@@ -149,7 +149,7 @@ return (
   export function useSelection() {
   const ctx = useContext(SelectionContext);
   if (!ctx) {
-  throw new Error(“useSelection() must be used inside <SelectionProvider>”);
+  throw new Error("useSelection() must be used inside <SelectionProvider>");
   }
   return ctx;
   }
