@@ -139,7 +139,7 @@ const cats = {};
 for (const c of components) { if (!cats[c.category]) cats[c.category] = 0; cats[c.category] += c.mass; }
 return Object.entries(cats).map(([cat, mass]) => ({ cat, mass: +mass.toFixed(1), color: CAT_COLORS[cat] || C.dm })).sort((a, b) => b.mass - a.mass);
 }, [components]);
-const top10 = useMemo(() => […components].sort((a, b) => b.mass - a.mass).slice(0, 10).map(c => ({ name: c.name, mass: c.mass, color: CAT_COLORS[c.category] || C.dm })), [components]);
+const top10 = useMemo(() => [...components].sort((a, b) => b.mass - a.mass).slice(0, 10).map(c => ({ name: c.name, mass: c.mass, color: CAT_COLORS[c.category] || C.dm })), [components]);
 
 return (
 <div>
@@ -148,7 +148,7 @@ return (
 <GC><ResponsiveContainer width="100%" height={260}>
 <BarChart data={byCat} layout="vertical" margin={{ top: 8, right: 16, bottom: 8, left: 80 }}>
 <CartesianGrid strokeDasharray="3 3" stroke={GS} horizontal={false} />
-<XAxis type="number" {…ax()} />
+<XAxis type="number" {...ax()} />
 <YAxis dataKey="cat" type="category" tick={{ fontSize: 9, fill: C.br, fontFamily: C.dt }} stroke={C.b1} width={75} />
 <Tooltip contentStyle={TT} />
 <Bar dataKey="mass" radius={[0, 4, 4, 0]} barSize={14}>
@@ -161,7 +161,7 @@ return (
 <GC><ResponsiveContainer width="100%" height={260}>
 <BarChart data={top10} layout="vertical" margin={{ top: 8, right: 16, bottom: 8, left: 100 }}>
 <CartesianGrid strokeDasharray="3 3" stroke={GS} horizontal={false} />
-<XAxis type="number" {…ax()} />
+<XAxis type="number" {...ax()} />
 <YAxis dataKey="name" type="category" tick={{ fontSize: 8, fill: C.br, fontFamily: C.dt }} stroke={C.b1} width={95} />
 <Tooltip contentStyle={TT} />
 <Bar dataKey="mass" radius={[0, 4, 4, 0]} barSize={12}>
@@ -175,8 +175,8 @@ return (
 <GC><ResponsiveContainer width="100%" height={280}>
 <ScatterChart margin={{ top: 16, right: 20, bottom: 24, left: 20 }}>
 <CartesianGrid strokeDasharray="3 3" stroke={GS} />
-<XAxis dataKey="x" type="number" {…ax()} domain={[-1, 1.3]} name="X [m]" />
-<YAxis dataKey="z" type="number" {…ax()} domain={[-0.8, 0.8]} name="Z [m]" />
+<XAxis dataKey="x" type="number" {...ax()} domain={[-1, 1.3]} name="X [m]" />
+<YAxis dataKey="z" type="number" {...ax()} domain={[-0.8, 0.8]} name="Z [m]" />
 <Tooltip contentStyle={TT} />
 <Scatter data={components} r={4}>
 {components.map((c, i) => <Cell key={i} fill={CAT_COLORS[c.category] || C.dm} fillOpacity={0.6} />)}
@@ -236,7 +236,7 @@ color: i === j ? C.cy : C.br, fontWeight: i === j ? 700 : 400,
 <GC><ResponsiveContainer width="100%" height={180}>
 <BarChart data={diagData} margin={{ top: 8, right: 16, bottom: 8, left: 80 }} layout="vertical">
 <CartesianGrid strokeDasharray="3 3" stroke={GS} horizontal={false} />
-<XAxis type="number" {…ax()} />
+<XAxis type="number" {...ax()} />
 <YAxis dataKey="axis" type="category" tick={{ fontSize: 9, fill: C.br, fontFamily: C.dt }} stroke={C.b1} width={75} />
 <Tooltip contentStyle={TT} />
 <Bar dataKey="value" barSize={16} radius={[0, 4, 4, 0]} fill={C.cy} fillOpacity={0.6} />
@@ -272,8 +272,8 @@ return (
 <GC><ResponsiveContainer width="100%" height={220}>
 <BarChart data={cornerData} margin={{ top: 8, right: 16, bottom: 8, left: 8 }}>
 <CartesianGrid strokeDasharray="3 3" stroke={GS} />
-<XAxis dataKey="corner" {…ax()} />
-<YAxis {…ax()} />
+<XAxis dataKey="corner" {...ax()} />
+<YAxis {...ax()} />
 <Tooltip contentStyle={TT} />
 <Bar dataKey="load" barSize={40} radius={[4, 4, 0, 0]}>
 {cornerData.map((c, i) => <Cell key={i} fill={c.color} fillOpacity={0.7} />)}
@@ -299,11 +299,11 @@ const positions = [
 { label: "Front center", x: 0.6, z: 0.0 },
 ];
 return positions.map(p => {
-const ballast = { …p, name: `Ballast ${p.label}`, mass: 2, y: 0.05, category: "Chassis" };
-const newCG = computeCG([…components, ballast]);
+const ballast = { ...p, name: `Ballast ${p.label}`, mass: 2, y: 0.05, category: "Chassis" };
+const newCG = computeCG([...components, ballast]);
 const newCorners = computeCornerWeights(newCG, newCG.mass);
 return {
-…p, frontPct: +newCorners.frontPct.toFixed(1),
+...p, frontPct: +newCorners.frontPct.toFixed(1),
 cgX: +(newCG.x * 1000).toFixed(0), cgZ: +(newCG.z * 1000).toFixed(1),
 crossImbalance: +(Math.abs(newCorners.crossFL_RR - newCorners.crossFR_RL) / (newCG.mass * 9.81) * 100).toFixed(2),
 };
@@ -351,7 +351,7 @@ return (
 <GC><ResponsiveContainer width="100%" height={380}>
 <BarChart data={sensData} layout="vertical" margin={{ top: 8, right: 16, bottom: 8, left: 100 }}>
 <CartesianGrid strokeDasharray="3 3" stroke={GS} horizontal={false} />
-<XAxis type="number" {…ax()} />
+<XAxis type="number" {...ax()} />
 <YAxis dataKey="name" type="category" tick={{ fontSize: 8, fill: C.br, fontFamily: C.dt }} stroke={C.b1} width={95} />
 <Tooltip contentStyle={TT} />
 <Bar dataKey="lapSens" barSize={12} radius={[0, 4, 4, 0]} name="Δt_lap [ms/kg]">
@@ -550,7 +550,7 @@ return (
 <div>
 {/* Header */}
 <div style={{
-…GL, padding: "12px 16px", marginBottom: 14,
+...GL, padding: "12px 16px", marginBottom: 14,
 borderLeft: `3px solid ${C.am}`,
 background: `linear-gradient(90deg, ${C.am}08, transparent)`,
 }}>
