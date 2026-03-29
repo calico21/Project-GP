@@ -48,8 +48,8 @@ const STATE_GROUPS = [
 { label: "Pos (x,y,z,φ,θ,ψ)", indices: [0,1,2,3,4,5], color: C.cy },
 { label: "Susp (z_fl..z_rr)", indices: [6,7,8,9], color: C.gn },
 { label: "Wheel (ω_fl..ω_rr)", indices: [10,11,12,13], color: C.am },
-{ label: "Vel (14-27)", indices: Array.from({length:14},(*,i)=>14+i), color: "#e879f9" },
-{ label: "Thermal (28-37)", indices: Array.from({length:10},(*,i)=>28+i), color: C.red },
+{ label: "Vel (14-27)", indices: Array.from({length:14},(_,i)=>14+i), color: "#e879f9" },
+{ label: "Thermal (28-37)", indices: Array.from({length:10},(_,i)=>28+i), color: C.red },
 { label: "Slip (38-45)", indices: Array.from({length:8},(_,i)=>38+i), color: "#fbbf24" },
 ];
 const STATE_NAMES = [
