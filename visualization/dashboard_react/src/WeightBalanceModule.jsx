@@ -401,7 +401,7 @@ return (
 <KPI label="Wheel Lift G" value={`${(corners.FR / (mass * 9.81 * hCG / ((tF + tR) / 2)) + 0.01).toFixed(2)}G`} sub="inside wheel unloads" sentiment="neutral" delay={3} />
 </div>
 
-```
+
   <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
     <Sec title="Corner Loads vs Lateral G (right turn)">
       <GC><ResponsiveContainer width="100%" height={260}>
@@ -433,7 +433,7 @@ return (
     </Sec>
   </div>
 </div>
-```
+
 
 );
 }
@@ -497,7 +497,7 @@ return <KPI key={t.param} label={t.param.split(" (")[0]} value={`${t.current} ${
 })}
 </div>
 
-```
+
   <Sec title="CG Position vs Targets">
     <GC style={{ padding: 10 }}>
       {targets.map(t => {
@@ -531,7 +531,7 @@ return <KPI key={t.param} label={t.param.split(" (")[0]} value={`${t.current} ${
     <span style={{ color: "#ff6090", fontWeight: 700 }}>Aerodynamics module</span>
   </div>
 </div>
-```
+
 
 );
 }
@@ -565,7 +565,7 @@ background: `linear-gradient(90deg, ${C.am}08, transparent)`,
 </div>
 </div>
 
-```
+
   <div style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 10, marginBottom: 14 }}>
     <KPI label="Total Mass" value={`${cg.mass.toFixed(1)} kg`} sub="with driver" sentiment={cg.mass < 320 ? "positive" : "amber"} delay={0} />
     <KPI label="CG X" value={`${(cg.x * 1000).toFixed(0)} mm`} sub={cg.x > 0 ? "ahead of mid-WB" : "behind mid-WB"} sentiment="neutral" delay={1} />
@@ -587,7 +587,7 @@ background: `linear-gradient(90deg, ${C.am}08, transparent)`,
   {tab === "regulations" && <RegulationsTab cg={cg} />}
   {tab === "targets" && <TargetsTab cg={cg} corners={corners} />}
 </div>
-```
+
 
 );
 }
