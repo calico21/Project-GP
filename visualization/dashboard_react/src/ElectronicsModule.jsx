@@ -17,37 +17,37 @@
 //   9. Power Budget   — Efficiency chain, Sankey breakdown, LV system
 //
 // Integration (3 lines in App.jsx):
-//   NAV: { key: “electronics”, label: “Electronics”, icon: “⚡” }
-//   Import: import ElectronicsModule from “./ElectronicsModule.jsx”
-//   Route: case “electronics”: return <ElectronicsModule />
+//   NAV: { key: "electronics", label: "Electronics", icon: "⚡" }
+//   Import: import ElectronicsModule from "./ElectronicsModule.jsx"
+//   Route: case "electronics": return <ElectronicsModule />
 // ═══════════════════════════════════════════════════════════════════════════
 
-import React, { useState, useMemo } from “react”;
+import React, { useState, useMemo } from "react";
 import {
 LineChart, Line, AreaChart, Area, BarChart, Bar, ScatterChart, Scatter,
 ComposedChart, XAxis, YAxis, CartesianGrid, Tooltip,
 ResponsiveContainer, ReferenceLine, ReferenceArea, Cell, Legend,
-} from “recharts”;
-import { C, GL, GS, TT, AX } from “./theme.js”;
-import { KPI, Sec, GC, Pill } from “./components.jsx”;
+} from "recharts";
+import { C, GL, GS, TT, AX } from "./theme.js";
+import { KPI, Sec, GC, Pill } from "./components.jsx";
 
 // ═══════════════════════════════════════════════════════════════════════════
 // CONSTANTS
 // ═══════════════════════════════════════════════════════════════════════════
-const ELEC = “#7c3aed”;
-const ELEC_G = “rgba(124,58,237,0.10)”;
+const ELEC = "#7c3aed";
+const ELEC_G = "rgba(124,58,237,0.10)";
 const ax = () => ({ tick: { fontSize: 8, fill: C.dm, fontFamily: C.dt }, stroke: C.b1, tickLine: false });
 
 const TABS = [
-{ key: “accumulator”, label: “Accumulator” },
-{ key: “inverter”,    label: “Inverter / Motor” },
-{ key: “tv”,          label: “Torque Vectoring” },
-{ key: “regen”,       label: “Regen Strategy” },
-{ key: “safety”,      label: “Safety Circuits” },
-{ key: “can”,         label: “CAN Bus” },
-{ key: “sensors”,     label: “Sensor Fusion” },
-{ key: “thermal”,     label: “Thermal Mgmt” },
-{ key: “power”,       label: “Power Budget” },
+{ key: "accumulator", label: "Accumulator" },
+{ key: "inverter",    label: "Inverter / Motor" },
+{ key: "tv",          label: "Torque Vectoring" },
+{ key: "regen",       label: "Regen Strategy" },
+{ key: "safety",      label: "Safety Circuits" },
+{ key: "can",         label: "CAN Bus" },
+{ key: "sensors",     label: "Sensor Fusion" },
+{ key: "thermal",     label: "Thermal Mgmt" },
+{ key: "power",       label: "Power Budget" },
 ];
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -189,18 +189,18 @@ netBalance: +(cumRecovered - cumConsumed).toFixed(4),
 function gSafetyState() {
 const R = srng(5401);
 const circuits = [
-{ id: “TSAL”, name: “Tractive System Active Light”, rule: “EV 6.1”, threshold: “HV>60V”, reading: +(580 + R() * 10).toFixed(0), unit: “V”, state: “ACTIVE”, faults: 0, lastFault: null },
-{ id: “IMD”, name: “Insulation Monitoring Device”, rule: “EV 7.1”, threshold: “R>500Ω/V”, reading: +(620 + R() * 80).toFixed(0), unit: “Ω/V”, state: “OK”, faults: 1, lastFault: “Pre-event test” },
-{ id: “BSPD”, name: “Brake System Plausibility”, rule: “EV 7.2”, threshold: “5kW+brake”, reading: “0”, unit: “trips”, state: “OK”, faults: 0, lastFault: null },
-{ id: “AMS”, name: “Accumulator Management System”, rule: “EV 6.3”, threshold: “V/T limits”, reading: +(588).toFixed(0), unit: “V”, state: “OK”, faults: 0, lastFault: null },
-{ id: “HVD”, name: “High Voltage Disconnect”, rule: “EV 6.4”, threshold: “Manual pull”, reading: “CLOSED”, unit: “”, state: “ARMED”, faults: 0, lastFault: null },
-{ id: “BOTS”, name: “Brake Over-Travel Switch”, rule: “T 6.1”, threshold: “Pedal overtravel”, reading: “0”, unit: “trips”, state: “OK”, faults: 0, lastFault: null },
+{ id: "TSAL", name: "Tractive System Active Light", rule: "EV 6.1", threshold: "HV>60V", reading: +(580 + R() * 10).toFixed(0), unit: "V", state: "ACTIVE", faults: 0, lastFault: null },
+{ id: "IMD", name: "Insulation Monitoring Device", rule: "EV 7.1", threshold: "R>500Ω/V", reading: +(620 + R() * 80).toFixed(0), unit: "Ω/V", state: "OK", faults: 1, lastFault: "Pre-event test" },
+{ id: "BSPD", name: "Brake System Plausibility", rule: "EV 7.2", threshold: "5kW+brake", reading: "0", unit: "trips", state: "OK", faults: 0, lastFault: null },
+{ id: "AMS", name: "Accumulator Management System", rule: "EV 6.3", threshold: "V/T limits", reading: +(588).toFixed(0), unit: "V", state: "OK", faults: 0, lastFault: null },
+{ id: "HVD", name: "High Voltage Disconnect", rule: "EV 6.4", threshold: "Manual pull", reading: "CLOSED", unit: "", state: "ARMED", faults: 0, lastFault: null },
+{ id: "BOTS", name: "Brake Over-Travel Switch", rule: "T 6.1", threshold: "Pedal overtravel", reading: "0", unit: "trips", state: "OK", faults: 0, lastFault: null },
 ];
 // Fault timeline
 const faultTimeline = [
-{ t: -120, circuit: “IMD”, event: “Pre-event self-test trip”, severity: “info”, resolved: true },
-{ t: -60, circuit: “AMS”, event: “Cell #3 temp spike 58°C”, severity: “warning”, resolved: true },
-{ t: 0, circuit: “TSAL”, event: “System armed — all clear”, severity: “info”, resolved: true },
+{ t: -120, circuit: "IMD", event: "Pre-event self-test trip", severity: "info", resolved: true },
+{ t: -60, circuit: "AMS", event: "Cell #3 temp spike 58°C", severity: "warning", resolved: true },
+{ t: 0, circuit: "TSAL", event: "System armed — all clear", severity: "info", resolved: true },
 ];
 return { circuits, faultTimeline };
 }
@@ -208,7 +208,7 @@ return { circuits, faultTimeline };
 // 7. CAN bus health
 function gCANHealth(n = 100) {
 const R = srng(5501);
-const nodes = [“ECU”, “BMS”, “IMD”, “INV_L”, “INV_R”, “DASH”, “DL”, “GPS”];
+const nodes = ["ECU", "BMS", "IMD", "INV_L", "INV_R", "DASH", "DL", "GPS"];
 const timeline = Array.from({ length: n }, (_, i) => {
 const t = i * 0.5;
 const busLoad = 35 + 15 * Math.sin(i * 0.03) + 5 * R();
@@ -222,10 +222,10 @@ latencyP99: +(2.5 + R() * 1.5 + (errorFrames > 0 ? 3 : 0)).toFixed(2),
 };
 });
 const nodeHealth = nodes.map(n => ({
-node: n, expectedHz: n === “BMS” ? 10 : n.startsWith(“INV”) ? 100 : 50,
-actualHz: +(n === “BMS” ? 10 + (R() - 0.5) : n.startsWith(“INV”) ? 98 + R() * 4 : 49 + R() * 2).toFixed(1),
+node: n, expectedHz: n === "BMS" ? 10 : n.startsWith("INV") ? 100 : 50,
+actualHz: +(n === "BMS" ? 10 + (R() - 0.5) : n.startsWith("INV") ? 98 + R() * 4 : 49 + R() * 2).toFixed(1),
 timeouts: Math.floor(R() > 0.8 ? R() * 3 : 0),
-status: R() > 0.1 ? “OK” : “TIMEOUT”,
+status: R() > 0.1 ? "OK" : "TIMEOUT",
 }));
 return { timeline, nodeHealth };
 }
@@ -314,12 +314,12 @@ const totalRegen = acc.reduce((a, d) => a + d.regenRecov, 0);
 
 return (
 <div>
-<div style={{ display: “grid”, gridTemplateColumns: “repeat(5, 1fr)”, gap: 10, marginBottom: 14 }}>
-<KPI label=“Final SoC” value={`${finalSoC.toFixed(1)}%`} sub=“end of endurance” sentiment={finalSoC > 15 ? “positive” : finalSoC > 5 ? “amber” : “negative”} delay={0} />
-<KPI label=“Peak Cell Temp” value={`${maxTemp.toFixed(0)}°C`} sub=“worst cell” sentiment={maxTemp < 55 ? “positive” : maxTemp < 60 ? “amber” : “negative”} delay={1} />
-<KPI label=“Min Pack V” value={`${minVoltage.toFixed(0)} V`} sub=“voltage floor” sentiment={minVoltage > 480 ? “positive” : “amber”} delay={2} />
-<KPI label=“Total Regen” value={`${totalRegen.toFixed(2)} kWh`} sub=“energy recovered” sentiment=“positive” delay={3} />
-<KPI label=“R_internal” value={`${acc[acc.length - 1].Ri.toFixed(3)} Ω`} sub=“at end state” sentiment={acc[acc.length - 1].Ri < 0.012 ? “positive” : “amber”} delay={4} />
+<div style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 10, marginBottom: 14 }}>
+<KPI label="Final SoC" value={`${finalSoC.toFixed(1)}%`} sub="end of endurance" sentiment={finalSoC > 15 ? "positive" : finalSoC > 5 ? "amber" : "negative"} delay={0} />
+<KPI label="Peak Cell Temp" value={`${maxTemp.toFixed(0)}°C`} sub="worst cell" sentiment={maxTemp < 55 ? "positive" : maxTemp < 60 ? "amber" : "negative"} delay={1} />
+<KPI label="Min Pack V" value={`${minVoltage.toFixed(0)} V`} sub="voltage floor" sentiment={minVoltage > 480 ? "positive" : "amber"} delay={2} />
+<KPI label="Total Regen" value={`${totalRegen.toFixed(2)} kWh`} sub="energy recovered" sentiment="positive" delay={3} />
+<KPI label="R_internal" value={`${acc[acc.length - 1].Ri.toFixed(3)} Ω`} sub="at end state" sentiment={acc[acc.length - 1].Ri < 0.012 ? "positive" : "amber"} delay={4} />
 </div>
 
 ```
@@ -435,11 +435,11 @@ eff: +(0.85 + 0.08 * R()).toFixed(3),
 
 return (
 <div>
-<div style={{ display: “grid”, gridTemplateColumns: “repeat(5, 1fr)”, gap: 10, marginBottom: 14 }}>
-<KPI label=“Peak Motor T” value={`${maxMotT.toFixed(0)}°C`} sub=“winding temp” sentiment={maxMotT < 130 ? “positive” : maxMotT < 145 ? “amber” : “negative”} delay={0} />
-<KPI label=“Peak Inv T” value={`${maxInvT.toFixed(0)}°C`} sub=“IGBT junction” sentiment={maxInvT < 100 ? “positive” : “amber”} delay={1} />
-<KPI label=“Peak Derate” value={`${peakDerate.toFixed(0)}%`} sub=“power reduction” sentiment={peakDerate < 5 ? “positive” : “amber”} delay={2} />
-<KPI label=“Peak η” value={`${(peakEff * 100).toFixed(1)}%`} sub=“motor efficiency” sentiment=“positive” delay={3} />
+<div style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 10, marginBottom: 14 }}>
+<KPI label="Peak Motor T" value={`${maxMotT.toFixed(0)}°C`} sub="winding temp" sentiment={maxMotT < 130 ? "positive" : maxMotT < 145 ? "amber" : "negative"} delay={0} />
+<KPI label="Peak Inv T" value={`${maxInvT.toFixed(0)}°C`} sub="IGBT junction" sentiment={maxInvT < 100 ? "positive" : "amber"} delay={1} />
+<KPI label="Peak Derate" value={`${peakDerate.toFixed(0)}%`} sub="power reduction" sentiment={peakDerate < 5 ? "positive" : "amber"} delay={2} />
+<KPI label="Peak η" value={`${(peakEff * 100).toFixed(1)}%`} sub="motor efficiency" sentiment="positive" delay={3} />
 <KPI label="Peak Power" value="80 kW" sub="FSG limit" sentiment="neutral" delay={4} />
 </div>
 
@@ -533,10 +533,10 @@ const trackingRate = tv.filter(t => Math.abs(t.tvError) < 5).length / tv.length 
 
 return (
 <div>
-<div style={{ display: “grid”, gridTemplateColumns: “repeat(4, 1fr)”, gap: 10, marginBottom: 14 }}>
-<KPI label=“TV RMSE” value={`${rmseTV.toFixed(1)} Nm`} sub=“yaw moment error” sentiment={rmseTV < 5 ? “positive” : “amber”} delay={0} />
-<KPI label=“Max |Error|” value={`${maxErr.toFixed(1)} Nm`} sub=“worst-case” sentiment={maxErr < 15 ? “positive” : “amber”} delay={1} />
-<KPI label=“Tracking” value={`${trackingRate.toFixed(0)}%`} sub=“within ±5 Nm” sentiment={trackingRate > 90 ? “positive” : “amber”} delay={2} />
+<div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 10, marginBottom: 14 }}>
+<KPI label="TV RMSE" value={`${rmseTV.toFixed(1)} Nm`} sub="yaw moment error" sentiment={rmseTV < 5 ? "positive" : "amber"} delay={0} />
+<KPI label="Max |Error|" value={`${maxErr.toFixed(1)} Nm`} sub="worst-case" sentiment={maxErr < 15 ? "positive" : "amber"} delay={1} />
+<KPI label="Tracking" value={`${trackingRate.toFixed(0)}%`} sub="within ±5 Nm" sentiment={trackingRate > 90 ? "positive" : "amber"} delay={2} />
 <KPI label="Allocation" value="Convex" sub="global optimum guarantee" sentiment="positive" delay={3} />
 </div>
 
@@ -602,11 +602,11 @@ const maxCRate = Math.max(…regen.map(r => Math.abs(r.cRate)));
 
 return (
 <div>
-<div style={{ display: “grid”, gridTemplateColumns: “repeat(4, 1fr)”, gap: 10, marginBottom: 14 }}>
-<KPI label=“Total Recovered” value={`${(totalRecov * 1000).toFixed(0)} Wh`} sub=“cumulative regen” sentiment=“positive” delay={0} />
-<KPI label=“Recovery Rate” value={`${(totalRecov / (totalConsumed || 1) * 100).toFixed(1)}%`} sub=“vs consumption” sentiment={totalRecov / totalConsumed > 0.08 ? “positive” : “amber”} delay={1} />
-<KPI label=“Peak Regen” value={`${peakRegen.toFixed(1)} kW`} sub=“instantaneous” sentiment=“neutral” delay={2} />
-<KPI label=“Max C-Rate” value={`${maxCRate.toFixed(2)}C`} sub=“charge rate” sentiment={maxCRate < 3 ? “positive” : “amber”} delay={3} />
+<div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 10, marginBottom: 14 }}>
+<KPI label="Total Recovered" value={`${(totalRecov * 1000).toFixed(0)} Wh`} sub="cumulative regen" sentiment="positive" delay={0} />
+<KPI label="Recovery Rate" value={`${(totalRecov / (totalConsumed || 1) * 100).toFixed(1)}%`} sub="vs consumption" sentiment={totalRecov / totalConsumed > 0.08 ? "positive" : "amber"} delay={1} />
+<KPI label="Peak Regen" value={`${peakRegen.toFixed(1)} kW`} sub="instantaneous" sentiment="neutral" delay={2} />
+<KPI label="Max C-Rate" value={`${maxCRate.toFixed(2)}C`} sub="charge rate" sentiment={maxCRate < 3 ? "positive" : "amber"} delay={3} />
 </div>
 
 ```
@@ -665,14 +665,14 @@ return (
 function SafetyTab() {
 const { circuits, faultTimeline } = useMemo(() => gSafetyState(), []);
 
-const stateColor = (s) => s === “OK” || s === “ACTIVE” || s === “ARMED” ? C.gn : s === “FAULT” ? C.red : C.am;
+const stateColor = (s) => s === "OK" || s === "ACTIVE" || s === "ARMED" ? C.gn : s === "FAULT" ? C.red : C.am;
 
 return (
 <div>
-<div style={{ display: “grid”, gridTemplateColumns: “repeat(3, 1fr)”, gap: 10, marginBottom: 14 }}>
+<div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 10, marginBottom: 14 }}>
 <KPI label="Shutdown Loop" value="CLOSED" sub="all interlocks OK" sentiment="positive" delay={0} />
 <KPI label="Active Faults" value="0" sub="no active faults" sentiment="positive" delay={1} />
-<KPI label=“Total Trips” value={circuits.reduce((a, c) => a + c.faults, 0).toString()} sub=“lifetime” sentiment=“neutral” delay={2} />
+<KPI label="Total Trips" value={circuits.reduce((a, c) => a + c.faults, 0).toString()} sub="lifetime" sentiment="neutral" delay={2} />
 </div>
 
 ```
@@ -735,11 +735,11 @@ const avgLatP99 = timeline.reduce((a, t) => a + t.latencyP99, 0) / timeline.leng
 
 return (
 <div>
-<div style={{ display: “grid”, gridTemplateColumns: “repeat(4, 1fr)”, gap: 10, marginBottom: 14 }}>
-<KPI label=“Avg Bus Load” value={`${avgBusLoad.toFixed(1)}%`} sub=“CAN utilization” sentiment={avgBusLoad < 60 ? “positive” : “amber”} delay={0} />
-<KPI label=“Error Frames” value={totalErrors.toString()} sub=“total in session” sentiment={totalErrors < 5 ? “positive” : “amber”} delay={1} />
-<KPI label=“Avg P99 Latency” value={`${avgLatP99.toFixed(1)} ms`} sub=“99th percentile” sentiment={avgLatP99 < 5 ? “positive” : “amber”} delay={2} />
-<KPI label=“Active Nodes” value={nodeHealth.filter(n => n.status === “OK”).length + “/” + nodeHealth.length} sub=“heartbeat OK” sentiment=“positive” delay={3} />
+<div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 10, marginBottom: 14 }}>
+<KPI label="Avg Bus Load" value={`${avgBusLoad.toFixed(1)}%`} sub="CAN utilization" sentiment={avgBusLoad < 60 ? "positive" : "amber"} delay={0} />
+<KPI label="Error Frames" value={totalErrors.toString()} sub="total in session" sentiment={totalErrors < 5 ? "positive" : "amber"} delay={1} />
+<KPI label="Avg P99 Latency" value={`${avgLatP99.toFixed(1)} ms`} sub="99th percentile" sentiment={avgLatP99 < 5 ? "positive" : "amber"} delay={2} />
+<KPI label="Active Nodes" value={nodeHealth.filter(n => n.status === "OK").length + "/" + nodeHealth.length} sub="heartbeat OK" sentiment="positive" delay={3} />
 </div>
 
 ```
@@ -813,11 +813,11 @@ const maxInnov = Math.max(…sensors.map(s => Math.abs(s.innovAx)));
 
 return (
 <div>
-<div style={{ display: “grid”, gridTemplateColumns: “repeat(4, 1fr)”, gap: 10, marginBottom: 14 }}>
-<KPI label=“Avg Confidence” value={`${avgConf.toFixed(1)}%`} sub=“EKF state estimation” sentiment={avgConf > 90 ? “positive” : “amber”} delay={0} />
-<KPI label=“Sensor Faults” value={faults.toString()} sub=“detected anomalies” sentiment={faults < 3 ? “positive” : “amber”} delay={1} />
-<KPI label=“Max Innovation” value={maxInnov.toFixed(3)} sub=“EKF a_x innovation” sentiment={maxInnov < 0.05 ? “positive” : “amber”} delay={2} />
-<KPI label=“GPS HDOP” value={sensors[sensors.length - 1].gpsHDOP.toFixed(1)} sub=“satellite geometry” sentiment={sensors[sensors.length - 1].gpsHDOP < 2 ? “positive” : “amber”} delay={3} />
+<div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 10, marginBottom: 14 }}>
+<KPI label="Avg Confidence" value={`${avgConf.toFixed(1)}%`} sub="EKF state estimation" sentiment={avgConf > 90 ? "positive" : "amber"} delay={0} />
+<KPI label="Sensor Faults" value={faults.toString()} sub="detected anomalies" sentiment={faults < 3 ? "positive" : "amber"} delay={1} />
+<KPI label="Max Innovation" value={maxInnov.toFixed(3)} sub="EKF a_x innovation" sentiment={maxInnov < 0.05 ? "positive" : "amber"} delay={2} />
+<KPI label="GPS HDOP" value={sensors[sensors.length - 1].gpsHDOP.toFixed(1)} sub="satellite geometry" sentiment={sensors[sensors.length - 1].gpsHDOP < 2 ? "positive" : "amber"} delay={3} />
 </div>
 
 ```
@@ -897,11 +897,11 @@ const maxPump = Math.max(…coolant.map(c => c.pumpDuty));
 
 return (
 <div>
-<div style={{ display: “grid”, gridTemplateColumns: “repeat(4, 1fr)”, gap: 10, marginBottom: 14 }}>
-<KPI label=“Thermal Margin” value={`${minMargin.toFixed(0)}°C`} sub=“time to derate” sentiment={minMargin > 20 ? “positive” : minMargin > 5 ? “amber” : “negative”} delay={0} />
-<KPI label=“Peak Motor Jacket” value={`${maxMotJ.toFixed(0)}°C`} sub=“coolant node” sentiment={maxMotJ < 80 ? “positive” : “amber”} delay={1} />
-<KPI label=“Max Pump Duty” value={`${maxPump.toFixed(0)}%`} sub=“coolant pump” sentiment={maxPump < 90 ? “positive” : “amber”} delay={2} />
-<KPI label=“ΔT Radiator” value={`${(coolant[coolant.length - 1].radIn - coolant[coolant.length - 1].radOut).toFixed(1)}°C`} sub=“cooling capacity” sentiment=“neutral” delay={3} />
+<div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 10, marginBottom: 14 }}>
+<KPI label="Thermal Margin" value={`${minMargin.toFixed(0)}°C`} sub="time to derate" sentiment={minMargin > 20 ? "positive" : minMargin > 5 ? "amber" : "negative"} delay={0} />
+<KPI label="Peak Motor Jacket" value={`${maxMotJ.toFixed(0)}°C`} sub="coolant node" sentiment={maxMotJ < 80 ? "positive" : "amber"} delay={1} />
+<KPI label="Max Pump Duty" value={`${maxPump.toFixed(0)}%`} sub="coolant pump" sentiment={maxPump < 90 ? "positive" : "amber"} delay={2} />
+<KPI label="ΔT Radiator" value={`${(coolant[coolant.length - 1].radIn - coolant[coolant.length - 1].radOut).toFixed(1)}°C`} sub="cooling capacity" sentiment="neutral" delay={3} />
 </div>
 
 ```
@@ -972,21 +972,21 @@ const avgBatt = pb.reduce((a, p) => a + p.battOut, 0) / pb.length;
 const avgMech = pb.reduce((a, p) => a + p.mechOut, 0) / pb.length;
 const avgLV = pb.reduce((a, p) => a + p.lvDraw, 0) / pb.length;
 const sankeyData = [
-{ stage: “Battery Out”, value: +avgBatt.toFixed(1), color: ELEC },
-{ stage: “Inverter Loss”, value: +avgInvLoss.toFixed(2), color: C.red },
-{ stage: “Motor Cu Loss”, value: +avgMotCu.toFixed(2), color: C.am },
-{ stage: “Motor Fe Loss”, value: +avgMotFe.toFixed(2), color: “#ff8c00” },
-{ stage: “LV System”, value: +avgLV.toFixed(2), color: C.dm },
-{ stage: “Mech Output”, value: +avgMech.toFixed(1), color: C.gn },
+{ stage: "Battery Out", value: +avgBatt.toFixed(1), color: ELEC },
+{ stage: "Inverter Loss", value: +avgInvLoss.toFixed(2), color: C.red },
+{ stage: "Motor Cu Loss", value: +avgMotCu.toFixed(2), color: C.am },
+{ stage: "Motor Fe Loss", value: +avgMotFe.toFixed(2), color: "#ff8c00" },
+{ stage: "LV System", value: +avgLV.toFixed(2), color: C.dm },
+{ stage: "Mech Output", value: +avgMech.toFixed(1), color: C.gn },
 ];
 
 return (
 <div>
-<div style={{ display: “grid”, gridTemplateColumns: “repeat(4, 1fr)”, gap: 10, marginBottom: 14 }}>
-<KPI label=“Avg η_total” value={`${(avgEff * 100).toFixed(1)}%`} sub=“battery→wheel” sentiment={avgEff > 0.88 ? “positive” : “amber”} delay={0} />
-<KPI label=“Inv Loss” value={`${avgInvLoss.toFixed(1)} kW avg`} sub=“switching + conduction” sentiment=“neutral” delay={1} />
-<KPI label=“Motor Loss” value={`${(avgMotCu + avgMotFe).toFixed(1)} kW avg`} sub=“copper + iron” sentiment=“neutral” delay={2} />
-<KPI label=“LV Draw” value={`${(avgLV * 1000).toFixed(0)} W`} sub=“12V subsystem” sentiment={avgLV < 0.25 ? “positive” : “amber”} delay={3} />
+<div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 10, marginBottom: 14 }}>
+<KPI label="Avg η_total" value={`${(avgEff * 100).toFixed(1)}%`} sub="battery→wheel" sentiment={avgEff > 0.88 ? "positive" : "amber"} delay={0} />
+<KPI label="Inv Loss" value={`${avgInvLoss.toFixed(1)} kW avg`} sub="switching + conduction" sentiment="neutral" delay={1} />
+<KPI label="Motor Loss" value={`${(avgMotCu + avgMotFe).toFixed(1)} kW avg`} sub="copper + iron" sentiment="neutral" delay={2} />
+<KPI label="LV Draw" value={`${(avgLV * 1000).toFixed(0)} W`} sub="12V subsystem" sentiment={avgLV < 0.25 ? "positive" : "amber"} delay={3} />
 </div>
 
 ```
@@ -1043,17 +1043,17 @@ return (
 // MAIN EXPORT
 // ═══════════════════════════════════════════════════════════════════════════
 export default function ElectronicsModule() {
-const [tab, setTab] = useState(“accumulator”);
+const [tab, setTab] = useState("accumulator");
 
 return (
 <div>
 {/* Header banner */}
 <div style={{
-…GL, padding: “12px 16px”, marginBottom: 14,
+…GL, padding: "12px 16px", marginBottom: 14,
 borderLeft: `3px solid ${ELEC}`,
 background: `linear-gradient(90deg, ${ELEC}08, transparent)`,
 }}>
-<div style={{ display: “flex”, alignItems: “center”, gap: 10 }}>
+<div style={{ display: "flex", alignItems: "center", gap: 10 }}>
 <span style={{ fontSize: 20, color: ELEC }}>⚡</span>
 <div>
 <span style={{ fontSize: 12, fontWeight: 800, color: ELEC, fontFamily: C.dt, letterSpacing: 2 }}>
