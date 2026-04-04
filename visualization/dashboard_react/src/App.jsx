@@ -46,6 +46,7 @@ import DifferentiableInsightsModule from "./DifferentiableInsightsModule.jsx";
 import ResearchModule from "./ResearchModule.jsx";
 import AerodynamicsModule from "./AerodynamicsModule.jsx";
 import ElectronicsModule from "./ElectronicsModule.jsx";
+import PowertrainControlModule from "./PowertrainControlModule.jsx";
 
 // ═════════════════════════════════════════════════════════════════════════════
 // GROUPED NAV CONFIGURATION — 7 groups, 13 modules
@@ -85,6 +86,7 @@ const NAV_GROUPS = [
       { key: "energy",     label: "Energy Audit", icon: "⊕" },
       { key: "diff",       label: "∇ Insights",   icon: "∂" },
       { key: "research",   label: "Research",       icon: "⚙" },
+      { key: "powertrain", label: "Powertrain Control", icon: "⏣" }
     ],
   },
   {
@@ -281,6 +283,8 @@ energy={energy}
   case "compliance":  return <ComplianceModule />;
   case "diff":        return <DifferentiableInsightsModule />;
   case "research":    return <ResearchModule />;
+  case "powertrain": return <PowertrainControlModule />;
+
   // ── v5.0 NEW MODULES ──────────────────────────────────────────
   case "aero":        return <AerodynamicsModule />;
   case "electronics": return <ElectronicsModule />;

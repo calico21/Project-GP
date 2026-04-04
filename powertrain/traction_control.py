@@ -1,0 +1,310 @@
+# powertrain/traction_control.py
+# Project-GP — Differentiable Extremum-Seeking Traction Controller (DESC)
+# ═══════════════════════════════════════════════════════════════════════════════
+#
+# Dual-path optimal slip ratio estimation:
+#   Path 1 — Model-based: analytical kappa* from Pacejka MF6.2 dFx/dkappa = 0
+#   Path 2 — Model-free:  DESC extremum seeking via 15 Hz dither on Fx
+#   Fusion:  GP uncertainty-weighted blend
+#
+# Combined-slip awareness:
+#   kappa*_combined = kappa*_pure * sqrt(1 - (alpha_t / alpha_peak)^2)
+#
+# Mode-free TC/TV integration:
+#   Continuous sigmoid-blended weights for the unified SOCP allocator.
+#
+# All functions are pure JAX — safe inside jit/grad/vmap/scan.
+# ═══════════════════════════════════════════════════════════════════════════════
+
+from __future__ import annotations
+import jax
+import jax.numpy as jnp
+from functools import partial
+from typing import NamedTuple
+
+# ─────────────────────────────────────────────────────────────────────────────
+# S1  DESC Configuration + State
+# ─────────────────────────────────────────────────────────────────────────────
+
+class DESCParams(NamedTuple):
+    omega_es: float = 94.25       # rad/s dither frequency (15 Hz)
+    A_dither: float = 0.005       # dither amplitude on kappa_ref
+    eta: float = 0.5              # gradient ascent learning rate
+    alpha_hp: float = 0.85        # high-pass filter coefficient
+    alpha_lp: float = 0.90        # low-pass filter coefficient
+    kappa_init: float = 0.10      # initial kappa_base estimate
+    kappa_min: float = 0.03       # minimum kappa_base
+    kappa_max: float = 0.25       # maximum kappa_base
+
+class DESCState(NamedTuple):
+    kappa_base: jax.Array
+    integrator: jax.Array
+    hpf_state: jax.Array
+    lpf_state: jax.Array
+
+def make_desc_state(params: DESCParams = DESCParams()) -> DESCState:
+    return DESCState(
+        kappa_base=jnp.array(params.kappa_init),
+        integrator=jnp.array(params.kappa_init),
+        hpf_state=jnp.array(0.0),
+        lpf_state=jnp.array(0.0),
+    )
+
+# ─────────────────────────────────────────────────────────────────────────────
+# S2  DESC Step (single timestep, fully differentiable)
+# ─────────────────────────────────────────────────────────────────────────────
+
+@jax.jit
+def desc_step(
+    state: DESCState,
+    Fx_measured: jax.Array,
+    t: jax.Array,
+    vx: jax.Array,
+    params: DESCParams = DESCParams(),
+) -> tuple[DESCState, jax.Array]:
+    """
+    Single DESC update via lock-in demodulation on motor-side Fx.
+    Uses Fx (from motor torque accounting) not a_x (from IMU) to bypass
+    chassis vibration. Returns (new_state, kappa_ref_with_dither).
+    """
+    kappa_base, integrator, hpf_state, lpf_state = state
+
+    # Dither signal
+    dither = params.A_dither * jnp.sin(params.omega_es * t)
+
+    # High-pass: remove DC + low-freq vehicle dynamics
+    hpf_new = params.alpha_hp * hpf_state + (1.0 - params.alpha_hp) * Fx_measured
+    Fx_hp = Fx_measured - hpf_new
+
+    # Lock-in correlation: extract Fx component at exactly omega_es
+    grad_raw = Fx_hp * jnp.sin(params.omega_es * t) * (2.0 / (params.A_dither + 1e-8))
+
+    # Low-pass: smooth noisy gradient estimate
+    lpf_new = params.alpha_lp * lpf_state + (1.0 - params.alpha_lp) * grad_raw
+
+    # Speed gate: DESC meaningless below 3 m/s (tau -> inf)
+    speed_gate = jax.nn.sigmoid((vx - 3.0) * 2.0)
+
+    # Gradient ascent on kappa_base
+    integrator_new = integrator + params.eta * lpf_new * speed_gate * 0.005
+    kappa_base_new = jnp.clip(integrator_new, params.kappa_min, params.kappa_max)
+    integrator_new = kappa_base_new
+
+    kappa_ref = kappa_base_new + dither * speed_gate
+    return DESCState(kappa_base_new, integrator_new, hpf_new, lpf_new), kappa_ref
+
+# ─────────────────────────────────────────────────────────────────────────────
+# S3  Model-Based kappa* from Pacejka Coefficients
+# ─────────────────────────────────────────────────────────────────────────────
+
+@jax.jit
+def kappa_star_pacejka(
+    Fz: jax.Array,
+    gamma: jax.Array,
+    mu_thermal: jax.Array,
+    # Default Hoosier R20 coefficients
+    Fz0: float = 654.0,
+    PCX1: float = 1.579, PDX1: float = 1.0, PDX2: float = -0.10, PDX3: float = 0.0,
+    PKX1: float = 18.5, PKX2: float = 0.0, PKX3: float = 0.20,
+    PEX1: float = -0.20, PEX2: float = 0.10,
+) -> jax.Array:
+    """
+    Analytical optimal slip ratio from Pacejka MF6.2 pure longitudinal.
+    Solves dFx/dkappa = 0 via 3 Newton iterations.
+    """
+    Fz_safe = jnp.maximum(Fz, 10.0)
+    dfz = (Fz_safe - Fz0) / (Fz0 + 1e-6)
+
+    Cx = PCX1
+    Dx = PDX1 * (1.0 + PDX2 * dfz) * (1.0 - PDX3 * gamma ** 2) * Fz_safe * mu_thermal
+    Kx = PKX1 * Fz_safe * jnp.exp(PKX3 * dfz) * (1.0 + PKX2 * dfz)
+    Bx = Kx / jnp.maximum(Cx * Dx, 1e-6)
+    Ex = jnp.clip(PEX1 + PEX2 * dfz, -10.0, 1.0)
+
+    # Initial guess: peak of simplified magic formula
+    kappa_init = jnp.tan(jnp.pi / (2.0 * Cx + 1e-6)) / (Bx + 1e-6)
+    kappa_init = jnp.clip(kappa_init, 0.02, 0.25)
+
+    # 3 Newton iterations (unrolled for JIT, accounts for E curvature)
+    def newton_step(kappa, _):
+        Bk = Bx * kappa
+        inner = Bk - Ex * (Bk - jnp.arctan(Bk))
+
+        # dFx/dkappa
+        dBk = Bx
+        d_inner = dBk * (1.0 - Ex * (1.0 - 1.0 / (1.0 + Bk ** 2)))
+        d_atan_inner = d_inner / (1.0 + inner ** 2)
+        dFx = Dx * jnp.cos(Cx * jnp.arctan(inner)) * Cx * d_atan_inner
+
+        # d2Fx/dkappa2 via finite difference
+        eps_fd = 1e-4
+        Bk_p = Bx * (kappa + eps_fd)
+        inner_p = Bk_p - Ex * (Bk_p - jnp.arctan(Bk_p))
+        d_inner_p = Bx * (1.0 - Ex * (1.0 - 1.0 / (1.0 + Bk_p ** 2)))
+        d_atan_inner_p = d_inner_p / (1.0 + inner_p ** 2)
+        dFx_p = Dx * jnp.cos(Cx * jnp.arctan(inner_p)) * Cx * d_atan_inner_p
+        d2Fx = (dFx_p - dFx) / eps_fd
+
+        d2Fx_safe = jnp.where(jnp.abs(d2Fx) > 1e-6, d2Fx, -1e-6)
+        kappa_new = kappa - dFx / d2Fx_safe
+        return jnp.clip(kappa_new, 0.02, 0.30), None
+
+    kappa_star, _ = jax.lax.scan(newton_step, kappa_init, None, length=3)
+    return kappa_star
+
+# ─────────────────────────────────────────────────────────────────────────────
+# S4  Combined-Slip kappa* Reduction
+# ─────────────────────────────────────────────────────────────────────────────
+
+@jax.jit
+def kappa_star_combined(
+    kappa_star_pure: jax.Array,  # (4,)
+    alpha_t: jax.Array,          # (4,) transient slip angles [rad]
+    alpha_peak: jax.Array,       # scalar peak lateral slip [rad]
+) -> jax.Array:
+    """Reduce kappa* when tire is cornering (friction ellipse)."""
+    alpha_ratio_sq = (alpha_t / (jnp.abs(alpha_peak) + 1e-3)) ** 2
+    alpha_ratio_clamped = jnp.clip(alpha_ratio_sq, 0.0, 0.95)
+    reduction = jnp.sqrt(
+        jax.nn.softplus((1.0 - alpha_ratio_clamped) * 10.0) / 10.0 + 1e-6
+    )
+    return kappa_star_pure * reduction
+
+# ─────────────────────────────────────────────────────────────────────────────
+# S5  Dual-Path Fusion
+# ─────────────────────────────────────────────────────────────────────────────
+
+@jax.jit
+def fuse_kappa_star(
+    kappa_model: jax.Array,
+    kappa_esc: jax.Array,
+    gp_sigma: jax.Array,
+    sigma_base: float = 0.05,
+) -> jax.Array:
+    """GP-uncertainty-weighted fusion. High sigma -> trust ESC, low -> trust model."""
+    alpha = jnp.clip(gp_sigma / (gp_sigma + sigma_base + 1e-8), 0.05, 0.95)
+    return alpha * kappa_esc + (1.0 - alpha) * kappa_model
+
+# ─────────────────────────────────────────────────────────────────────────────
+# S6  Mode-Free TC/TV Weight Blending
+# ─────────────────────────────────────────────────────────────────────────────
+
+class BlendWeights(NamedTuple):
+    w_slip: jax.Array
+    w_yaw: jax.Array
+    w_energy: jax.Array
+
+@jax.jit
+def compute_blend_weights(
+    vx: jax.Array, ax: jax.Array, ay: jax.Array, is_launch: jax.Array,
+    w_slip_base: float = 1.0, w_slip_launch_boost: float = 5.0,
+    w_yaw_base: float = 200.0, w_energy_base: float = 0.01,
+) -> BlendWeights:
+    """Continuous sigmoid-blended TC/TV weights. No mode switching."""
+    ax_abs = jnp.abs(ax)
+    ay_abs = jnp.abs(ay)
+    lon_ratio = ax_abs / (ax_abs + ay_abs + 0.1)
+    low_speed_boost = jax.nn.softplus(5.0 - vx) / 5.0
+
+    w_slip = w_slip_base * (1.0 + lon_ratio * 2.0 + low_speed_boost
+                            + is_launch * w_slip_launch_boost)
+    w_yaw = w_yaw_base * (1.0 - lon_ratio * 0.5) * (1.0 - is_launch * 0.9)
+    w_energy = w_energy_base * jax.nn.sigmoid(vx - 10.0)
+
+    return BlendWeights(w_slip=w_slip, w_yaw=w_yaw, w_energy=w_energy)
+
+# ─────────────────────────────────────────────────────────────────────────────
+# S7  Slip Ratio Computation
+# ─────────────────────────────────────────────────────────────────────────────
+
+@jax.jit
+def compute_slip_ratios(omega_wheel: jax.Array, vx: jax.Array, r_w: float = 0.2032):
+    """Per-wheel kappa = (omega*r - vx) / max(|vx|, 0.5)."""
+    vx_safe = jnp.maximum(jnp.abs(vx), 0.5)
+    return jnp.clip((omega_wheel * r_w - vx) / vx_safe, -0.8, 0.8)
+
+# ─────────────────────────────────────────────────────────────────────────────
+# S8  Motor-Side Fx Estimator
+# ─────────────────────────────────────────────────────────────────────────────
+
+@jax.jit
+def estimate_fx_from_motors(
+    T_wheel: jax.Array, omega_wheel: jax.Array,
+    Iw: float = 1.2, r_w: float = 0.2032, dt: float = 0.005,
+    omega_prev: jax.Array = None,
+) -> jax.Array:
+    """Fx_tire = (T_motor - Iw*omega_dot*r_w) / r_w. Bypasses IMU vibration."""
+    if omega_prev is None:
+        omega_prev = omega_wheel
+    omega_dot = (omega_wheel - omega_prev) / (dt + 1e-6)
+    return (T_wheel - Iw * omega_dot * r_w) / r_w
+
+# ─────────────────────────────────────────────────────────────────────────────
+# S9  Top-Level TC Controller
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TCState(NamedTuple):
+    desc_front: DESCState
+    desc_rear: DESCState
+    omega_prev: jax.Array     # (4,) previous wheel speeds
+    kappa_star: jax.Array     # (4,) current targets
+
+def make_tc_state(params: DESCParams = DESCParams()) -> TCState:
+    return TCState(
+        desc_front=make_desc_state(params),
+        desc_rear=make_desc_state(params),
+        omega_prev=jnp.zeros(4),
+        kappa_star=jnp.full(4, params.kappa_init),
+    )
+
+class TCOutput(NamedTuple):
+    kappa_star: jax.Array
+    kappa_measured: jax.Array
+    kappa_error: jax.Array
+    desc_grad_front: jax.Array
+    desc_grad_rear: jax.Array
+    blend_weights: BlendWeights
+
+@partial(jax.jit, static_argnums=())
+def tc_step(
+    vx: jax.Array, ax: jax.Array, ay: jax.Array,
+    omega_wheel: jax.Array, alpha_t: jax.Array,
+    Fz: jax.Array, gamma: jax.Array,
+    mu_thermal: jax.Array, gp_sigma: jax.Array,
+    T_wheel: jax.Array, t: jax.Array, is_launch: jax.Array,
+    tc_state: TCState,
+    desc_params: DESCParams = DESCParams(),
+    r_w: float = 0.2032, alpha_peak: float = 0.12,
+) -> tuple[TCOutput, TCState]:
+    """Single TC timestep: DESC + model fusion + combined-slip + blending."""
+    kappa_measured = compute_slip_ratios(omega_wheel, vx, r_w)
+
+    Fx_est = estimate_fx_from_motors(T_wheel, omega_wheel, dt=0.005,
+                                      omega_prev=tc_state.omega_prev)
+    Fx_front_avg = (Fx_est[0] + Fx_est[1]) / 2.0
+    Fx_rear_avg = (Fx_est[2] + Fx_est[3]) / 2.0
+
+    desc_f_new, kappa_ref_f = desc_step(tc_state.desc_front, Fx_front_avg, t, vx, desc_params)
+    desc_r_new, kappa_ref_r = desc_step(tc_state.desc_rear, Fx_rear_avg, t, vx, desc_params)
+    kappa_esc = jnp.array([kappa_ref_f, kappa_ref_f, kappa_ref_r, kappa_ref_r])
+
+    kappa_model = jax.vmap(
+        lambda fz, gam: kappa_star_pacejka(fz, gam, mu_thermal)
+    )(Fz, gamma)
+
+    kappa_fused = jax.vmap(
+        lambda km, ke: fuse_kappa_star(km, ke, gp_sigma)
+    )(kappa_model, kappa_esc)
+
+    kappa_star = kappa_star_combined(kappa_fused, alpha_t, jnp.array(alpha_peak))
+    blend = compute_blend_weights(vx, ax, ay, is_launch)
+
+    output = TCOutput(
+        kappa_star=kappa_star, kappa_measured=kappa_measured,
+        kappa_error=kappa_star - kappa_measured,
+        desc_grad_front=desc_f_new.lpf_state,
+        desc_grad_rear=desc_r_new.lpf_state,
+        blend_weights=blend,
+    )
+    new_state = TCState(desc_f_new, desc_r_new, omega_wheel, kappa_star)
+    return output, new_state
