@@ -43,6 +43,7 @@ import EnduranceStrategyModule from "./EnduranceStrategyModule.jsx";
 import WeightBalanceModule from "./WeightBalanceModule.jsx";
 import ComplianceModule from "./ComplianceModule.jsx";
 import DifferentiableInsightsModule from "./DifferentiableInsightsModule.jsx";
+import ResearchModule from "./ResearchModule.jsx";
 import AerodynamicsModule from "./AerodynamicsModule.jsx";
 import ElectronicsModule from "./ElectronicsModule.jsx";
 
@@ -83,6 +84,7 @@ const NAV_GROUPS = [
     label: "CONTROLS & AI", accent: C.cy, items: [
       { key: "energy",     label: "Energy Audit", icon: "⊕" },
       { key: "diff",       label: "∇ Insights",   icon: "∂" },
+      { key: "research",   label: "Research",       icon: "⚙" },
     ],
   },
   {
@@ -278,7 +280,7 @@ energy={energy}
   case "weight":      return <WeightBalanceModule />;
   case "compliance":  return <ComplianceModule />;
   case "diff":        return <DifferentiableInsightsModule />;
-
+  case "research":    return <ResearchModule />;
   // ── v5.0 NEW MODULES ──────────────────────────────────────────
   case "aero":        return <AerodynamicsModule />;
   case "electronics": return <ElectronicsModule />;
