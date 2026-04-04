@@ -39,8 +39,7 @@ const CBF_C = "#ef4444";
 const DESC_C = "#22d3ee";
 const LAUNCH_C = "#a855f7";
 const ax = () => ({ tick: { fontSize: 8, fill: C.dm, fontFamily: C.dt }, stroke: C.b1, tickLine: false });
-const tt = () => ({ contentStyle: { ...GS, fontSize: 9, padding: "6px 10px" }, labelStyle: { fontSize: 8, color: C.dm } });
-const CORNERS = ["FL", "FR", "RL", "RR"];
+const tt = () => ({ contentStyle: { background: C.panel, border: `1px solid ${C.b1}`, borderRadius: 4, fontSize: 9, padding: "6px 10px" }, labelStyle: { fontSize: 8, color: C.dm } });const CORNERS = ["FL", "FR", "RL", "RR"];
 const CORNER_C = [C.cy, C.gn, C.am, C.red];
 
 const TABS = [
@@ -232,8 +231,9 @@ function FrictionCircleMini({ data, idx, label, color }) {
     const a = i * Math.PI * 2 / 36;
     return { fx: muFz * Math.cos(a), fy: muFz * Math.sin(a) };
   });
-  return (
-    <div style={{ ...GL, padding: "8px 6px", textAlign: "center" }}>
+  // LA SOLUCIÓN:
+return (
+    <GC style={{ padding: "8px 6px", textAlign: "center" }}>
       <div style={{ fontSize: 8, fontWeight: 700, color, letterSpacing: 2, fontFamily: C.dt, marginBottom: 4 }}>{label}</div>
       <ResponsiveContainer width="100%" height={110}>
         <ScatterChart margin={{ top: 2, right: 2, bottom: 2, left: 2 }}>
@@ -244,7 +244,7 @@ function FrictionCircleMini({ data, idx, label, color }) {
         </ScatterChart>
       </ResponsiveContainer>
       <div style={{ fontSize: 7, color: C.dm, fontFamily: C.dt }}>Fx/Fy [×10 N]</div>
-    </div>
+    </GC>
   );
 }
 
