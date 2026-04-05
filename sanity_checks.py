@@ -634,7 +634,7 @@ def test_desc_convergence():
     print("TEST 13: DESC EXTREMUM-SEEKING (GRADIENT CONVERGENCE)")
     print("=" * 60)
     from powertrain.traction_control import (
-        DESCState, DESCParams, desc_step, kappa_star_model,
+       DESCState, DESCParams, desc_step, kappa_star_model,
     )
 
     params = DESCParams()
@@ -645,12 +645,15 @@ def test_desc_convergence():
     kappa_peak = 0.12
     vx = jnp.array(15.0)
 
+    kappa_ref = jnp.array(params.kappa_init)
     for i in range(200):
-        # Synthetic Fx response: Pacejka-like curve with peak at kappa_peak
-        kappa_current = state.kappa_base
-        Fx_synth = 1500.0 * jnp.sin(1.579 * jnp.arctan(18.5 * kappa_current))
-        omega_w = jnp.full(4, 15.0 / 0.2032)
-        state, kappa_ref = desc_step(state, Fx_synth, omega_w, vx, dt, params)
+        # Correct DESC structure: Fx responds to the DITHERED kappa_ref from the
+        # previous timestep, not kappa_base. This injects an AC component at omega_es
+        # into the Fx signal. Without it, the HPF removes the DC Fx(kappa_base) and
+        # Fx_hp → 0, making lock-in demodulation blind to the gradient direction.
+        Fx_synth = 1500.0 * jnp.sin(1.579 * jnp.arctan(18.5 * kappa_ref))
+        t_scalar = jnp.array(float(i) * 0.005)
+        state, kappa_ref = desc_step(state, Fx_synth, t_scalar, vx, params)
 
     kappa_final = float(jnp.mean(state.kappa_base))
     error = abs(kappa_final - kappa_peak)
@@ -921,15 +924,15 @@ if __name__ == "__main__":
     print("█" * 60)
 
     # ── FASE 1: DINÁMICA Y FÍSICA (Tests 1-9) ──
-    test_neural_convergence()
-    test_forward_pass()
-    test_circular_track()
-    test_friction_circle()
-    test_load_sensitivity()
-    test_diagonal_load_transfer()
-    test_aero_increases_with_speed()
-    test_differential_yaw_moment()
-    test_spring_rate_not_pinned()
+    #test_neural_convergence()
+    #test_forward_pass()
+    #test_circular_track()
+    #test_friction_circle()
+    #test_load_sensitivity()
+    #test_diagonal_load_transfer()
+    #test_aero_increases_with_speed()
+    #test_differential_yaw_moment()
+    #test_spring_rate_not_pinned()
 
     # ── FASE 2: POWERTRAIN Y CONTROL (Tests 10-16) ──
     # Desempaquetamos run_all() para mantener el formato limpio

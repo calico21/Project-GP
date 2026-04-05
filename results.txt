@@ -184,11 +184,67 @@ Running brief MORL simulation to verify parameter bounding...
 [MORL-SB-TRPO] WARNING: empty archive. Returning default setup.
 [PASS] Optimizer search domain healthy. Lower bound fraction: 100% (Target <50%)
 [PASS] Stability cap working: max Stability_Overshoot = 0.00 ≤ 5.0
+============================================================
+TEST 10: MOTOR TORQUE ENVELOPE (FIELD-WEAKENING CONTINUITY)
+============================================================
+[PASS] Low-speed torque: 119.9 Nm (expected ≈120 Nm, error <5%)
+[PASS] Field-weakening region is monotonically decreasing (166 points checked)
+[PASS] Torque envelope is non-negative everywhere (min=16.6514 Nm)
+[PASS] Per-wheel limits: T_min=[-189.9] ≤ T_max=[319.7] Nm (all finite, correctly ordered)
 
 ============================================================
-✅ ALL PHYSICS SUBSYSTEMS UPGRADED AND VERIFIED.
-The Digital Twin is now fully mature. Proceed to skidpad telemetry validation.
+TEST 11: SOCP TORQUE ALLOCATOR (FRICTION FEASIBILITY)
 ============================================================
+[PASS] All torques within motor limits (T=[0.0, 0.0, 0.0, 0.0] Nm)
+[PASS] Friction circles feasible (max utilization: 0.000)
+[PASS] Straight-line yaw moment ≈ 0 (actual: 0.0 Nm)
+[WARN] SOCP solve time: 264.9ms (exceeds 50ms budget)
+
+============================================================
+TEST 12: CBF SAFETY FILTER (SIDESLIP INVARIANCE)
+============================================================
+[PASS] CBF intervened: modification magnitude = 676.8 Nm (β=0.133 rad, near limit 0.15)
+[PASS] CBF reduced yaw moment: 2342.5 → -1620.9 Nm
+[PASS] CBF output is finite: [241.2, -41.2, 285.5, 14.5] Nm
+
+============================================================
+TEST 13: DESC EXTREMUM-SEEKING (GRADIENT CONVERGENCE)
+============================================================
+[WARN] DESC partially converged: κ_base = 0.1751 (target ≈ 0.12, error = 0.0551)
+[PASS] Model-based κ* = 0.1658 (physically reasonable range)
+
+============================================================
+TEST 14: LAUNCH CONTROL STATE MACHINE
+============================================================
+  Phase progression: IDLE(0) → ARMED(1) → LAUNCH(3) → FINAL(5)
+[PASS] State machine progresses monotonically through phases
+[PASS] Launch produces torque or has handed off to TC (|T| = 800.0 Nm, phase = 5)
+
+============================================================
+TEST 15: VIRTUAL IMPEDANCE (PIO SUPPRESSION)
+============================================================
+[PASS] Step response 90% rise time: 80ms (budget: <150ms)
+[PASS] Steady-state value: 1.0000 (target: 1.0, error <5%)
+[PASS] Phase lag at 3 Hz: 55.5° (>30° breaks PIO loop, attenuation: 6.3%)
+  Natural freq: 4.8 Hz, damping ratio: 0.700
+
+============================================================
+TEST 16: FULL POWERTRAIN PIPELINE (JIT + TIMING)
+============================================================
+  Compiling full pipeline (first call)...
+  Compile time: 0.66s
+  Running 50 warm steps for timing...
+[WARN] Per-step time: 12.348ms (exceeds 5.0ms budget — expected on CPU, OK if <1ms on target SBC)
+[PASS] Output torques finite: [3.2, 5.0, 3.1, 5.1] Nm
+[PASS] Thermal dynamics active: ΔT_motor = +0.2759°C after 50 steps
+[PASS] SoC decreasing under load: 94.9812% (Δ = -0.018799%)
+  Diagnostics: 27 fields available for telemetry/dashboard
+
+============================================================
+✅ VALIDACIÓN END-TO-END COMPLETADA CON ÉXITO.
+El Gemelo Digital y el Stack de Control están listos para el hardware.
+============================================================
+
 (project_gp_env) alexr@ALEXRP:~/FS_Driver_Setup_Optimizer$ python main.py --mode setup --iterations 400
 wandb: [wandb.login()] Loaded credentials for https://api.wandb.ai from /home/alexr/.netrc.
 wandb: Currently logged in as: calico21 (calico21-no-institution) to https://api.wandb.ai. Use `wandb login --relogin` to force relogin
