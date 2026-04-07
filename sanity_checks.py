@@ -594,11 +594,12 @@ def test_cbf_safety():
     T_alloc = jnp.array([-100.0, 300.0, -50.0, 350.0])  # strong rightward yaw
     T_prev = jnp.zeros(4)
 
+    gp_sigma = jnp.array(0.05)  # moderate GP uncertainty
     T_safe = cbf_safety_filter(
         T_alloc, T_prev, vx, vy, wz, Fz, Fy_total, mu_est,
-        omega_w, T_min, T_max, geo, cbf,
+        omega_w, T_min, T_max, gp_sigma, geo, cbf,
     )
-
+    
     intervention = float(jnp.linalg.norm(T_safe - T_alloc))
     if intervention > 5.0:
         print(f"[PASS] CBF intervened: modification magnitude = {intervention:.1f} Nm "
@@ -612,7 +613,19 @@ def test_cbf_safety():
     arms = yaw_moment_arms(jnp.array(0.0), geo)
     Mz_alloc = float(jnp.sum(T_alloc * arms))
     Mz_safe = float(jnp.sum(T_safe * arms))
-
+    # ── rCBF uncertainty test: higher σ → stronger intervention ──────────
+    gp_sigma_high = jnp.array(0.20)  # uncalibrated GP
+    T_safe_uncertain = cbf_safety_filter(
+        T_alloc, T_prev, vx, vy, wz, Fz, Fy_total, mu_est,
+        omega_w, T_min, T_max, gp_sigma_high, geo, cbf,
+    )
+    intervention_uncertain = float(jnp.linalg.norm(T_safe_uncertain - T_alloc))
+    if intervention_uncertain > intervention:
+        print(f"[PASS] rCBF: higher σ → stronger intervention "
+              f"({intervention:.1f} → {intervention_uncertain:.1f} Nm)")
+    else:
+        print(f"[WARN] rCBF: higher σ did not increase intervention")
+        
     if abs(Mz_safe) < abs(Mz_alloc):
         print(f"[PASS] CBF reduced yaw moment: {Mz_alloc:.1f} → {Mz_safe:.1f} Nm")
     else:

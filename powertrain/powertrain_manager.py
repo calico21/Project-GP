@@ -452,7 +452,7 @@ def powertrain_step(
     T_safe = cbf_safety_filter(
         T_alloc, manager_state.tv.T_prev,
         vx, vy, wz, Fz, Fy_total, mu_est, omega_wheel,
-        T_min, T_max, geo, config.cbf,
+        T_min, T_max, gp_sigma, geo, config.cbf,
     )
     cbf_intervention = jnp.linalg.norm(T_safe - T_alloc)
     cbf_active = (cbf_intervention > 1.0).astype(jnp.float32)

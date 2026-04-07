@@ -190,7 +190,7 @@ def test_cbf_safety():
 
     T_safe = cbf_safety_filter(
         T_alloc, T_prev, vx, vy, wz, Fz, Fy_total, mu_est,
-        omega_w, T_min, T_max, geo, cbf,
+        omega_w, T_min, T_max, gp_sigma, geo, cbf,
     )
 
     intervention = float(jnp.linalg.norm(T_safe - T_alloc))

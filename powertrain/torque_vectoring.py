@@ -623,23 +623,10 @@ def tv_step(
 
     # ── 6. CBF safety filter ────────────────────────────────────────────
     Fy_total = jnp.sum(Fy)
-    gp_sigma = jnp.array(0.05)  # moderate uncertainty
     T_safe = cbf_safety_filter(
         T_alloc, T_prev, vx, vy, wz, Fz, Fy_total, mu_est,
-        omega_w, T_min, T_max, gp_sigma, geo, cbf,
+        omega_wheel, T_min, T_max, gp_sigma, geo, cbf,
     )
-    # High-uncertainty scenario: CBF should be MORE conservative
-    gp_sigma_high = jnp.array(0.20)  # uncalibrated GP
-    T_safe_uncertain = cbf_safety_filter(
-        T_alloc, T_prev, vx, vy, wz, Fz, Fy_total, mu_est,
-        omega_w, T_min, T_max, gp_sigma_high, geo, cbf,
-    )
-    intervention_uncertain = float(jnp.linalg.norm(T_safe_uncertain - T_alloc))
-    if intervention_uncertain > intervention:
-        print(f"[PASS] rCBF: higher σ → stronger intervention "
-              f"({intervention:.1f} → {intervention_uncertain:.1f} Nm)")
-    else:
-        print(f"[WARN] rCBF: higher σ did not increase intervention")
     # CBF intervention magnitude (for diagnostics)
     cbf_intervention = jnp.linalg.norm(T_safe - T_alloc)
     cbf_active = (cbf_intervention > 1.0).astype(jnp.float32)
