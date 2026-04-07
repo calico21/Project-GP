@@ -29,3 +29,5 @@ python main.py --mode setup
 streamlit run visualization/dashboard.py
 
 python -m optimization.residual_fitting
+
+python simulator/physics_server.py --track fsg_autocross

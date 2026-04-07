@@ -54,6 +54,7 @@ from models.vehicle_dynamics import (
 from optimization.objectives import (
     compute_skidpad_objective,
     compute_step_steer_objective,
+    compute_endurance_lte_objective,  # <-- ADD THIS
 )
 from data.configs.vehicle_params import vehicle_params as VP
 from data.configs.tire_coeffs import tire_coeffs as TC
@@ -264,8 +265,8 @@ class MORL_SB_TRPO_Optimizer:
     KL_LAG_HORIZON   = 10
     RESTART_INTERVAL = 200
     N_RESTART        = 5
-    BO_N_INIT        = 10
-    BO_N_ITERS       = 30
+    BO_N_INIT        = 20       # was 10 — more initial coverage
+    BO_N_ITERS       = 80       # was 30 — 28D needs more iterations
 
     def __init__(self, ensemble_size: int = 20, dim: int = SETUP_DIM):
         if dim != SETUP_DIM:
@@ -334,8 +335,9 @@ class MORL_SB_TRPO_Optimizer:
 
         grip, _ = compute_skidpad_objective(self._vehicle.simulate_step, setup_phys, x_init)
         stab    = compute_step_steer_objective(self._vehicle.simulate_step, setup_phys, x_init)
+        lte     = compute_endurance_lte_objective(self._vehicle.simulate_step, setup_phys, x_init) # <-- ADD THIS
         safety  = jax.nn.sigmoid((grip - SAFETY_THRESHOLD) * 10.0)
-        return grip, stab, safety
+        return grip, stab, safety, lte  # <-- ADD lte TO THE RETURN
 
     # ─────────────────────────────────────────────────────────────────────────
     # §3.2  Non-dominated Pareto index selection
@@ -529,15 +531,50 @@ class MORL_SB_TRPO_Optimizer:
             'log_std': self.ensemble_params['log_std'],
         }
         print(f"[Phase 0] Seeded {n_basins} BO basins into ensemble.")
-
+        # ── FIX-1: Pre-populate archive from BO evaluations ─────────────────
+        # The BO found valid setups — insert them into the archive NOW.
+        # Without this, the archive is empty until the gradient phase produces
+        # a valid (finite + within stability cap) evaluation, which may never
+        # happen if Adam overshoots into NaN territory.
+        print("[Phase 0] Pre-populating archive from BO basins…")
+        bo_archive_count = 0
+        for b_norm in basins:
+            b_jax = jnp.array(b_norm, dtype=jnp.float32)
+            g, s, safe = self.evaluate_setup_jax(b_jax)
+            g_f, s_f = float(g), float(s)
+            stab_val = -s_f
+            if np.isfinite(g_f) and np.isfinite(stab_val) and stab_val <= STABILITY_MAX:
+                setup_phys = np.array(self._norm_to_physical(b_jax))
+                self.archive_setups.append(setup_phys)
+                self.archive_setups_norm.append(np.array(b_norm))
+                self.archive_grips.append(g_f)
+                self.archive_stabs.append(-stab_val)
+                self.archive_gen.append(0.0)
+                bo_archive_count += 1
+        print(f"[Phase 0] Archive seeded with {bo_archive_count} valid BO solutions "
+              f"(archive size: {len(self.archive_grips)})")
+        if bo_archive_count == 0:
+            print("[Phase 0] WARNING: No BO basins passed stability filter — "
+                  "check compute_step_steer_objective return values")
+        self._bo_basins = basins  # List[np.ndarray], each (28,) in [0,1]
         # ── Feasibility check ─────────────────────────────────────────────────
         print("[SB-TRPO] Running feasibility pre-check…")
         self.ensemble_params = self._ensure_feasible_start(self.ensemble_params)
 
         # ── Adam optimizer ────────────────────────────────────────────────────
+        # FIX-2: lr=5e-3 in 28D causes per-step μ displacement of ~0.14 norm,
+        # pushing the ensemble into NaN territory after ~10 steps.
+        # Cosine warmup: start at 1e-4, ramp to 1e-3 over 50 steps, decay to 1e-4.
+        _morl_schedule = optax.join_schedules(
+            schedules=[
+                optax.linear_schedule(1e-4, 1e-3, 50),
+                optax.cosine_decay_schedule(1e-3, iterations - 50, alpha=0.1),
+            ],
+            boundaries=[50],
+        )
         optimizer = optax.chain(
-            optax.clip_by_global_norm(5.0),   # gradient clip
-            optax.adam(learning_rate=5e-3),
+            optax.clip_by_global_norm(3.0),   # tighter clip (was 5.0)
+            optax.adam(learning_rate=_morl_schedule),
         )
         opt_state = optimizer.init(self.ensemble_params)
 
@@ -590,7 +627,9 @@ class MORL_SB_TRPO_Optimizer:
                 setup_norm  = jax.nn.sigmoid(mu_k)
                 grip, stab, safety = self.evaluate_setup_jax(setup_norm)
 
-                scalarized = omega_k * grip + (1.0 - omega_k) * (-stab)
+                lambda_lte = 0.15  # Tunable weight for endurance
+                # Add "+ lambda_lte * lte" to your existing math:
+                scalarized = omega_k * grip + (1.0 - omega_k) * (-stab) + lambda_lte * lte
                 entropy    = self.H_ENTROPY_COEFF * jnp.sum(ls_k)
                 safety_pen = jax.nn.relu(SAFETY_THRESHOLD - grip) * 10.0
                 return -(scalarized + entropy) + safety_pen
@@ -666,7 +705,7 @@ class MORL_SB_TRPO_Optimizer:
 
             for k in range(self.ensemble_size):
                 setup_norm = jax.nn.sigmoid(self.ensemble_params['mu'][k])
-                g, s, safe = self.evaluate_setup_jax(setup_norm)
+                g, s, safe, lte = self.evaluate_setup_jax(setup_norm)
                 g_f, s_f, sf_f = float(g), float(s), float(safe)
 
                 grips.append(g_f)
@@ -686,12 +725,37 @@ class MORL_SB_TRPO_Optimizer:
                         self.archive_gen.append(float(i))
                     else:
                         n_filtered += 1
+            # FIX-3: NaN recovery — if ALL evaluations are NaN, snap ensemble
+            # back to BO basins. This prevents 400 iterations of wasted compute.
+            if valid_count == 0 and hasattr(self, '_bo_basins') and self._bo_basins:
+                _nan_recovery_count = getattr(self, '_nan_recovery_count', 0) + 1
+                self._nan_recovery_count = _nan_recovery_count
+                if _nan_recovery_count <= 5:  # max 5 recoveries before giving up
+                    print(f"[SB-TRPO] NaN recovery #{_nan_recovery_count}: "
+                        f"snapping ensemble to BO basins")
+                    mu = np.array(self.ensemble_params['mu'])
+                    for k in range(min(len(self._bo_basins), self.ensemble_size)):
+                        b = self._bo_basins[k % len(self._bo_basins)]
+                        b_clip = np.clip(b, 1e-4, 1.0 - 1e-4)
+                        mu[k] = np.log(b_clip / (1.0 - b_clip))  # logit
+                    # Remaining members: perturb around best basin
+                    for k in range(len(self._bo_basins), self.ensemble_size):
+                        base = self._bo_basins[0]
+                        b_clip = np.clip(base + np.random.default_rng(k).normal(0, 0.05, self.dim),
+                                        1e-4, 1.0 - 1e-4)
+                        mu[k] = np.log(b_clip / (1.0 - b_clip))
+                    self.ensemble_params = {
+                        'mu': jnp.array(mu),
+                        'log_std': jnp.full((self.ensemble_size, self.dim), -1.5),
+                    }
+                    # Re-init optimizer state for fresh momentum
+                    opt_state = optimizer.init(self.ensemble_params)
 
             self._last_grips = np.array(grips)
             best_grip = max(grips) if grips else float('nan')
             mean_ls   = float(jnp.mean(self.ensemble_params['log_std']))
 
-            if i % 20 == 0 or i < 5:
+            if i % 10 == 0 or i < 10:
                 print(f"[SB-TRPO] i={i:4d} | Safe: {safe_count}/{self.ensemble_size} "
                       f"| Valid: {valid_count}/{self.ensemble_size} "
                       f"| Grip: {best_grip:.4f} G | log_std: {mean_ls:.3f} "

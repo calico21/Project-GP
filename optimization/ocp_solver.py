@@ -82,6 +82,29 @@ _DB4_HI = jnp.array([
 _DB4_LO_R = _DB4_LO[::-1]
 _DB4_HI_R = _DB4_HI[::-1]
 
+import jax.numpy as jnp
+ 
+def _pseudo_huber(c: jnp.ndarray, delta: float = 0.01) -> jnp.ndarray:
+    """
+    Pseudo-Huber loss: C∞ approximation to |c| with quadratic core.
+ 
+    ψ(c; δ) = δ² · (√(1 + (c/δ)²) - 1)
+ 
+    At |c| >> δ: ψ → |c| - δ/2  (linear, sparsity-promoting)
+    At |c| << δ: ψ → c²/(2δ)    (quadratic, smooth gradient)
+ 
+    The Hessian δ²/(c²+δ²)^{3/2} is always positive → strictly convex.
+    L-BFGS-B sees a smooth, positive-definite landscape everywhere.
+ 
+    Parameters
+    ----------
+    c : array
+        Wavelet coefficients (detail bands D1, D2, D3).
+    delta : float
+        Transition width. Below |c| < δ, behavior is quadratic.
+        Default 0.01 matches the scale of typical detail coefficients.
+    """
+    return delta ** 2 * (jnp.sqrt(1.0 + (c / delta) ** 2) - 1.0)
 
 class DiffWMPCSolver:
     """

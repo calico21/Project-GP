@@ -51,7 +51,7 @@ OUTPUT_FILE = os.path.join(TTC_DIR, 'processed.npz')
 
 CHANNELS = [
     'SA', 'FY', 'FX', 'FZ', 'MZ', 'IA', 'P', 'V',
-    'TSTC', 'TSTI', 'TSTO', 'ET', 'N', 'MX', 'RL',
+    'TSTC', 'TSTI', 'TSTO', 'ET', 'N', 'MX', 'RL', 'SL'  # <-- Add 'SL' here
 ]
 
 
@@ -143,6 +143,7 @@ def save_processed(ss: dict, test_mask: np.ndarray):
     """Save in Project-GP units: rad, N (positive Fz), m/s, °C."""
     out = {
         'alpha_rad':  np.deg2rad(ss['SA']),
+        'kappa':      ss['SL'],                   # <-- ADD THIS LINE
         'Fy_N':       ss['FY'],                   # SAE convention
         'Fx_N':       ss['FX'],
         'Fz_N':       -ss['FZ'],                  # flip: positive = loaded

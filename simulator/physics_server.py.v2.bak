@@ -56,11 +56,10 @@ try:
     from simulator.track_builder import get_track
     from simulator.sim_config import (
         S, HOST, PORT_CTRL_RECV, PORT_TELEM_VIZ, PORT_TELEM_CTRL,
-        PORT_TELEM_ROS, PORT_TELEM_DEBUG, PHYSICS_HZ, DT, SUBSTEPS, DT_SUB,
+        PORT_TELEM_ROS, PHYSICS_HZ, DT, SUBSTEPS, DT_SUB,
         LOG_DECIMATION, LOG_DIR, LOG_COLUMNS,
         DEFAULT_SETUP_28, SETUP_DIM, SETUP_PARAM_NAMES,
         PRESET_SETUPS, DriveAssistConfig, VehicleConstants,
-        setup_28_to_sim8,
     )
 except ImportError:
     from sim_protocol import (
@@ -72,11 +71,10 @@ except ImportError:
     from track_builder import get_track
     from sim_config import (
         S, HOST, PORT_CTRL_RECV, PORT_TELEM_VIZ, PORT_TELEM_CTRL,
-        PORT_TELEM_ROS, PORT_TELEM_DEBUG, PHYSICS_HZ, DT, SUBSTEPS, DT_SUB,
+        PORT_TELEM_ROS, PHYSICS_HZ, DT, SUBSTEPS, DT_SUB,
         LOG_DECIMATION, LOG_DIR, LOG_COLUMNS,
         DEFAULT_SETUP_28, SETUP_DIM, SETUP_PARAM_NAMES,
         PRESET_SETUPS, DriveAssistConfig, VehicleConstants,
-        setup_28_to_sim8,
     )
 
 
@@ -112,12 +110,11 @@ class PhysicsServer:
         self.log_telemetry = log_telemetry
         self.assists    = assists
 
-        # Broadcast targets: visualizer + control HUD + ROS2 bridge + recorder
+        # Broadcast targets: visualizer + control HUD + ROS2 bridge
         self.broadcast_clients = broadcast_clients or [
             (host, PORT_TELEM_VIZ),    # → Godot / Rerun / ws_bridge
             (host, PORT_TELEM_CTRL),   # → control_interface HUD
             (host, PORT_TELEM_ROS),    # → ros2_bridge
-            (host, PORT_TELEM_DEBUG),  # → telemetry_recorder / debug tools
         ]
 
         # ── Vehicle model ────────────────────────────────────────────────
@@ -125,10 +122,7 @@ class PhysicsServer:
 
         # Canonical 28-dim setup — matches SuspensionSetup.from_vector()
         self.setup_params = jnp.array(DEFAULT_SETUP_28)
-        # 8-dim adapter for simulate_step() which indexes [k_f,k_r,arb_f,arb_r,c_f,c_r,h_cg,brake_bias]
-        self.sim_setup = jnp.array(setup_28_to_sim8(DEFAULT_SETUP_28))
-        print(f"[Server] Setup: {SETUP_DIM}-dim canonical → 8-dim sim adapter"
-              f" (h_cg={float(self.sim_setup[6]):.3f}m, bb={float(self.sim_setup[7]):.2f})")
+        print(f"[Server] Setup: {SETUP_DIM}-dim canonical vector loaded")
 
         # ── Track & timing ───────────────────────────────────────────────
         try:
@@ -246,22 +240,12 @@ class PhysicsServer:
                 return vehicle.simulate_step(x_s, controls, setup, DT_SUB), None
             next_state, _ = jax.lax.scan(substep, state, None, length=SUBSTEPS)
 
-            # Healthcheck: NaN guard + soft roll/pitch clamp
-            # Instead of binary reject (which causes frozen states), CLIP
-            # the offending DOFs and let the simulation continue.
-            is_finite = jnp.isfinite(next_state[S.VX])
-            # If NaN: revert entirely (unrecoverable)
-            next_state = jnp.where(is_finite, next_state, state)
-            # Soft clip roll and pitch to ±0.5 rad (28.6°) — prevents runaway
-            # but doesn't freeze the car like the old ±0.39 binary guard did
-            next_state = next_state.at[S.ROLL].set(
-                jnp.clip(next_state[S.ROLL], -0.50, 0.50))
-            next_state = next_state.at[S.PITCH].set(
-                jnp.clip(next_state[S.PITCH], -0.50, 0.50))
-            # Speed limiter: prevent runaway velocity
-            next_state = next_state.at[S.VX].set(
-                jnp.clip(next_state[S.VX], -40.0, 40.0))
-            return next_state
+            # Healthcheck using named indices
+            vx_ok    = jnp.isfinite(next_state[S.VX])
+            roll_ok  = jnp.abs(next_state[S.ROLL]) < 0.39
+            pitch_ok = jnp.abs(next_state[S.PITCH]) < 0.39
+            healthy  = vx_ok & roll_ok & pitch_ok
+            return jnp.where(healthy, next_state, state)
 
         return fast_step
 
@@ -344,77 +328,41 @@ class PhysicsServer:
     # ─────────────────────────────────────────────────────────────────────────
 
     def _autopilot_step(self, vx, state_arr):
-        """
-        Pure-pursuit autopilot using track tangent heading (cpsi).
-
-        Throttle calibration note:
-          Measured dynamics response: u[1]=2000 → 276N effective wheel force.
-          Attenuation ratio ≈ 0.138 (motor model + drivetrain + tire).
-          To achieve 3 m/s² accel on 300kg car → need 900N eff → u≈6500.
-          To achieve 10 m/s² braking → need 3000N eff → u≈21700.
-        """
+        """Pure-pursuit autopilot using track tangent heading (cpsi)."""
         if self.track is None:
-            return 0.0, 2000.0  # gentle throttle, no steer
+            return 0.0, 500.0  # gentle throttle, no steer
 
-        import math
-
-        X   = float(state_arr[S.X])
-        Y   = float(state_arr[S.Y])
+        X = float(state_arr[S.X])
+        Y = float(state_arr[S.Y])
         yaw = float(state_arr[S.YAW])
 
         idx, dist = self.track.get_closest_point(X, Y)
-        n_pts = len(self.track.cx)
 
-        # ── Steering: pure pursuit on track tangent heading ──────────
+        # Lookahead: speed-dependent, 0.8s ahead, clamped [5, 30] m
         la_dist = min(max(abs(vx) * 0.8, 5.0), 30.0)
-        la_idx  = min(idx + int(la_dist), n_pts - 1)
+        la_idx  = min(idx + int(la_dist), len(self.track.cx) - 1)
 
+        # Use track tangent heading at lookahead (not chord direction)
         target_psi = self.track.cpsi[la_idx]
         error = target_psi - yaw
+        # Normalise to [-π, π]
+        import math
         while error >  math.pi: error -= 2 * math.pi
         while error < -math.pi: error += 2 * math.pi
 
-        steer = max(-0.4, min(0.4, 1.5 * error))
+        steer = max(-0.4, min(0.4, 1.2 * error))
 
-        # ── Speed target: friction-limited by worst curvature in braking zone ─
-        # Look ahead over the ENTIRE braking distance, not just one point.
-        # Find the tightest corner in the next [current .. current + braking_dist]
-        braking_dist = max(10, int(abs(vx) * 2.0))  # ~2 seconds of lookahead
-        k_max = 0.0
-        for i in range(idx, min(idx + braking_dist, n_pts)):
-            k_i = abs(self.track.ck[i % n_pts])
-            if k_i > k_max:
-                k_max = k_i
+        # Speed control: limit to sqrt(μg/κ) at lookahead curvature
+        k_ahead = abs(self.track.ck[la_idx])
+        v_limit = math.sqrt(VC.mu_peak * 9.81 / max(k_ahead, 0.01))
+        v_safe  = min(v_limit, 25.0)
 
-        # Friction-limited speed at the tightest upcoming corner
-        v_corner = math.sqrt(VC.mu_peak * 9.81 / max(k_max, 0.005))
-        v_safe   = min(v_corner, 25.0)  # absolute cap at 25 m/s = 90 km/h
-
-        # ── Longitudinal control: aggressive P-controller ────────────
-        # Calibrated force constants account for the ~7:1 attenuation
-        # in the dynamics model (u[1]=2000 → 276N effective)
-        THR_MAX = 8000.0    # ~1100N effective → ~3.7 m/s² on 300kg
-        BRK_MAX = 20000.0   # ~2760N effective → ~9.2 m/s² braking
-        THR_GAIN = 2000.0   # N per (m/s underspeed)
-        BRK_GAIN = 3000.0   # N per (m/s overspeed)
-        CRUISE   = 1500.0   # maintain speed on flat sections
-
-        # Speed-dependent throttle ramp: prevent wheelspin at low speed
-        # At 2 m/s: max 2000N. At 10 m/s: full 8000N. Linear ramp.
-        speed_factor = min(1.0, max(0.25, abs(vx) / 10.0))
-        thr_limit = THR_MAX * speed_factor
-
-        v_err = abs(vx) - v_safe
-
-        if v_err > 0.5:
-            # Over speed target → brake proportionally
-            net_lon = -min(BRK_MAX, v_err * BRK_GAIN)
-        elif v_err < -1.0:
-            # Under speed target → throttle (speed-limited to prevent wheelspin)
-            net_lon = min(thr_limit, abs(v_err) * THR_GAIN)
+        if abs(vx) > v_safe * 1.05:
+            net_lon = -min(4000.0, (abs(vx) - v_safe) * 1000.0)  # brake
+        elif abs(vx) < v_safe * 0.85:
+            net_lon = min(2000.0, (v_safe - abs(vx)) * 500.0)    # throttle
         else:
-            # In the sweet spot → cruise (also speed-limited)
-            net_lon = min(thr_limit, CRUISE)
+            net_lon = 300.0  # cruise
 
         return steer, net_lon
 
@@ -617,7 +565,7 @@ class PhysicsServer:
         print("[1/3] Compiling JAX physics graph (first call)…")
         fast_step = self._compile_step()
         dummy_ctrl = jnp.array([0.0, 0.0])
-        _ = fast_step(self.state, dummy_ctrl, self.sim_setup)
+        _ = fast_step(self.state, dummy_ctrl, self.setup_params)
         print("[1/3] Compilation complete.")
 
         # ── Sockets ──────────────────────────────────────────────────
@@ -656,10 +604,8 @@ class PhysicsServer:
                             if ctrl.get('arb_f', 0) > 0: new_setup[2] = ctrl['arb_f']
                             if ctrl.get('arb_r', 0) > 0: new_setup[3] = ctrl['arb_r']
                             self.setup_params = jnp.array(new_setup)
-                            self.sim_setup = jnp.array(setup_28_to_sim8(new_setup))
                             print(f"[Server] Setup updated: k_f={new_setup[0]:.0f} "
-                                  f"k_r={new_setup[1]:.0f} "
-                                  f"(h_cg={float(self.sim_setup[6]):.3f}m)")
+                                  f"k_r={new_setup[1]:.0f}")
                         else:
                             self._steer_cmd  = ctrl['steer']
                             self._throttle_f = ctrl['throttle_f']
@@ -679,53 +625,27 @@ class PhysicsServer:
                 s_arr = np.array(self.state)
                 vx = float(np.clip(s_arr[S.VX], -80, 80))
 
-                # ── Determine control source ──────────────────────────
-                # Autopilot runs FIRST, then assists modify its output.
-                # This ensures TC/ABS apply to autopilot throttle too.
-                _is_auto = (time.perf_counter() - self._last_ctrl_time > 1.0)
-
-                if _is_auto:
-                    steer_raw, net_lon_raw = self._autopilot_step(vx, s_arr)
-                    thr_raw = max(0.0, net_lon_raw)
-                    brk_raw = max(0.0, -net_lon_raw)
-                else:
-                    steer_raw = self._steer_cmd
-                    thr_raw   = self._throttle_f
-                    brk_raw   = self._brake_f
-
-                # ── Drive assists (TC/ABS) on the ACTUAL control source ──
+                # ── Drive assists ─────────────────────────────────────
                 steer_c, thr_c, brk_c = self._apply_drive_assists(
-                    steer_raw, thr_raw, brk_raw, vx, s_arr,
+                    self._steer_cmd, self._throttle_f, self._brake_f,
+                    vx, s_arr,
                 )
                 net_lon = thr_c - brk_c
+
+                # ── Autopilot fallback (no human input for >1s) ───────
+                if time.perf_counter() - self._last_ctrl_time > 1.0:
+                    steer_c, net_lon = self._autopilot_step(vx, s_arr)
+
                 controls_jax = jnp.array([steer_c, net_lon])
 
                 # ── Physics step ──────────────────────────────────────
                 self.prev_state = self.state
-                self.state = fast_step(self.state, controls_jax, self.sim_setup)
+                self.state = fast_step(self.state, controls_jax, self.setup_params)
                 self.sim_time += DT
                 self.frame_id += 1
 
-                # ── Frozen state detection ────────────────────────────
-                # If health guard rejected the step, state == prev_state
-                s2 = np.array(self.state)
-                if self.frame_id > 10 and self.frame_id % 200 == 0:
-                    dx = abs(float(s2[S.X]) - float(np.array(self.prev_state)[S.X]))
-                    if dx < 1e-8 and abs(vx) > 0.5:
-                        # State is frozen — health guard is rejecting steps
-                        r = float(s_arr[S.ROLL])
-                        p = float(s_arr[S.PITCH])
-                        print(f"[WARN] State frozen! roll={r:.3f} pitch={p:.3f} "
-                              f"(limit ±0.39) | vx={vx:.2f} | δ={steer_c:.3f} "
-                              f"| F={net_lon:.0f}N")
-                        # Recovery: reset to a safe state nearby
-                        self.state = self.state.at[S.ROLL].set(
-                            jnp.clip(self.state[S.ROLL], -0.30, 0.30))
-                        self.state = self.state.at[S.PITCH].set(
-                            jnp.clip(self.state[S.PITCH], -0.30, 0.30))
-                        s2 = np.array(self.state)
-
                 # ── Lap timing ────────────────────────────────────────
+                s2 = np.array(self.state)
                 spd = abs(float(s2[S.VX])) * 3.6
                 ax_g = float(np.clip((s2[S.VX] - s_arr[S.VX]) / DT, -50, 50)) / 9.81
                 ay_g = float(np.clip(
@@ -764,19 +684,11 @@ class PhysicsServer:
                     hz = 1000.0 / avg_ms if avg_ms > 0 else 0
                     rt = hz / PHYSICS_HZ
                     src = "AUTO" if (now - self._last_ctrl_time > 1.0) else "HUMAN"
-                    x_pos = float(s2[S.X])
-                    y_pos = float(s2[S.Y])
-                    ctrl_steer = float(controls_jax[0])
-                    ctrl_force = float(controls_jax[1])
-                    ctrl_label = f"thr={ctrl_force:.0f}" if ctrl_force >= 0 else f"brk={-ctrl_force:.0f}"
-                    print(f"[Server] t={self.sim_time:.1f}s | "
-                          f"RT={rt:.2f}x ({hz:.0f}Hz) | "
-                          f"v={spd:.1f}km/h | "
-                          f"pos=({x_pos:.1f},{y_pos:.1f}) | "
-                          f"δ={ctrl_steer:.3f} {ctrl_label} | "
-                          f"[{src}]"
-                          + (" TC" if self._tc_active else "")
-                          + (" ABS" if self._abs_active else ""))
+                    print(f"[Server] sim={self.sim_time:.1f}s | "
+                          f"RT={rt:.2f}x ({hz:.0f}/{PHYSICS_HZ}Hz) | "
+                          f"v={spd:.1f}km/h [{src}]"
+                          + (" [TC]"  if self._tc_active  else "")
+                          + (" [ABS]" if self._abs_active else ""))
                     self._last_perf_print = now
 
                 # ── Sleep to maintain target Hz ───────────────────────

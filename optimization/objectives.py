@@ -425,3 +425,156 @@ def compute_frequency_response_objective(simulate_step_fn, params, x_init,
     )
 
     return resonance
+
+# ─────────────────────────────────────────────────────────────────────────────
+# §1  Mini-Lap Track Definition
+# ─────────────────────────────────────────────────────────────────────────────
+
+# 8 representative corners from a typical FSG autocross layout.
+# Each: (curvature [1/m], duration [steps at dt=0.005s], target_speed [m/s])
+#
+# Total: 120 steps = 0.6s simulation (enough for gradients, fast for MORL)
+# Covers: straight accel, heavy braking, tight hairpin, medium-speed
+# sweeper, chicane, and acceleration out. This is a compressed "essence"
+# of an autocross lap that captures all setup-sensitive dynamics.
+
+MINI_LAP_SEGMENTS = [
+    # (curvature, n_steps, v_target)
+    (0.00,  15,  22.0),    # S1: straight acceleration
+    (0.00,  10,  10.0),    # S2: heavy braking zone
+    (0.12,  20,  11.0),    # S3: medium-speed right (R ≈ 8.3m)
+    (-0.18, 15,  9.0),     # S4: tight left hairpin (R ≈ 5.5m)
+    (0.08,  10,  14.0),    # S5: fast right sweeper (R ≈ 12.5m)
+    (-0.10, 15,  12.0),    # S6: medium left (R ≈ 10m)
+    (0.15,  15,  10.0),    # S7: chicane right (R ≈ 6.7m)
+    (0.00,  20,  20.0),    # S8: exit acceleration
+]
+
+def _build_mini_lap_profile() -> tuple:
+    """
+    Build (curvature_array, v_target_array) for the mini-lap.
+    Returns JAX arrays of shape (N_total,).
+    """
+    curv_list = []
+    vtgt_list = []
+    for kappa, n_steps, v_tgt in MINI_LAP_SEGMENTS:
+        curv_list.extend([kappa] * n_steps)
+        vtgt_list.extend([v_tgt] * n_steps)
+    return jnp.array(curv_list), jnp.array(vtgt_list)
+
+# Pre-build (module-level constant, traced into XLA once)
+_CURV_PROFILE, _VTGT_PROFILE = _build_mini_lap_profile()
+_N_STEPS_LTE = len(_CURV_PROFILE)  # 120
+
+# ─────────────────────────────────────────────────────────────────────────────
+# §2  Endurance LTE Objective
+# ─────────────────────────────────────────────────────────────────────────────
+
+def compute_endurance_lte_objective(
+    simulate_step_fn,
+    setup_params: jax.Array,    # (28,) physical setup
+    x_init: jax.Array,          # (46,) initial state
+    dt: float = 0.005,
+    T_opt: float = 90.0,        # tire optimal temperature [°C]
+    # Weights for the composite LTE score
+    w_speed: float = 1.0,       # reward for high average speed
+    w_energy: float = 0.3,      # penalty for high energy consumption
+    w_thermal: float = 0.5,     # penalty for tire overheating
+) -> jax.Array:
+    """
+    Differentiable endurance lap-time-energy objective.
+
+    Simulates an 8-corner mini-lap with P-controlled steering and throttle.
+    Returns a scalar J_LTE where HIGHER = BETTER (MORL maximises).
+
+    The score captures the three dimensions that determine endurance ranking:
+    1. Average speed (proxy for lap time)
+    2. Energy efficiency (kJ per km)
+    3. Thermal management (tire temperature at end of stint)
+
+    All intermediate quantities are smooth (no hard conditionals), ensuring
+    clean gradient flow from J_LTE back to all 28 setup parameters.
+    """
+    from data.configs.vehicle_params import vehicle_params as VP
+
+    L_wb = VP.get('lf', 0.8525) + VP.get('lr', 0.6975)
+
+    curvature = _CURV_PROFILE
+    v_target  = _VTGT_PROFILE
+
+    # ── Steering + speed controller gains ────────────────────────────────────
+    K_steer = 1.0       # kinematic: δ = κ · L
+    K_speed = 4000.0    # N/(m/s) — P-controller for longitudinal force
+    K_max_brake = 8000.0
+
+    def scan_step(carry, k):
+        x = carry
+
+        # Current state extraction
+        vx = x[14]
+        vx_safe = jnp.maximum(vx, 1.0)
+
+        # Kinematic steering (smooth, no conditionals)
+        delta_k = K_steer * curvature[k] * L_wb
+
+        # Speed P-controller
+        v_err = v_target[k] - vx_safe
+        # Smooth split: positive error → throttle, negative → brake
+        F_drive = jax.nn.softplus(v_err) * K_speed
+        F_brake = -jax.nn.softplus(-v_err) * K_speed
+        F_total = jnp.clip(F_drive + F_brake, -K_max_brake, 6000.0)
+
+        u = jnp.array([delta_k, F_total])
+
+        # Simulate one step
+        x_next = simulate_step_fn(x, u, setup_params, dt)
+
+        # ── Energy accounting ────────────────────────────────────────────────
+        # Mechanical power = |F · v| (absolute value for total energy budget)
+        power_mech = jnp.abs(F_total * vx_safe)
+
+        # ── Tire temperature (max surface temp across front axle) ────────────
+        # State indices 28:31 = T_ribs_f (3 surface nodes, front)
+        T_surf_f = x_next[28:31]
+        T_max_f  = jnp.max(T_surf_f)
+
+        return x_next, (vx_safe, power_mech, T_max_f)
+
+    # ── Run mini-lap ─────────────────────────────────────────────────────────
+    x_final, (vx_history, power_history, T_history) = jax.lax.scan(
+        scan_step, x_init, jnp.arange(_N_STEPS_LTE),
+    )
+
+    # ── Compute LTE metrics ──────────────────────────────────────────────────
+    # Average speed [m/s] — higher is better
+    mean_vx = jnp.mean(vx_history)
+
+    # Total energy [J] over the mini-lap
+    total_energy = jnp.sum(power_history) * dt
+
+    # Distance covered [m]
+    distance = jnp.sum(vx_history) * dt
+
+    # Energy per meter [J/m] — lower is better
+    energy_per_meter = total_energy / jnp.maximum(distance, 1.0)
+
+    # Thermal penalty — activates when tire temp exceeds T_opt + 15°C
+    T_end = T_history[-1]
+    thermal_excess = T_end - T_opt - 15.0  # positive = overheating
+    # Smooth activation: penalty grows softly above threshold
+    thermal_penalty = jax.nn.softplus(thermal_excess * 0.2) / 30.0
+
+    # ── Composite score (HIGHER = BETTER) ────────────────────────────────────
+    # Speed reward: normalised to ~1.0 at 15 m/s average
+    speed_score = mean_vx / 15.0
+
+    # Efficiency score: normalised to ~1.0 at 200 J/m (typical FS endurance)
+    efficiency_score = 200.0 / jnp.maximum(energy_per_meter, 10.0)
+
+    J_LTE = (
+        w_speed * speed_score
+        + w_energy * efficiency_score
+        - w_thermal * thermal_penalty
+    )
+
+    return J_LTE

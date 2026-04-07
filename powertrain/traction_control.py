@@ -26,15 +26,28 @@ from typing import NamedTuple
 # S1  DESC Configuration + State
 # ─────────────────────────────────────────────────────────────────────────────
 
-class DESCParams(NamedTuple):
-    omega_es: float = 94.25       # rad/s dither frequency (15 Hz)
-    A_dither: float = 0.005       # dither amplitude on kappa_ref
-    eta: float = 1e-4             # gradient ascent learning rate (N-scaled: dFx/dkappa≈O(10³ N/κ))
-    alpha_hp: float = 0.85        # high-pass filter coefficient
-    alpha_lp: float = 0.90        # low-pass filter coefficient
-    kappa_init: float = 0.10      # initial kappa_base estimate
-    kappa_min: float = 0.03       # minimum kappa_base
-    kappa_max: float = 0.25       # maximum kappa_base
+class DESCParams :  # rename to DESCParams when applying
+    """
+    DESC hyperparameters — calibrated for Hoosier R20 on FS vehicle.
+ 
+    Tuning rationale (GP-vX2 Batch 1 fix):
+      eta:      5e-4 → each step moves κ_base by ~3.75e-4 (200 steps = 0.075 range).
+                Sufficient to traverse kappa_min→kappa_max in ~400 steps = 2s.
+      alpha_hp: 0.65 → HPF cutoff ≈ 11 Hz. The 15 Hz dither passes with <5% attenuation.
+                Previous 0.85 → cutoff ≈ 4.8 Hz → 25% signal loss at 15 Hz.
+      alpha_lp: 0.85 → slightly faster LP tracking. Previous 0.90 was overdamped.
+      A_dither: 0.008 → increased from 0.005 for better SNR. Still small enough
+                that the torque perturbation ΔT ≈ dFx/dκ × A × r_w ≈ 10³ × 0.008 × 0.2 ≈ 1.6 Nm
+                is imperceptible to the driver.
+    """
+    omega_es:   float = 94.25       # rad/s dither frequency (15 Hz)
+    A_dither:   float = 0.008       # dither amplitude on kappa_ref  [was 0.005]
+    eta:        float = 5e-4        # gradient ascent learning rate   [was 1e-4, 5× increase]
+    alpha_hp:   float = 0.65        # high-pass filter coefficient    [was 0.85]
+    alpha_lp:   float = 0.85        # low-pass filter coefficient     [was 0.90]
+    kappa_init: float = 0.10        # initial kappa_base estimate
+    kappa_min:  float = 0.03        # minimum kappa_base
+    kappa_max:  float = 0.25        # maximum kappa_base
 
 # ── PATCH 1a: add to DESCState class body ────────────────────────────────────
 class DESCState(NamedTuple):
@@ -42,6 +55,19 @@ class DESCState(NamedTuple):
     integrator: jax.Array
     hpf_state: jax.Array
     lpf_state: jax.Array
+    t_acc: jax.Array          # ← NEW: accumulated time for dither phase
+
+    @classmethod
+    def default(cls, params=None):
+        if params is None:
+            params = DESCParams()
+        return cls(
+            kappa_base=jnp.array(params.kappa_init),
+            integrator=jnp.array(params.kappa_init),
+            hpf_state=jnp.array(0.0),
+            lpf_state=jnp.array(0.0),
+            t_acc=jnp.array(0.0),       # ← NEW
+        )
 
     @classmethod
     def default(cls, params: "DESCParams") -> "DESCState":
@@ -59,6 +85,7 @@ def make_desc_state(params: DESCParams = DESCParams()) -> DESCState:
         integrator=jnp.array(params.kappa_init),
         hpf_state=jnp.array(0.0),
         lpf_state=jnp.array(0.0),
+        t_acc=jnp.array(0.0),
     )
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -69,8 +96,9 @@ def make_desc_state(params: DESCParams = DESCParams()) -> DESCState:
 def desc_step(
     state: DESCState,
     Fx_measured: jax.Array,
-    t: jax.Array,
+    omega_wheel: jax.Array,     # (4,) — unused here but keeps API consistent with TC
     vx: jax.Array,
+    dt: jax.Array,              # ← NEW: timestep, NOT accumulated time
     params: DESCParams = DESCParams(),
 ) -> tuple[DESCState, jax.Array]:
     """
@@ -81,8 +109,8 @@ def desc_step(
     kappa_base, integrator, hpf_state, lpf_state = state
 
     # Dither signal
-    dither = params.A_dither * jnp.sin(params.omega_es * t)
-
+    t_now = state.t_acc + dt
+    dither = params.A_dither * jnp.sin(params.omega_es * t_now)
     # High-pass: remove DC + low-freq vehicle dynamics
     hpf_new = params.alpha_hp * hpf_state + (1.0 - params.alpha_hp) * Fx_measured
     Fx_hp = Fx_measured - hpf_new
@@ -97,12 +125,12 @@ def desc_step(
     speed_gate = jax.nn.sigmoid((vx - 3.0) * 2.0)
 
     # Gradient ascent on kappa_base
-    integrator_new = integrator + params.eta * lpf_new * speed_gate * 0.005
+    integrator_new = integrator + params.eta * lpf_new * speed_gate * dt
     kappa_base_new = jnp.clip(integrator_new, params.kappa_min, params.kappa_max)
     integrator_new = kappa_base_new
 
     kappa_ref = kappa_base_new + dither * speed_gate
-    return DESCState(kappa_base_new, integrator_new, hpf_new, lpf_new), kappa_ref
+    return DESCState(kappa_base_new, integrator_new, hpf_new, lpf_new, t_now), kappa_ref
 
 # ─────────────────────────────────────────────────────────────────────────────
 # S3  Model-Based kappa* from Pacejka Coefficients
