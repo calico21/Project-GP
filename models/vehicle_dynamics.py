@@ -533,56 +533,118 @@ class NeuralDissipationMatrix(nn.Module):
         return R_dense * jnp.outer(mask, mask)
 
 
-class DifferentiableAeroMap(nn.Module):
+import jax
+import jax.numpy as jnp
+import flax.linen as nn
+ 
+ 
+def _softplus_floor(x, floor):
+    """Smooth lower bound — gradient alive at floor."""
+    return floor + jax.nn.softplus(x - floor)
+ 
+ 
+class PhysicsInformedAeroMap(nn.Module):
     """
-    Ground-effect-aware aero map.
-
-    UPGRADE-10: replaced jnp.maximum with _softplus_floor for heave and Cl floors.
-    · h_f = max(0.040 - heave_f, 0.015): zero subgradient at 15mm floor —
-      exactly when MPC optimization is most aggressive. Replaced with softplus.
-    · Cl_f = max(Cl_f_base, 0.0): zero subgradient at zero downforce (e.g.
-      during braking with nose-up pitch). Replaced with softplus.
-    Both are constraint-active during setup optimization; gradient must be live.
+    Physics-informed aero surrogate with structural guarantees.
+ 
+    Replaces DifferentiableAeroMap with identical interface but stronger
+    physics inductive bias.
+ 
+    STRUCTURAL GUARANTEES:
+    1. All forces scale as v² (dynamic pressure factored out)
+    2. Drag coefficient Cd > 0 always (softplus)
+    3. Roll symmetry: Cl(φ) = Cl(-φ) (even feature extraction)
+    4. Ground effect: bounded 1/h sensitivity with stall protection
+    5. Neural corrections bounded to ±15% of analytical baseline
+ 
+    INTERFACE: Identical to DifferentiableAeroMap.__call__:
+      Input:  (vx, pitch, roll, heave_f, heave_r) — all scalars
+      Output: (Fz_aero_f, Fz_aero_r, Fx_aero, My_aero, Mx_aero) — all scalars
     """
-    base_A:  float
-    base_Cl: float
-    base_Cd: float
-    lf:      float
-    lr:      float
-
+    base_A:  float   # reference frontal area [m²]
+    base_Cl: float   # reference lift coefficient (total)
+    base_Cd: float   # reference drag coefficient
+    lf:      float   # CG to front axle [m]
+    lr:      float   # CG to rear axle [m]
+ 
     @nn.compact
     def __call__(self, vx, pitch, roll, heave_f, heave_r):
-        state = jnp.stack([vx / 100.0, pitch, roll, heave_f, heave_r])
-        x = nn.Dense(32)(state); x = nn.swish(x)
-        x = nn.Dense(32)(x);     x = nn.swish(x)
-        mods = nn.Dense(4,
-                        kernel_init=jax.nn.initializers.zeros,
-                        bias_init=jax.nn.initializers.zeros)(x)
-
-        h_ref = 0.040
-        # UPGRADE-10: _softplus_floor replaces jnp.maximum — gradient alive at floor.
-        # floor=0.015 m: minimum physically meaningful ground clearance.
-        h_f = _softplus_floor(0.040 - heave_f, 0.015)
-        h_r = _softplus_floor(0.040 - heave_r, 0.015)
-
-        Cl_f_base = (self.base_Cl * 0.40 * (1.0 + 0.30 * (h_ref / h_f - 1.0))
-                     + 0.35 * pitch)
-        Cl_r_base = self.base_Cl * 0.60 * (1.0 + 0.45 * (h_ref / h_r - 1.0))
-        Cd_dyn    = self.base_Cd + mods[1]
-
-        # UPGRADE-10: softplus prevents negative Cl (lift instead of downforce).
-        # floor=0.0: downforce can be zero (nose-up braking) but never negative.
-        Cl_f = _softplus_floor(Cl_f_base + mods[0] * 0.40, 0.0)
-        Cl_r = _softplus_floor(Cl_r_base + mods[0] * 0.60, 0.0)
-
-        q_dyn     = 0.5 * 1.225 * vx ** 2
+        rho = 1.225   # air density [kg/m³]
+ 
+        # ── Dynamic pressure (structural v² dependence) ──────────────────────
+        q_dyn = 0.5 * rho * vx ** 2
+ 
+        # ── Physical feature extraction ──────────────────────────────────────
+        h_ref = 0.040  # reference ride height [m]
+ 
+        # Ground clearances (softplus floor at 15mm — stall protection)
+        h_f = _softplus_floor(h_ref - heave_f, 0.015)
+        h_r = _softplus_floor(h_ref - heave_r, 0.015)
+ 
+        # Ground effect ratio: h_ref/h gives ≈1.0 at nominal, >1.0 at low rh
+        # Bounded via tanh to prevent singularity at h→0
+        ge_f = 1.0 + 0.30 * jnp.tanh(2.0 * (h_ref / h_f - 1.0))
+        ge_r = 1.0 + 0.45 * jnp.tanh(2.0 * (h_ref / h_r - 1.0))
+ 
+        # ── Symmetric feature vector (roll enters as roll²) ─────────────────
+        # This structurally guarantees Cl(+roll) = Cl(-roll)
+        features = jnp.stack([
+            pitch,                          # pitch sensitivity (odd → asymmetric, correct)
+            pitch ** 2,                     # pitch² (even → drag increase both directions)
+            roll ** 2,                      # roll² (even → symmetric aero loss)
+            ge_f - 1.0,                     # front ground effect deviation
+            ge_r - 1.0,                     # rear ground effect deviation
+            (heave_f - heave_r) / 0.02,     # rake angle (normalised)
+            vx / 30.0,                      # Reynolds number proxy
+        ])
+ 
+        # ── Neural correction network ────────────────────────────────────────
+        # Output: 5 correction factors, bounded to ±15% via scaled tanh
+        x = nn.Dense(24)(features);  x = nn.swish(x)
+        x = nn.Dense(24)(x);         x = nn.swish(x)
+        raw_corrections = nn.Dense(5,
+            kernel_init=jax.nn.initializers.zeros,
+            bias_init=jax.nn.initializers.zeros,
+        )(x)
+ 
+        # Bounded corrections: tanh × 0.15 → [-0.15, +0.15]
+        # Initialised at zero → starts from pure analytical baseline
+        delta = 0.15 * jnp.tanh(raw_corrections)
+        # delta[0]: ΔCl_f correction
+        # delta[1]: ΔCl_r correction
+        # delta[2]: ΔCd correction
+        # delta[3]: ΔCoP_pitch (pitching moment adjustment)
+        # delta[4]: ΔCoP_roll (rolling moment adjustment)
+ 
+        # ── Analytical baseline + bounded neural correction ──────────────────
+ 
+        # Front downforce coefficient
+        Cl_f_base = self.base_Cl * 0.40 * ge_f + 0.35 * pitch
+        Cl_f = _softplus_floor(Cl_f_base * (1.0 + delta[0]), 0.0)
+ 
+        # Rear downforce coefficient
+        Cl_r_base = self.base_Cl * 0.60 * ge_r
+        Cl_r = _softplus_floor(Cl_r_base * (1.0 + delta[1]), 0.0)
+ 
+        # Drag coefficient — ALWAYS POSITIVE via softplus
+        Cd_base = self.base_Cd + 0.05 * jnp.abs(pitch)  # pitch-induced drag
+        Cd = jax.nn.softplus(Cd_base * (1.0 + delta[2]))
+ 
+        # ── Forces (v² dependence is structural, not learned) ────────────────
         Fz_aero_f = q_dyn * Cl_f * self.base_A
         Fz_aero_r = q_dyn * Cl_r * self.base_A
-        Fx_aero   = -q_dyn * Cd_dyn * self.base_A
-        My_aero   = (Fz_aero_r * self.lr - Fz_aero_f * self.lf
-                     + (Fz_aero_f + Fz_aero_r) * mods[2])
-        Mx_aero   = (Fz_aero_f + Fz_aero_r) * mods[3]
-
+        Fx_aero   = -q_dyn * Cd * self.base_A  # always opposing motion
+ 
+        # ── Moments ──────────────────────────────────────────────────────────
+        # Pitching moment from aero CoP offset
+        My_aero = (Fz_aero_r * self.lr - Fz_aero_f * self.lf
+                   + (Fz_aero_f + Fz_aero_r) * delta[3] * 0.1)  # ±10% arm
+ 
+        # Rolling moment (asymmetric downforce from roll)
+        # roll² feature means this is even in roll, but the SIGN of the moment
+        # must follow the sign of roll → multiply by roll
+        Mx_aero = (Fz_aero_f + Fz_aero_r) * delta[4] * roll * 0.05
+ 
         return Fz_aero_f, Fz_aero_r, Fx_aero, My_aero, Mx_aero
 
 
@@ -675,7 +737,7 @@ class DifferentiableMultiBodyVehicle:
         # h_scale=1.0 ALWAYS — weights were trained with h_scale=1.0 default.
         self.H_net    = NeuralEnergyLandscape(M_diag=self.M_diag, h_scale=1.0)
         self.R_net    = NeuralDissipationMatrix(dim=14)
-        self.aero_map = DifferentiableAeroMap(
+        self.aero_map = PhysicsInformedAeroMap(
             base_A  = self.vp.get('A_ref',  1.10),
             base_Cl = self.vp.get('Cl_ref', 4.14),
             base_Cd = self.vp.get('Cd_ref', 2.50),

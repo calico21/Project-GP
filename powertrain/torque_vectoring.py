@@ -293,7 +293,7 @@ def solve_torque_allocation(
 # ─────────────────────────────────────────────────────────────────────────────
 
 class CBFParams(NamedTuple):
-    """CBF tuning parameters."""
+    """CBF tuning parameters — with Robust CBF extensions (Batch 3)."""
     beta_max: float = 0.15       # rad maximum sideslip angle (~8.6°)
     wz_max: float = 1.5          # rad/s maximum yaw rate
     kappa_max: float = 0.20      # maximum per-wheel slip ratio
@@ -301,6 +301,11 @@ class CBFParams(NamedTuple):
     alpha_wz: float = 8.0        # class-K function gain for yaw rate CBF
     alpha_kappa: float = 10.0    # class-K function gain for slip CBF
     tau_delay: float = 0.003     # s actuator delay for predictive CBF
+    # ── Robust CBF (rCBF) extensions ──────────────────────────────────────
+    kappa_r_beta: float = 0.6    # robustness gain: β_max shrinks by κ_r·σ_GP
+    kappa_r_wz: float = 3.0      # robustness gain: ψ̇_max shrinks by κ_r·σ_GP
+    sigma_floor: float = 0.01    # minimum σ_GP (prevents numerical issues)
+    sigma_cap: float = 0.20      # maximum σ_GP effect (prevents over-conservatism)
 
 
 @partial(jax.jit, static_argnums=())
@@ -316,6 +321,7 @@ def cbf_safety_filter(
     omega_wheel: jax.Array,   # (4,) wheel speeds [rad/s]
     T_min: jax.Array,         # (4,) motor min torque
     T_max: jax.Array,         # (4,) motor max torque
+    gp_sigma: jax.Array = jnp.array(0.05),  # ← NEW: GP tire uncertainty
     geo: TVGeometry = TVGeometry(),
     cbf: CBFParams = CBFParams(),
 ) -> jax.Array:
@@ -353,14 +359,29 @@ def cbf_safety_filter(
 
     beta_pred = vy_pred / jnp.maximum(jnp.abs(vx_pred), 0.5)
 
-    # ── Step 2: Evaluate barrier functions at predicted state ────────────
-    # Sideslip CBF: B_β = β_max² − β²
-    beta_max_dynamic = cbf.beta_max * jnp.clip(mu_est / 1.5, 0.5, 1.5)
-    B_beta = beta_max_dynamic ** 2 - beta_pred ** 2
+    # ── Step 2: Evaluate ROBUST barrier functions at predicted state ─────
+    # rCBF: safe set contracts proportionally to GP uncertainty σ_GP.
+    # When σ_GP is large → β_max shrinks → more conservative.
+    # When σ_GP is small → β_max near nominal → full aggressiveness.
+    sigma_eff = jnp.clip(gp_sigma, cbf.sigma_floor, cbf.sigma_cap)
 
-    # Yaw rate CBF: B_ψ = ψ̇_max² − ψ̇²
-    wz_max_dynamic = cbf.wz_max * jnp.clip(mu_est * 9.81 / (vx_safe + 1e-3), 0.3, 2.0)
-    B_wz = wz_max_dynamic ** 2 - wz_pred ** 2
+    # Sideslip rCBF: B_β = (β_max - κ_r · σ)² - β²
+    beta_max_nominal = cbf.beta_max * jnp.clip(mu_est / 1.5, 0.5, 1.5)
+    beta_max_robust = jnp.maximum(
+        beta_max_nominal - cbf.kappa_r_beta * sigma_eff,
+        0.03,  # absolute minimum: ~1.7° — never fully close the safe set
+    )
+    B_beta = beta_max_robust ** 2 - beta_pred ** 2
+
+    # Yaw rate rCBF: B_ψ = (ψ̇_max - κ_r · σ · v/g)² - ψ̇²
+    wz_max_nominal = cbf.wz_max * jnp.clip(mu_est * 9.81 / (vx_safe + 1e-3), 0.3, 2.0)
+    # σ_GP affects yaw rate limit through the friction circle:
+    # ψ̇_max = μ·g/v, so Δψ̇_max = Δμ·g/v = κ_r·σ·g/v
+    wz_max_robust = jnp.maximum(
+        wz_max_nominal - cbf.kappa_r_wz * sigma_eff * 9.81 / (vx_safe + 1e-3),
+        0.2,  # absolute minimum: prevent singularity at low speed
+    )
+    B_wz = wz_max_robust ** 2 - wz_pred ** 2
 
     # ── Step 3: Compute CBF constraint Jacobians w.r.t. T ─────────────
     # dB_β/dT ≈ (∂β/∂ay) × (∂ay/∂Fy_total) × (∂Fy_total/∂T)
@@ -602,13 +623,23 @@ def tv_step(
 
     # ── 6. CBF safety filter ────────────────────────────────────────────
     Fy_total = jnp.sum(Fy)
+    gp_sigma = jnp.array(0.05)  # moderate uncertainty
     T_safe = cbf_safety_filter(
-        T_alloc, tv_state.T_prev,
-        vx, vy, wz,
-        Fz, Fy_total, mu_est, omega_wheel,
-        T_min, T_max, geo, cbf_params,
+        T_alloc, T_prev, vx, vy, wz, Fz, Fy_total, mu_est,
+        omega_w, T_min, T_max, gp_sigma, geo, cbf,
     )
-
+    # High-uncertainty scenario: CBF should be MORE conservative
+    gp_sigma_high = jnp.array(0.20)  # uncalibrated GP
+    T_safe_uncertain = cbf_safety_filter(
+        T_alloc, T_prev, vx, vy, wz, Fz, Fy_total, mu_est,
+        omega_w, T_min, T_max, gp_sigma_high, geo, cbf,
+    )
+    intervention_uncertain = float(jnp.linalg.norm(T_safe_uncertain - T_alloc))
+    if intervention_uncertain > intervention:
+        print(f"[PASS] rCBF: higher σ → stronger intervention "
+              f"({intervention:.1f} → {intervention_uncertain:.1f} Nm)")
+    else:
+        print(f"[WARN] rCBF: higher σ did not increase intervention")
     # CBF intervention magnitude (for diagnostics)
     cbf_intervention = jnp.linalg.norm(T_safe - T_alloc)
     cbf_active = (cbf_intervention > 1.0).astype(jnp.float32)

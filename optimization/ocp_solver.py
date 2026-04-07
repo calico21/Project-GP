@@ -151,7 +151,7 @@ class DiffWMPCSolver:
         self.w_effort  = 5e-5
         self.w_friction = 25.0
         self.alpha_fric = 10.0
-        self.w_l1_detail = 1e-4    # L1 on detail wavelet coefficients (UPGRADE-3)
+        self.w_l1_detail = 3e-4    # L1 on detail wavelet coefficients (UPGRADE-3)
 
     @staticmethod
     def _load_tire_coeffs() -> dict:
@@ -407,6 +407,7 @@ class DiffWMPCSolver:
         track_w_left, track_w_right,
         w_mu, w_steer, w_accel,
         al_lambda, al_rho,
+        alpha_peak_est, # <-- ADD THIS
     ):
         # AFTER:
         # BUG A FIX: w_mu is (N,); passing (N,) as lmuy_scale into _simulate_trajectory
@@ -425,19 +426,30 @@ class DiffWMPCSolver:
         s_dot_safe = jax.nn.softplus(s_dot * 20.0) / 20.0 + 1e-2
         time_cost  = jnp.sum(1.0 / s_dot_safe) * self.dt_control
 
-        # ── 2. Control effort (L2 + L1 on detail wavelet coefficients) ────────
-        # Detail coefficients occupy upper N/2 of each column
-        # wavelet_coeffs is (N, 2). detail_coeffs must be the per-channel 1D
-        # high-frequency portion. Slicing rows gives (N-N//8, 2) — wrong.
-        # Correct: slice each channel separately and concatenate.
-        n8          = self.N // 8
-        detail_ch0  = wavelet_coeffs[n8:, 0]   # steer detail coeffs (N - N//8,)
-        detail_ch1  = wavelet_coeffs[n8:, 1]   # accel detail coeffs (N - N//8,)
-        detail_coeffs = jnp.concatenate([detail_ch0, detail_ch1])   # (2*(N-N//8),)
+        # ── 2. Control effort (L2 + Pseudo-Huber on detail wavelet coefficients) ────────
+        def _huber_detail_cost(c_channel):
+            """Weighted pseudo-Huber on D3, D2, D1 bands dynamically scaled to N."""
+            n8 = self.N // 8
+            n4 = self.N // 4
+            n2 = self.N // 2
+            
+            D3 = c_channel[n8:n4]    # low-freq detail
+            D2 = c_channel[n4:n2]    # mid-freq detail
+            D1 = c_channel[n2:]      # high-freq detail
+            
+            # Higher-frequency bands get stronger penalty (more aggressive smoothing)
+            return (
+                0.5 * jnp.sum(_pseudo_huber(D3, delta=0.01))
+                + 1.0 * jnp.sum(_pseudo_huber(D2, delta=0.01))
+                + 2.0 * jnp.sum(_pseudo_huber(D1, delta=0.005))
+            )
+
+        # Apply per-band Huber cost to both steer (0) and accel (1) channels
+        l1_detail_cost = _huber_detail_cost(wavelet_coeffs[:, 0]) + _huber_detail_cost(wavelet_coeffs[:, 1])
 
         effort_cost   = (jnp.sum(w_steer * U_opt[:, 0] ** 2) * 1e-3
                          + jnp.sum(w_accel * U_opt[:, 1] ** 2) * self.w_effort
-                         + self.w_l1_detail * jnp.sum(jnp.abs(detail_coeffs)))
+                         + self.w_l1_detail * l1_detail_cost)
 
         # ── 3. Stochastic tube barrier (soft log-barrier) ─────────────────────
         eps         = 0.05
@@ -468,8 +480,27 @@ class DiffWMPCSolver:
         g_clamp      = jnp.maximum(g_circle, -al_lambda / (al_rho + 1e-8))
         al_friction  = (jnp.dot(al_lambda, jnp.maximum(g_circle, 0.0))
                         + 0.5 * al_rho * jnp.sum(g_clamp ** 2))
+        # ── 6. Grip Margin Constraint (EKF-informed) ─────────────────────────
+        # Front axle kinematic slip angle alpha_f ≈ delta - (vy + lf*wz)/vx
+        lf = self.vp.get('lf', 0.8525)
+        vx = x_traj[:, STATE_VX]
+        vy = x_traj[:, STATE_VY]
+        wz = x_traj[:, 19] # yaw rate index
+        delta = U_opt[:, 0] # steering channel
+        
+        # Current slip angle at front axle
+        alpha_current = delta - (vy + lf * wz) / jnp.maximum(vx, 1.0)
+        
+        # Grip margin at each horizon step:
+        alpha_margin = alpha_peak_est - jnp.abs(alpha_current)
+        
+        # Soft penalty when margin < 20% of alpha_peak:
+        # This keeps the solver in the high-grip linear region (Batch 4 logic)
+        margin_penalty = jnp.sum(jax.nn.softplus((0.20 * alpha_peak_est - alpha_margin) * 20.0))
 
-        return time_cost + effort_cost + barrier_cost + term_cost + al_friction
+        # Add to the final return (weighted by ~5.0 to make it influential)
+        return (time_cost + effort_cost + barrier_cost + 
+                term_cost + al_friction + 5.0 * margin_penalty)
 
     # ─────────────────────────────────────────────────────────────────────────────
     # §6a  Physics-based warm start  (replaces _build_quintic_warmstart for init)
@@ -598,6 +629,7 @@ class DiffWMPCSolver:
         friction_uncertainty_map=None,
         ai_cost_map=None,
         setup_params=None,
+        alpha_peak_est=0.13,  # <-- ADD THIS (default to Hoosier R20 nominal)
     ):
         """
         Solves the Diff-WMPC OCP via JAX-computed gradients + SciPy L-BFGS-B
@@ -710,11 +742,6 @@ class DiffWMPCSolver:
             def objective_wrapper(flat_coeffs):
                 coeffs      = flat_coeffs.reshape((self.N, 2))
                 coeffs_safe = jnp.clip(coeffs, -25000.0, 25000.0)
-                # Regularize toward the physics warm start, NOT toward zero.
-                # Zero coefficients = zero braking = maximum speed = maximum
-                # friction constraint violation. Warm-start coefficients encode
-                # a feasible braking trajectory. The gradient of this term at any
-                # NaN-producing point correctly points back toward feasibility.
                 coeff_reg   = 5e-5 * jnp.sum((coeffs_safe - wc_kin) ** 2)
                 loss = self._loss_fn(
                     coeffs_safe, x0, setup_params,
@@ -722,6 +749,7 @@ class DiffWMPCSolver:
                     track_w_left, track_w_right,
                     w_mu, w_steer, w_accel,
                     al_lambda, jnp.array(al_rho),
+                    alpha_peak_est, # <-- ADD THIS
                 )
                 return loss + coeff_reg
 
