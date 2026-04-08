@@ -77,6 +77,7 @@ class DESCState(NamedTuple):
             integrator=jnp.array(params.kappa_init),
             hpf_state=jnp.array(0.0),
             lpf_state=jnp.array(0.0),
+            t_acc=jnp.array(0.0),
         )
 
 def make_desc_state(params: DESCParams = DESCParams()) -> DESCState:

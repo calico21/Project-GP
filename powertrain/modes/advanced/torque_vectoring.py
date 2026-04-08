@@ -624,13 +624,12 @@ def tv_step(
     # ── 6. CBF safety filter ────────────────────────────────────────────
     Fy_total = jnp.sum(Fy)
     T_safe = cbf_safety_filter(
-        T_alloc, T_prev, vx, vy, wz, Fz, Fy_total, mu_est,
+        T_alloc, tv_state.T_prev, vx, vy, wz, Fz, Fy_total, mu_est,
         omega_wheel, T_min, T_max, gp_sigma, geo, cbf,
     )
-    # CBF intervention magnitude (for diagnostics)
     cbf_intervention = jnp.linalg.norm(T_safe - T_alloc)
     cbf_active = (cbf_intervention > 1.0).astype(jnp.float32)
-
+    
     # ── 7. Output smoothing ─────────────────────────────────────────────
     T_output = smooth_output(T_safe, tv_state.T_prev, dt)
 
