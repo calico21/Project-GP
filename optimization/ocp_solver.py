@@ -56,7 +56,7 @@ from models.vehicle_dynamics import (
     DifferentiableMultiBodyVehicle, SuspensionSetup,
     DEFAULT_SETUP, build_default_setup_28, compute_equilibrium_suspension,
 )
-from data.configs.vehicle_params import vehicle_params as VP
+from config.vehicles.ter26 import vehicle_params as VP
 
 # ── State vector index aliases ────────────────────────────────────────────────
 STATE_X   = 0;  STATE_Y   = 1;  STATE_Z  = 2
@@ -156,7 +156,7 @@ class DiffWMPCSolver:
     @staticmethod
     def _load_tire_coeffs() -> dict:
         try:
-            from data.configs.tire_coeffs import tire_coeffs
+            from config.tire_coeffs import tire_coeffs
             return tire_coeffs
         except ImportError:
             return {}

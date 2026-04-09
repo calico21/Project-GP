@@ -1,4 +1,4 @@
-# data/configs/tire_coeffs.py
+# config/tire_coeffs.py
 # Hoosier R25B 16x7.5 on 10x7 rim
 # Lateral/aligning coefficients from TTC PAC2002 .tir (Stackpole, Feb 2019)
 # Longitudinal/combined slip: retained from previous fit (USE_MODE=2 in .tir — Fx zeroed)

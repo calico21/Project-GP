@@ -1,4 +1,4 @@
-# data/configs/vehicle_params.py
+# config/vehicles/ter26.py
 # Project-GP  —  Ter26 Formula Student 2026
 # ═══════════════════════════════════════════════════════════════════════════════
 # MASTER VEHICLE PARAMETER FILE

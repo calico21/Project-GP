@@ -14,7 +14,7 @@
 #   Belt-and-suspenders: a gradient mask zeros frozen dims after each step.
 #
 # USAGE:
-#   from data.configs.design_freeze import DesignFreeze
+#   from config.design_freeze import DesignFreeze
 #
 #   freeze = DesignFreeze.for_ter27_phase2()   # preset
 #   # — or —
@@ -296,7 +296,7 @@ def install_freeze(freeze: DesignFreeze, car_id: str = 'ter27'):
         car_id: Car to get design bounds from
     """
     import models.vehicle_dynamics as vd
-    from data.configs.car_config import get_design_bounds
+    from config.car_config import get_design_bounds
 
     # Get design-mode bounds, then apply freeze
     design_lb, design_ub = get_design_bounds(car_id)

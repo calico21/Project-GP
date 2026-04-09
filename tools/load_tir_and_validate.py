@@ -394,7 +394,7 @@ def validate_jax_pacejka(
     import jax.numpy as jnp
 
     if coeffs is None:
-        from data.configs.tire_coeffs import tire_coeffs
+        from config.tire_coeffs import tire_coeffs
         coeffs = tire_coeffs
 
     from models.tire_model import PacejkaTire

@@ -8,7 +8,6 @@ __pycache__/
 c_generated_code/
 *.so
 *.o
-*.json
 acados_solver_*.c
 formula_student_thermal_twin_model/
 formula_student_thermal_twin_cost/
@@ -16,3 +15,15 @@ formula_student_thermal_twin_cost/
 # Data outputs
 *.csv
 data/logs/*.asc
+# XLA compilation cache (stale after any module path change)
+.jax_cache/
+
+# W&B local run artifacts (cloud copy at calico21 is authoritative)
+wandb/
+
+# One-off migration/admin scripts
+config_migration.sh
+commands.txt
+
+# Simulator telemetry logs (large, not version-controlled)
+simulator/logs/

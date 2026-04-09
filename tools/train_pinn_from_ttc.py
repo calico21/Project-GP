@@ -53,7 +53,7 @@ import optax
 import flax.serialization
 
 from models.tire_model import TireOperatorPINN, PacejkaTire
-from data.configs.tire_coeffs import tire_coeffs
+from config.tire_coeffs import tire_coeffs
 
 
 # ─────────────────────────────────────────────────────────────────────────────

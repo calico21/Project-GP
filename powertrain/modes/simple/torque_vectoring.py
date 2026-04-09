@@ -3,7 +3,7 @@ import jax.numpy as jnp
 from functools import partial
 from typing import NamedTuple
 
-from data.configs.vehicle_params_ter27 import vehicle_params_ter27
+from config.vehicles.ter27 import vehicle_params_ter27
 
 class TVGeometry(NamedTuple):
     """Static vehicle geometry dynamically loaded from config."""

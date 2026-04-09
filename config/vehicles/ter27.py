@@ -1,4 +1,4 @@
-# data/configs/vehicle_params_ter27.py
+# config/vehicles/ter27.py
 # Project-GP  —  Ter27 Formula Student 2027  (4WD)
 # ═══════════════════════════════════════════════════════════════════════════════
 # MASTER VEHICLE PARAMETER FILE — TER27 FOUR-WHEEL DRIVE

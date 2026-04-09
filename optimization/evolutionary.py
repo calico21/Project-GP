@@ -56,8 +56,8 @@ from optimization.objectives import (
     compute_step_steer_objective,
     compute_endurance_lte_objective,  # <-- ADD THIS
 )
-from data.configs.vehicle_params import vehicle_params as VP
-from data.configs.tire_coeffs import tire_coeffs as TC
+from config.vehicles.ter26 import vehicle_params as VP
+from config.tire_coeffs import tire_coeffs as TC
 
 # ─────────────────────────────────────────────────────────────────────────────
 # §1  Constants

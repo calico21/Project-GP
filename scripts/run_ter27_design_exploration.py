@@ -37,12 +37,12 @@ import jax.numpy as jnp
 import numpy as np
 import pandas as pd
 
-from data.configs.car_config import (
+from config.car_config import (
     get_car_config,
     get_design_bounds,
     format_optimizer_output,
 )
-from data.configs.design_freeze import DesignFreeze, install_freeze
+from config.design_freeze import DesignFreeze, install_freeze
 from models.vehicle_dynamics import (
     SuspensionSetup,
     SETUP_NAMES,

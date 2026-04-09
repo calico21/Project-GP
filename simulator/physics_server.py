@@ -43,8 +43,8 @@ from jax import remat
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from models.vehicle_dynamics import DifferentiableMultiBodyVehicle
-from data.configs.vehicle_params import vehicle_params as VP_DICT
-from data.configs.tire_coeffs import tire_coeffs as TP_DICT
+from config.vehicles.ter26 import vehicle_params as VP_DICT
+from config.tire_coeffs import tire_coeffs as TP_DICT
 
 try:
     from simulator.sim_protocol import (

@@ -65,7 +65,7 @@ def render_3d_suspension(height: int = 720) -> None:
     
     # ── NEW INJECTION CODE ──────────────────────────────────────────────
     try:
-        from data.configs.vehicle_params import vehicle_params
+        from config.vehicles.ter26 import vehicle_params
         
         # Package the hardpoints into a JSON string
         hp_data = json.dumps({

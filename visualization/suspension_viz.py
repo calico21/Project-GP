@@ -121,7 +121,7 @@ class SuspensionPhysics:
 
     def __init__(self):
         try:
-            from data.configs.vehicle_params import vehicle_params as _VP
+            from config.vehicles.ter26 import vehicle_params as _VP
             self._vp = {**self._DEFAULTS, **_VP}
         except ImportError:
             self._vp = dict(self._DEFAULTS)

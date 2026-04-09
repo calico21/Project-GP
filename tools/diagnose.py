@@ -43,8 +43,8 @@ if not all([ok_jax, ok_tc, ok_vp, ok_tm]):
 
 import jax
 import jax.numpy as jnp
-from data.configs.tire_coeffs import tire_coeffs
-from data.configs.vehicle_params import vehicle_params as VP
+from config.tire_coeffs import tire_coeffs
+from config.vehicles.ter26 import vehicle_params as VP
 from models.tire_model import PacejkaTire
 
 # ─── Step 2: PacejkaTire construction ────────────────────────────────────────

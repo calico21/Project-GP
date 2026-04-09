@@ -59,7 +59,7 @@ import flax.serialization
 
 from models.vehicle_dynamics import (NeuralEnergyLandscape, NeuralDissipationMatrix,
                                       PhysicsNormalizer)
-from data.configs.vehicle_params import vehicle_params as VP_DICT
+from config.vehicles.ter26 import vehicle_params as VP_DICT
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -658,7 +658,7 @@ def train_neural_residuals():
     # Diagnostic 1: passive energy injection
     try:
         from models.vehicle_dynamics import DifferentiableMultiBodyVehicle
-        from data.configs.tire_coeffs import tire_coeffs as TP_DICT
+        from config.tire_coeffs import tire_coeffs as TP_DICT
         from models.vehicle_dynamics import build_default_setup_28
 
         _veh = DifferentiableMultiBodyVehicle(VP_DICT, TP_DICT)

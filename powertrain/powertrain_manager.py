@@ -36,22 +36,23 @@ from powertrain.motor_model import (
     MotorParams, BatteryParams, PowertrainState,
     motor_torque_limits_at_wheel, total_power_limit,
 )
-from powertrain.torque_vectoring import (
+from powertrain.modes.advanced.torque_vectoring import (
     TVGeometry, AllocatorWeights, CBFParams,
     tv_step, TVState, TVOutput, make_tv_state,
     yaw_moment_arms, solve_torque_allocation, cbf_safety_filter,
     smooth_output,
 )
-from powertrain.traction_control import (
+from powertrain.modes.advanced.traction_control import (
     DESCParams, TCWeights, TCState, TCOutput,
-    tc_step, compute_blending_weights, estimate_slip_ratios,
+    tc_step, compute_blend_weights as compute_blending_weights,
+    compute_slip_ratios as estimate_slip_ratios,
     wheel_speed_confidence,
 )
-from powertrain.launch_control import (
+from powertrain.modes.advanced.launch_control import (
     LaunchParams, LaunchState, LaunchOutput,
     launch_step,
 )
-from powertrain.virtual_impedance import (
+from powertrain.modes.advanced.virtual_impedance import (
     ImpedanceParams, ImpedanceState,
     impedance_step,
 )
@@ -402,7 +403,7 @@ def powertrain_step(
     )
 
     # Yaw rate reference (driver-intent-aware)
-    from powertrain.torque_vectoring import yaw_rate_reference
+    from powertrain.modes.advanced.torque_vectoring import yaw_rate_reference
     wz_ref = yaw_rate_reference(delta, vx, delta_dot, wz, mu_est, geo)
 
     # PD yaw moment demand
@@ -496,7 +497,7 @@ def powertrain_step(
     P_total_diag = jnp.sum(jnp.abs(T_final * omega_wheel))
 
     # SOCP cost at final torques (for optimization tracking)
-    from powertrain.torque_vectoring import allocator_cost
+    from powertrain.modes.advanced.torque_vectoring import allocator_cost
     cost_val = allocator_cost(
         T_final, manager_state.tv.T_prev, Fx_driver, Mz_target, delta,
         Fz, Fy, mu_scaled, omega_wheel, T_min, T_max, P_max, geo, alloc_w,

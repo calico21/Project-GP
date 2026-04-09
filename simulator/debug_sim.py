@@ -270,8 +270,8 @@ def test_physics():
         import sys
         sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
         from vehicle_dynamics import VehicleDynamicsH
-        from data.configs.vehicle_params import vehicle_params as VP
-        from data.configs.tire_coeffs import tire_coeffs as TC
+        from config.vehicles.ter26 import vehicle_params as VP
+        from config.tire_coeffs import tire_coeffs as TC
         print(INFO, "VehicleDynamicsH loaded.")
     except Exception as e:
         print(FAIL, f"Could not import VehicleDynamicsH: {e}")

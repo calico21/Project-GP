@@ -13,8 +13,8 @@ if project_root not in sys.path:
 
 from telemetry.log_ingestion import LogIngestion
 from models.vehicle_dynamics import MultiBodyVehicle
-from data.configs.vehicle_params import vehicle_params as VP_DICT
-from data.configs.tire_coeffs import tire_coeffs as TP_DICT
+from config.vehicles.ter26 import vehicle_params as VP_DICT
+from config.tire_coeffs import tire_coeffs as TP_DICT
 
 class InertiaEstimator:
     def __init__(self, log_path):

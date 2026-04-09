@@ -19,8 +19,8 @@ import pytest
 
 # ── Shared fixtures ───────────────────────────────────────────────────────────
 
-from data.configs.tire_coeffs  import tire_coeffs
-from data.configs.vehicle_params import vehicle_params as VP
+from config.tire_coeffs import tire_coeffs
+from config.vehicles.ter26 import vehicle_params as VP
 from models.tire_model import PacejkaTire
 
 T_RIBS_NOM = jnp.array([90.0, 90.0, 90.0])   # nominal tyre temperature

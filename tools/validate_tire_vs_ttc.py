@@ -170,7 +170,7 @@ def save_processed(ss: dict, test_mask: np.ndarray):
 
 def validate(dataset: dict):
     """Run PacejkaTire on test points using vectorized JAX. Report R², RMSE."""
-    from data.configs.tire_coeffs import tire_coeffs
+    from config.tire_coeffs import tire_coeffs
     from models.tire_model import PacejkaTire
 
     tire = PacejkaTire(tire_coeffs)

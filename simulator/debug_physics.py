@@ -14,8 +14,8 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
 from models.vehicle_dynamics import DifferentiableMultiBodyVehicle
-from data.configs.vehicle_params import vehicle_params as VP
-from data.configs.tire_coeffs import tire_coeffs as TC
+from config.vehicles.ter26 import vehicle_params as VP
+from config.tire_coeffs import tire_coeffs as TC
 
 def main():
     print("=" * 60)

@@ -157,7 +157,7 @@ def compute_skidpad_objective(simulate_step_fn, params, x_init, dt=0.005, T_max=
                       NOTE: evolutionary.py STABILITY_MAX should be 0.0,
                       not 5.0, to make this constraint physically meaningful.
     """
-    from data.configs.vehicle_params import vehicle_params as VP
+    from config.vehicles.ter26 import vehicle_params as VP
 
     # ── Unpack setup parameters ───────────────────────────────────────────────
     if params.shape[-1] == 28:
@@ -361,7 +361,7 @@ def compute_frequency_response_objective(simulate_step_fn, params, x_init,
 
     Returns: resonance penalty (lower = better modal behaviour)
     """
-    from data.configs.vehicle_params import vehicle_params as VP
+    from config.vehicles.ter26 import vehicle_params as VP
 
     if params.shape[-1] == 28:
         k_f, k_r = params[0], params[1]
@@ -495,7 +495,7 @@ def compute_endurance_lte_objective(
     All intermediate quantities are smooth (no hard conditionals), ensuring
     clean gradient flow from J_LTE back to all 28 setup parameters.
     """
-    from data.configs.vehicle_params import vehicle_params as VP
+    from config.vehicles.ter26 import vehicle_params as VP
 
     L_wb = VP.get('lf', 0.8525) + VP.get('lr', 0.6975)
 

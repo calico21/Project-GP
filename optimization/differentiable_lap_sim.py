@@ -43,8 +43,8 @@ import numpy as np
 from optimization.differentiable_track import (
     DifferentiableTrack, interp_track_at_s, make_differentiable_track,
 )
-from data.configs.vehicle_params import vehicle_params as VP
-from data.configs.tire_coeffs import tire_coeffs as TC
+from config.vehicles.ter26 import vehicle_params as VP
+from config.tire_coeffs import tire_coeffs as TC
 
 
 # ─────────────────────────────────────────────────────────────────────────────
