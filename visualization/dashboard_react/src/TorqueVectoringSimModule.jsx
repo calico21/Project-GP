@@ -1,10 +1,12 @@
 // ═══════════════════════════════════════════════════════════════════════════
-// src/TorqueVectoringSimModule.jsx  —  Project-GP Dashboard v5.1 rev-3
+// src/TorqueVectoringSimModule.jsx  —  Project-GP Dashboard v5.1 rev-4
 // ═══════════════════════════════════════════════════════════════════════════
-// rev-3 changes:
-//   • TV sign fix: RR > RL for right turn, RL > RR for left turn (+ physics)
-//   • Finish line: horizontal (east-west) perpendicular to car travel direction
-//   • Track: stadium shape — 28m half-straights + 10m radius corners (FS-like)
+// rev-4 fixes vs rev-3:
+//   • LEFT ARC: anticlockwise=true → false  (was drawing east side, not west)
+//   • FINISH LINE: moved to rightmost point (FL_X = +STRA+CR), car heading N
+//   • TRACK SIZE: STRA 28→22, CR 10→9, THW 4.5→4  (fits narrower canvas)
+//   • SLIDER SIGN: slRef.steer = -v  (slider-right now = car-right)
+//   • S0: starts at rightmost arc, just south of finish, heading north
 // ═══════════════════════════════════════════════════════════════════════════
 
 import React, { useRef, useEffect, useState, useCallback } from "react";
@@ -15,46 +17,44 @@ import { KPI, Pill } from "./components.jsx";
 // §1  Vehicle parameters  (Ter26 RWD)
 // ─────────────────────────────────────────────────────────────────────────────
 const V = {
-  m:    280, Iz: 120,
-  L:    1.53, lf: 0.76, lr: 0.77,
-  tw:   1.20, rw: 0.254,
-  Cf:   28000, Cr: 32000,
-  Tp:   540,            // Nm/wheel at contact patch (motor 120 Nm × 4.5 ratio)
-  Cd:   1.1, Af: 1.0, rho: 1.225,
-  dMax: 0.38,           // rad max steer
-  Kus:  0.006,
+  m: 280, Iz: 120,
+  L: 1.53, lf: 0.76, lr: 0.77,
+  tw: 1.20, rw: 0.254,
+  Cf: 28000, Cr: 32000,
+  Tp: 540,        // Nm/wheel at patch (motor 120 Nm × 4.5 gear ratio)
+  Cd: 1.1, Af: 1.0, rho: 1.225,
+  dMax: 0.38,     // rad
+  Kus: 0.006,
 };
-
 const KP_TV = 1500;
 const KI_TV = 14;
 
 // ─────────────────────────────────────────────────────────────────────────────
-// §2  Track geometry — STADIUM (rounded rectangle)
-//     Two 28 m half-straights + 10 m radius semicircular ends
+// §2  Track geometry — stadium (rounded rectangle)
 // ─────────────────────────────────────────────────────────────────────────────
-const STRA  = 28;    // m  half-length of straight sections
-const CR    = 10;    // m  corner radius (centreline)
-const THW   = 4.5;   // m  half track-width
-const SCALE = 5.0;   // px / m
+const STRA  = 22;    // m  half-length of straight sections
+const CR    = 9;     // m  corner radius (centreline)
+const THW   = 4.0;   // m  half track-width
+const SCALE = 5.0;   // px/m
 
-// Finish line: leftmost point of track centreline, car heading north
-const FL_X     = -(STRA + CR);   // −38 m
-const FL_X_TOL = THW * 1.6;      // crossing gate half-width
-const FL_Y_ARM = 1.5;            // must have been south of this before lap counts
+// Finish line at the RIGHTMOST point — car passes heading north, line is horizontal
+const FL_X     = STRA + CR;    // +31 m
+const FL_X_TOL = THW * 1.5;   // m  lateral gate
+const FL_Y_ARM = 1.5;          // m  must have been south before counting
 
-// Arc centres in world: left (−STRA, 0), right (+STRA, 0)
+// Car starts just south of finish line, on the right arc, heading north
 const S0 = Object.freeze({
   x:   FL_X,
-  y:  -5,            // start just south of finish line
-  psi: Math.PI / 2,  // heading north
-  vx:  12,
+  y:  -4,
+  psi: Math.PI / 2,
+  vx:  14,
   vy:  0,
   r:   0,
   wz_int: 0,
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// §3  Physics — single-track bicycle model, 4× substep Euler
+// §3  Physics
 // ─────────────────────────────────────────────────────────────────────────────
 const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
 
@@ -75,29 +75,24 @@ function physicsStep(s, steer, throttle, brake, mode, dt) {
   let Trl, Trr, wz_int = s.wz_int;
 
   if (mode === "simple") {
-    // ── SIGN-FIXED feedforward ──────────────────────────────────────────────
+    // Steer-proportional feedforward.
     // right turn → steer < 0 → −steer > 0 → dT_s > 0 → Trr > Trl  ✓
-    // left  turn → steer > 0 → −steer < 0 → dT_s < 0 → Trl > Trr  ✓
     const dT_s = clamp(-steer * Tdrive * 0.30, -V.Tp * 0.42, V.Tp * 0.42);
     Trl = clamp(Tdrive / 2 - dT_s, 0, V.Tp);
     Trr = clamp(Tdrive / 2 + dT_s, 0, V.Tp);
-
   } else {
-    // ── SIGN-FIXED PI feedback ──────────────────────────────────────────────
-    // right turn understeer → wzRef < 0, r > wzRef → err < 0 → dM < 0 → dT < 0
-    // rawRr = Tdrive/2 − dT > Tdrive/2  → RR MORE  ✓
-    // rawRl = Tdrive/2 + dT < Tdrive/2  → RL LESS  ✓
+    // PI yaw-moment feedback.
+    // right-turn understeer → err < 0 → dT < 0 → rawRr = T/2 − dT > T/2  ✓
     const err       = wzRef - s.r;
     const decayRate = 1 - 14 * dt * Math.max(0, 1 - Math.abs(err) / 0.08);
     wz_int = clamp(s.wz_int * decayRate + err * dt, -3.5, 3.5);
     const dM = KP_TV * err + KI_TV * wz_int;
     const dT = clamp(dM / (V.tw / V.rw), -V.Tp * 0.55, V.Tp * 0.55);
 
-    const rawRl = Tdrive / 2 + dT;   // ← swapped vs rev-2 (was −dT)
-    const rawRr = Tdrive / 2 - dT;   // ← swapped vs rev-2 (was +dT)
+    const rawRl = Tdrive / 2 + dT;
+    const rawRr = Tdrive / 2 - dT;
     Trl = clamp(rawRl, 0, V.Tp);
     Trr = clamp(rawRr, 0, V.Tp);
-    // Thrust preservation — SOCP-style: floor-clamped deficit redistributed equally
     const deficit = Math.max(0, -rawRl) + Math.max(0, -rawRr);
     if (deficit > 0) {
       Trl = Math.min(V.Tp, Trl + deficit * 0.5);
@@ -107,15 +102,11 @@ function physicsStep(s, steer, throttle, brake, mode, dt) {
 
   const Fx    = (Trl + Trr) / V.rw - Fbrake;
   const Fdrag = 0.5 * V.rho * V.Cd * V.Af * v * v;
+  // M_z = (Trl − Trr)·tw/(2·rw): right turn → Trr > Trl → Mtv < 0 → right yaw ✓
+  const Mtv   = ((Trl - Trr) / V.rw) * (V.tw / 2);
 
-  // ── SIGN-FIXED yaw moment ─────────────────────────────────────────────────
-  // Right wheel (Trr) at y = −tw/2 in right-y convention; left (Trl) at +tw/2
-  // M_z = (Trl − Trr) * tw/(2*rw)
-  // right turn: Trr > Trl → Mtv < 0 → negative r acceleration → right yaw  ✓
-  const Mtv = ((Trl - Trr) / V.rw) * (V.tw / 2);
-
-  const ax = (Fx - Fdrag - FyF * Math.sin(steer)) / V.m  +  s.vy * s.r;
-  const ay = (FyF * Math.cos(steer) + FyR)         / V.m  -  vx   * s.r;
+  const ax = (Fx - Fdrag - FyF * Math.sin(steer)) / V.m + s.vy * s.r;
+  const ay = (FyF * Math.cos(steer) + FyR)         / V.m - vx  * s.r;
   const az = (FyF * Math.cos(steer) * V.lf - FyR * V.lr + Mtv) / V.Iz;
 
   const sinP = Math.sin(s.psi), cosP = Math.cos(s.psi);
@@ -132,112 +123,94 @@ function physicsStep(s, steer, throttle, brake, mode, dt) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// §4  Canvas rendering
+// §4  Canvas helpers
 // ─────────────────────────────────────────────────────────────────────────────
 function w2c(wx, wy, cw, ch) {
   return [cw / 2 + wx * SCALE, ch / 2 - wy * SCALE];
 }
 
-// Build rounded-rectangle (stadium) path for a given centreline radius R
+// Stadium path (rounded rectangle) at centreline radius R.
+// Arc direction: clockwise on screen (anticlockwise=false) for BOTH arcs.
+//   Right arc: from top (−π/2) → east side → bottom (+π/2)   [anticlockwise=false] ✓
+//   Left  arc: from bottom (π/2) → WEST side → top (−π/2)    [anticlockwise=false] ✓
+//   Bug in rev-3: left arc used `true` → swept east side instead of west.
 function stadiumPath(ctx, cw, ch, R) {
-  const lcx = cw / 2 - STRA * SCALE;   // left  arc centre canvas x
-  const rcx = cw / 2 + STRA * SCALE;   // right arc centre canvas x
+  const lcx = cw / 2 - STRA * SCALE;   // left  arc centre (world x = −STRA)
+  const rcx = cw / 2 + STRA * SCALE;   // right arc centre (world x = +STRA)
   const cy  = ch / 2;
   const rs  = R * SCALE;
 
-  // Trace: top-left → top-right → right-arc (top→bottom) → bottom-left → left-arc (bottom→top)
   ctx.beginPath();
-  ctx.moveTo(lcx, cy - rs);
-  ctx.lineTo(rcx, cy - rs);
-  ctx.arc(rcx, cy, rs, -Math.PI / 2, Math.PI / 2, false);   // clockwise on screen
-  ctx.lineTo(lcx, cy + rs);
-  ctx.arc(lcx, cy, rs, Math.PI / 2, -Math.PI / 2, true);    // counter-clockwise on screen
+  ctx.moveTo(lcx, cy - rs);                                        // top-left
+  ctx.lineTo(rcx, cy - rs);                                        // top-right
+  ctx.arc(rcx, cy, rs, -Math.PI / 2, Math.PI / 2,  false);        // right arc ✓
+  ctx.lineTo(lcx, cy + rs);                                        // bottom-right → bottom-left
+  ctx.arc(lcx, cy, rs,  Math.PI / 2, -Math.PI / 2, false);        // left arc ✓ (was true — BUG)
   ctx.closePath();
 }
 
 function drawTrack(ctx, cw, ch) {
-  // Background
   ctx.fillStyle = "#04060c";
   ctx.fillRect(0, 0, cw, ch);
 
   // Grid
-  const cx0 = cw / 2, cy0 = ch / 2;
-  ctx.strokeStyle = "rgba(18,30,55,0.40)";
-  ctx.lineWidth   = 0.5;
   const step = 10 * SCALE;
-  for (let gx = cx0 % step; gx < cw; gx += step) { ctx.beginPath(); ctx.moveTo(gx, 0); ctx.lineTo(gx, ch); ctx.stroke(); }
-  for (let gy = cy0 % step; gy < ch; gy += step) { ctx.beginPath(); ctx.moveTo(0, gy); ctx.lineTo(cw, gy); ctx.stroke(); }
+  ctx.strokeStyle = "rgba(18,30,55,0.40)";
+  ctx.lineWidth = 0.5;
+  for (let gx = (cw / 2) % step; gx < cw; gx += step) { ctx.beginPath(); ctx.moveTo(gx, 0); ctx.lineTo(gx, ch); ctx.stroke(); }
+  for (let gy = (ch / 2) % step; gy < ch; gy += step) { ctx.beginPath(); ctx.moveTo(0, gy); ctx.lineTo(cw, gy); ctx.stroke(); }
 
-  // Track surface (outer fill)
+  // Track surface
   stadiumPath(ctx, cw, ch, CR + THW);
-  ctx.fillStyle = "#0d1520";
-  ctx.fill();
+  ctx.fillStyle = "#0d1520"; ctx.fill();
 
-  // Infield cutout
+  // Infield punch-out
   stadiumPath(ctx, cw, ch, CR - THW);
-  ctx.fillStyle = "#060d08";
-  ctx.fill();
+  ctx.fillStyle = "#060d08"; ctx.fill();
 
-  // Infield inner shade
+  // Inner shade
   if (CR - THW > 2) {
-    stadiumPath(ctx, cw, ch, CR - THW - 1.5);
-    ctx.fillStyle = "#050b07";
-    ctx.fill();
+    stadiumPath(ctx, cw, ch, CR - THW - 1.2);
+    ctx.fillStyle = "#050b07"; ctx.fill();
   }
 
   // Outer kerb
   stadiumPath(ctx, cw, ch, CR + THW);
-  ctx.strokeStyle = "rgba(200,220,255,0.14)";
-  ctx.lineWidth   = 1.5;
-  ctx.stroke();
+  ctx.strokeStyle = "rgba(200,220,255,0.14)"; ctx.lineWidth = 1.5; ctx.stroke();
 
   // Inner kerb
   stadiumPath(ctx, cw, ch, CR - THW);
-  ctx.strokeStyle = "rgba(200,220,255,0.14)";
-  ctx.lineWidth   = 1.5;
-  ctx.stroke();
+  ctx.strokeStyle = "rgba(200,220,255,0.14)"; ctx.lineWidth = 1.5; ctx.stroke();
 
   // Centreline dashes
   stadiumPath(ctx, cw, ch, CR);
-  ctx.strokeStyle = "rgba(255,255,255,0.055)";
-  ctx.lineWidth   = 1;
-  ctx.setLineDash([10, 14]);
-  ctx.stroke();
-  ctx.setLineDash([]);
+  ctx.strokeStyle = "rgba(255,255,255,0.055)"; ctx.lineWidth = 1;
+  ctx.setLineDash([10, 14]); ctx.stroke(); ctx.setLineDash([]);
 }
 
 function drawFinishLine(ctx, cw, ch) {
-  // ── FIXED: horizontal finish line ─────────────────────────────────────────
-  // Car travels NORTH at FL_X, so finish line runs EAST-WEST = horizontal on screen.
-  // Span: x ∈ [FL_X − THW, FL_X + THW] at world y = 0.
+  // HORIZONTAL finish line at rightmost arc point (FL_X = +STRA+CR, y=0).
+  // Car travels NORTH here → perpendicular = EAST-WEST = horizontal on screen.
+  // Spans x ∈ [FL_X − THW, FL_X + THW] at world y=0.
   const [flxL, fly] = w2c(FL_X - THW, 0, cw, ch);
   const [flxR,    ] = w2c(FL_X + THW, 0, cw, ch);
 
   const lineW = flxR - flxL;
-  const tileW = lineW / 8;
-  const tileH = 7;   // px height of each checker row
+  const cols  = 8;
+  const tileW = lineW / cols;
+  const tileH = 7;
 
-  for (let col = 0; col < 8; col++) {
+  for (let col = 0; col < cols; col++) {
     for (let row = 0; row < 2; row++) {
       ctx.fillStyle = (col + row) % 2 === 0
         ? "rgba(255,255,255,0.55)"
         : "rgba(0,0,0,0.45)";
-      ctx.fillRect(
-        flxL + col * tileW,
-        fly - tileH + row * tileH,
-        tileW,
-        tileH,
-      );
+      ctx.fillRect(flxL + col * tileW, fly - tileH + row * tileH, tileW, tileH);
     }
   }
-
-  // Glow
   ctx.beginPath();
-  ctx.moveTo(flxL - 3, fly);
-  ctx.lineTo(flxR + 3, fly);
-  ctx.strokeStyle = "rgba(255,255,255,0.30)";
-  ctx.lineWidth   = 1.5;
-  ctx.stroke();
+  ctx.moveTo(flxL - 3, fly); ctx.lineTo(flxR + 3, fly);
+  ctx.strokeStyle = "rgba(255,255,255,0.30)"; ctx.lineWidth = 1.5; ctx.stroke();
 }
 
 function drawTrail(ctx, trail, mode) {
@@ -245,65 +218,52 @@ function drawTrail(ctx, trail, mode) {
   ctx.beginPath();
   trail.forEach(([tx, ty], i) => (i === 0 ? ctx.moveTo(tx, ty) : ctx.lineTo(tx, ty)));
   ctx.strokeStyle = mode === "advanced" ? "rgba(0,210,255,0.52)" : "rgba(225,6,0,0.52)";
-  ctx.lineWidth   = 2.5;
-  ctx.lineJoin    = "round";
-  ctx.stroke();
+  ctx.lineWidth = 2.5; ctx.lineJoin = "round"; ctx.stroke();
 }
 
 function drawCar(ctx, cw, ch, state, mode) {
   const [px, py] = w2c(state.x, state.y, cw, ch);
-  const Trl = state.Trl ?? 0;
-  const Trr = state.Trr ?? 0;
+  const Trl = state.Trl ?? 0, Trr = state.Trr ?? 0;
 
   ctx.save();
   ctx.translate(px, py);
   ctx.rotate(Math.PI / 2 - state.psi);
 
   const BL = 14, BW = 6;
+  const ac = mode === "advanced" ? C.cy : C.red;
 
-  // Chassis
   ctx.beginPath(); ctx.rect(-BW, -BL, BW * 2, BL * 2);
-  ctx.fillStyle   = mode === "advanced" ? "rgba(4,20,38,0.93)" : "rgba(28,6,6,0.93)";
-  ctx.fill();
-  ctx.strokeStyle = mode === "advanced" ? C.cy : C.red;
-  ctx.lineWidth   = 1.5; ctx.stroke();
+  ctx.fillStyle = mode === "advanced" ? "rgba(4,20,38,0.93)" : "rgba(28,6,6,0.93)";
+  ctx.fill(); ctx.strokeStyle = ac; ctx.lineWidth = 1.5; ctx.stroke();
 
-  // Nose
-  ctx.beginPath(); ctx.moveTo(0, -(BL + 6)); ctx.lineTo(-BW * 0.55, -BL + 2); ctx.lineTo(BW * 0.55, -BL + 2); ctx.closePath();
-  ctx.fillStyle = mode === "advanced" ? C.cy : C.red; ctx.fill();
+  ctx.beginPath(); ctx.moveTo(0, -(BL+6)); ctx.lineTo(-BW*0.55, -BL+2); ctx.lineTo(BW*0.55, -BL+2); ctx.closePath();
+  ctx.fillStyle = ac; ctx.fill();
 
-  // Rear wing
-  ctx.beginPath(); ctx.rect(-(BW + 3), BL - 4, (BW + 3) * 2, 2.5);
-  ctx.fillStyle = mode === "advanced" ? C.cy : C.red; ctx.fill();
+  ctx.beginPath(); ctx.rect(-(BW+3), BL-4, (BW+3)*2, 2.5); ctx.fillStyle = ac; ctx.fill();
 
-  // Cockpit
-  ctx.beginPath(); ctx.ellipse(0, 0, BW * 0.55, BL * 0.35, 0, 0, Math.PI * 2);
+  ctx.beginPath(); ctx.ellipse(0, 0, BW*0.55, BL*0.35, 0, 0, Math.PI*2);
   ctx.fillStyle = "rgba(0,0,0,0.50)"; ctx.fill();
-  ctx.strokeStyle = "rgba(150,180,220,0.18)"; ctx.lineWidth = 1; ctx.stroke();
 
-  // Wheels — colour encodes torque load
-  // RL at −x (left side, driven), RR at +x (right side, driven)
-  // RR gets more for right turn (sign fix), so the RIGHT wheel glows on right-hand corners ✓
+  // Wheels: RL at −x (left), RR at +x (right). RR glows for right turn ✓
   [
-    { x: -(BW + 3.5), y: -BL * 0.50, T: 0,   driven: false },  // FL
-    { x:  (BW + 3.5), y: -BL * 0.50, T: 0,   driven: false },  // FR
-    { x: -(BW + 3.5), y:  BL * 0.50, T: Trl, driven: true  },  // RL
-    { x:  (BW + 3.5), y:  BL * 0.50, T: Trr, driven: true  },  // RR
+    { x: -(BW+3.5), y: -BL*0.50, T: 0,   driven: false },
+    { x:  (BW+3.5), y: -BL*0.50, T: 0,   driven: false },
+    { x: -(BW+3.5), y:  BL*0.50, T: Trl, driven: true  },
+    { x:  (BW+3.5), y:  BL*0.50, T: Trr, driven: true  },
   ].forEach(w => {
     const ratio = w.driven ? Math.min(1, w.T / V.Tp) : 0;
-    let borderColor;
-    if (!w.driven || ratio < 0.05) borderColor = "rgba(80,100,130,0.55)";
-    else if (ratio < 0.40) { const t = ratio / 0.40; borderColor = `rgba(${Math.round(t * 255)},230,0,${0.55 + t * 0.35})`; }
-    else if (ratio < 0.75) { const t = (ratio - 0.40) / 0.35; borderColor = `rgba(255,${Math.round((1 - t) * 180)},0,0.90)`; }
-    else borderColor = `rgba(255,${Math.round((1 - (ratio - 0.75) / 0.25) * 80)},0,1.0)`;
+    let bc;
+    if (!w.driven || ratio < 0.05) bc = "rgba(80,100,130,0.55)";
+    else if (ratio < 0.40) { const t = ratio / 0.40; bc = `rgba(${Math.round(t*255)},230,0,${0.55+t*0.35})`; }
+    else if (ratio < 0.75) { const t = (ratio-0.40)/0.35; bc = `rgba(255,${Math.round((1-t)*180)},0,0.90)`; }
+    else bc = `rgba(255,${Math.round((1-(ratio-0.75)/0.25)*80)},0,1.0)`;
 
-    ctx.beginPath(); ctx.rect(w.x - 3, w.y - 5, 6, 10);
+    ctx.beginPath(); ctx.rect(w.x-3, w.y-5, 6, 10);
     ctx.fillStyle = "rgba(20,25,35,0.92)"; ctx.fill();
-    ctx.strokeStyle = borderColor; ctx.lineWidth = 1.8; ctx.stroke();
-
+    ctx.strokeStyle = bc; ctx.lineWidth = 1.8; ctx.stroke();
     if (ratio > 0.45) {
-      ctx.shadowBlur = 9; ctx.shadowColor = borderColor;
-      ctx.beginPath(); ctx.rect(w.x - 3, w.y - 5, 6, 10); ctx.stroke();
+      ctx.shadowBlur = 9; ctx.shadowColor = bc;
+      ctx.beginPath(); ctx.rect(w.x-3, w.y-5, 6, 10); ctx.stroke();
       ctx.shadowBlur = 0;
     }
   });
@@ -312,25 +272,31 @@ function drawCar(ctx, cw, ch, state, mode) {
 }
 
 function renderHUD(ctx, state, mode, steer) {
-  const spd       = Math.hypot(state.vx, state.vy) * 3.6;
-  const modeColor = mode === "advanced" ? "#00d2ff" : "#e10600";
+  const spd = Math.hypot(state.vx, state.vy) * 3.6;
+  const mc  = mode === "advanced" ? "#00d2ff" : "#e10600";
 
   ctx.font = "bold 11px 'Azeret Mono', monospace";
   ctx.fillStyle = "rgba(192,200,218,0.85)";
   ctx.fillText(`${spd.toFixed(0)} km/h`, 10, 20);
 
   ctx.font = "bold 9px 'Azeret Mono', monospace";
-  ctx.fillStyle = modeColor;
+  ctx.fillStyle = mc;
   ctx.fillText(mode === "advanced" ? "◎ ADVANCED TV" : "⊗ SIMPLE TV", 10, 34);
 
   const arcX = 28, arcY = 72, arcR = 18;
-  ctx.beginPath(); ctx.arc(arcX, arcY, arcR, Math.PI, 2 * Math.PI, false);
+  ctx.beginPath(); ctx.arc(arcX, arcY, arcR, Math.PI, 2*Math.PI, false);
   ctx.strokeStyle = "rgba(70,90,130,0.40)"; ctx.lineWidth = 2.5; ctx.stroke();
+
   const angle = Math.PI + (steer / V.dMax) * (Math.PI / 2);
-  ctx.beginPath(); ctx.moveTo(arcX, arcY); ctx.lineTo(arcX + Math.cos(angle) * arcR, arcY + Math.sin(angle) * arcR);
-  ctx.strokeStyle = modeColor; ctx.lineWidth = 2; ctx.stroke();
-  ctx.beginPath(); ctx.arc(arcX, arcY, 3, 0, Math.PI * 2); ctx.fillStyle = modeColor; ctx.fill();
-  ctx.font = "8px 'Azeret Mono', monospace"; ctx.fillStyle = "rgba(100,120,160,0.80)";
+  ctx.beginPath(); ctx.moveTo(arcX, arcY);
+  ctx.lineTo(arcX + Math.cos(angle)*arcR, arcY + Math.sin(angle)*arcR);
+  ctx.strokeStyle = mc; ctx.lineWidth = 2; ctx.stroke();
+
+  ctx.beginPath(); ctx.arc(arcX, arcY, 3, 0, Math.PI*2);
+  ctx.fillStyle = mc; ctx.fill();
+
+  ctx.font = "8px 'Azeret Mono', monospace";
+  ctx.fillStyle = "rgba(100,120,160,0.80)";
   ctx.fillText("STEER", arcX - 13, arcY + 11);
 }
 
@@ -378,7 +344,7 @@ function LapTimer({ current, best, history }) {
       <div style={{ fontSize: 7.5, fontWeight: 700, color: C.dm, fontFamily: C.dt, letterSpacing: 2 }}>LAP TIMER</div>
 
       <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
-        <span style={{ fontSize: 7.5, color: C.dm, fontFamily: C.dt, letterSpacing: 1 }}>CURRENT LAP</span>
+        <span style={{ fontSize: 7.5, color: C.dm, fontFamily: C.dt }}>CURRENT LAP</span>
         <span style={{ fontSize: 20, fontWeight: 800, color: C.w, fontFamily: C.hd, letterSpacing: 1, lineHeight: 1.1 }}>
           {fmtLap(current)}
         </span>
@@ -390,7 +356,7 @@ function LapTimer({ current, best, history }) {
         border: `1px solid ${best > 0 ? C.gn + "30" : "rgba(50,68,105,0.4)"}`,
         transition: "all 0.4s",
       }}>
-        <div style={{ fontSize: 7, color: C.gn, fontFamily: C.dt, letterSpacing: 1, marginBottom: 3 }}>
+        <div style={{ fontSize: 7, color: C.gn, fontFamily: C.dt, marginBottom: 3 }}>
           {isNewBest ? "★ NEW BEST" : "BEST LAP"}
         </div>
         <div style={{ fontSize: 15, fontWeight: 800, color: best > 0 ? C.gn : C.dm, fontFamily: C.hd }}>
@@ -426,58 +392,52 @@ const F = ({ c, children }) => <span style={{ color: c, fontWeight: 700 }}>{chil
 function TheoryBlock({ mode }) {
   const isAdv = mode === "advanced";
   const ac    = isAdv ? C.cy : C.red;
-
   return (
     <div style={{ ...GL, padding: "16px 20px", borderLeft: `3px solid ${ac}`, transition: "border-color 0.4s" }}>
       <div style={{ fontSize: 10, fontWeight: 800, color: ac, fontFamily: C.dt, letterSpacing: 2.5, marginBottom: 10 }}>
         {isAdv ? "ADVANCED TV — SOCP-INSPIRED PI YAW-MOMENT CONTROLLER" : "SIMPLE TV — STEER-PROPORTIONAL FEEDFORWARD"}
       </div>
-
       {!isAdv ? (
         <>
           <p style={{ fontSize: 9, color: C.br, fontFamily: C.dt, lineHeight: 1.85, margin: 0 }}>
-            Open-loop: outer-wheel torque is biased by <F c={C.red}>ΔT_s ∝ −δ × T_total</F>.
-            Turning right → right wheel gets more. No yaw feedback — any mismatch between
-            assumed and actual tyre state produces uncorrected yaw error. On corner exit under
-            heavy throttle, the static gain overshoots, causing <F c={C.am}>torque-induced oversteer</F>.
+            Open-loop: outer-wheel bias <F c={C.red}>ΔT_s ∝ −δ × T_total</F>.
+            Turning right → RR gets more torque, no closed-loop correction.
+            Under heavy throttle-on, static gain overshoots → <F c={C.am}>torque-induced oversteer</F>.
           </p>
           <pre style={{ fontFamily: "monospace", fontSize: 8, color: C.dm, marginTop: 12, padding: "10px 14px", background: "rgba(5,8,15,0.85)", borderRadius: 6, lineHeight: 2.1 }}>
-{`ΔT_s  =  clamp( −δ × T_total × 0.30,  ±0.42·T_peak )
-T_rl  =  T/2 − ΔT_s   (inner, left  for right turn)
-T_rr  =  T/2 + ΔT_s   (outer, right for right turn)
-M_yaw =  (T_rl − T_rr)·tw/(2·rw)   [feedforward, no correction]`}
+{`ΔT_s   =  clamp(−δ × T_total × 0.30,  ±0.42·Tp)
+T_rl   =  T/2 − ΔT_s   (inner for right turn → less)
+T_rr   =  T/2 + ΔT_s   (outer for right turn → more)
+M_yaw  =  (T_rl − T_rr)·tw/(2·rw)   [open-loop]`}
           </pre>
         </>
       ) : (
         <>
           <p style={{ fontSize: 9, color: C.br, fontFamily: C.dt, lineHeight: 1.85, margin: 0 }}>
-            Closed-loop PI: <F c={C.cy}>ψ̇_ref = v·δ/(L·(1 + K_us·v²))</F>. Error
-            <F c={C.gn}> ε = ψ̇_ref − ψ̇_actual</F> drives
-            <F c={C.am}> ΔM = Kp·ε + Ki·∫ε</F>. Anti-windup integral decay eliminates
-            corner-exit thrust suppression. SOCP-style deficit redistribution keeps total
-            longitudinal force invariant to the TV overlay.
+            Closed-loop PI: <F c={C.cy}>ψ̇_ref = v·δ/(L·(1 + K_us·v²))</F>.
+            Error <F c={C.gn}>ε = ψ̇_ref − ψ̇</F> drives
+            <F c={C.am}> ΔM = Kp·ε + Ki·∫ε</F>.
+            Anti-windup decay + SOCP-style thrust preservation keeps total Fx invariant.
           </p>
           <pre style={{ fontFamily: "monospace", fontSize: 8, color: C.dm, marginTop: 12, padding: "10px 14px", background: "rgba(5,8,15,0.85)", borderRadius: 6, lineHeight: 2.1 }}>
-{`ψ̇_ref  =  v·δ / (L·(1 + 0.006·v²))
-ε       =  ψ̇_ref − ψ̇_actual
-ΔT      =  clamp( (1500·ε + 14·∫ε)·rw/tw,  ±0.55·T_peak )
+{`ε       =  ψ̇_ref − ψ̇_actual
+ΔT      =  clamp((1500·ε + 14·∫ε)·rw/tw,  ±0.55·Tp)
 T_rl    =  T/2 + ΔT   │   T_rr = T/2 − ΔT
-M_yaw   =  (T_rl − T_rr)·tw/(2·rw)      [right turn: T_rr>T_rl → M<0 ✓]`}
+M_yaw   =  (T_rl − T_rr)·tw/(2·rw)   [closed-loop, right turn: M<0 ✓]`}
           </pre>
         </>
       )}
-
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginTop: 14 }}>
         {[
-          { label: "Corner entry",  simple: "Understeer if δ-gain mismatch",   adv: "ψ̇ closed-loop → follows apex"  },
-          { label: "Mid-corner",    simple: "Static gain, no tyre state update",adv: "PI corrects slip in real time"  },
-          { label: "Exit throttle", simple: "Oversteer from static outer bias", adv: "Integral decays fast, full Fx"  },
-          { label: "Yaw moment",    simple: "Feed-forward only",                adv: "Active ±50 Nm correction"       },
+          { label: "Corner entry",  s: "Understeer if δ-gain mismatch",   a: "ψ̇ closed-loop → follows apex"  },
+          { label: "Mid-corner",    s: "Static gain, no tyre update",      a: "PI corrects slip in real time"  },
+          { label: "Exit throttle", s: "Oversteer from outer-bias",        a: "Integral decay → full Fx"       },
+          { label: "Yaw moment",    s: "Feed-forward only",                a: "Active ±50 Nm correction"       },
         ].map(row => (
           <div key={row.label} style={{ ...GL, padding: "8px 12px" }}>
             <div style={{ fontSize: 7.5, color: C.dm, fontFamily: C.dt, letterSpacing: 1.5, marginBottom: 5, fontWeight: 700 }}>{row.label}</div>
-            <div style={{ fontSize: 8, color: C.red, fontFamily: C.dt, marginBottom: 3 }}>⊗ {row.simple}</div>
-            <div style={{ fontSize: 8, color: C.cy,  fontFamily: C.dt }}>◎ {row.adv}</div>
+            <div style={{ fontSize: 8, color: C.red, fontFamily: C.dt, marginBottom: 3 }}>⊗ {row.s}</div>
+            <div style={{ fontSize: 8, color: C.cy,  fontFamily: C.dt }}>◎ {row.a}</div>
           </div>
         ))}
       </div>
@@ -486,7 +446,7 @@ M_yaw   =  (T_rl − T_rr)·tw/(2·rw)      [right turn: T_rr>T_rl → M<0 ✓]`
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// §7  Main export
+// §7  Main component
 // ─────────────────────────────────────────────────────────────────────────────
 export default function TorqueVectoringSimModule() {
   const canvasRef = useRef(null);
@@ -499,7 +459,6 @@ export default function TorqueVectoringSimModule() {
   const rafRef    = useRef(null);
   const lastTRef  = useRef(null);
 
-  // Lap timing — all refs, zero React overhead inside rAF
   const prevYRef      = useRef(S0.y);
   const lapStartRef   = useRef(null);
   const bestLapRef    = useRef(0);
@@ -535,14 +494,13 @@ export default function TorqueVectoringSimModule() {
     setLapDisp({ current: 0, best: 0, history: [] });
   }, []);
 
-  // ── rAF loop ────────────────────────────────────────────────────────────────
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
     const ctx  = canvas.getContext("2d");
     const dpr  = window.devicePixelRatio || 1;
-    const logW = canvas.clientWidth  || 680;
-    const logH = canvas.clientHeight || 340;
+    const logW = canvas.clientWidth  || 640;
+    const logH = canvas.clientHeight || 320;
     canvas.width  = logW * dpr;
     canvas.height = logH * dpr;
     ctx.scale(dpr, dpr);
@@ -558,6 +516,7 @@ export default function TorqueVectoringSimModule() {
       const kb   = kbRef.current;
       const sl   = slRef.current;
 
+      // Keyboard: left-arrow = positive steer = left turn; right-arrow = negative = right turn
       const steerLeft  = keys.has("ArrowLeft")  || keys.has("a");
       const steerRight = keys.has("ArrowRight") || keys.has("d");
       if      (steerLeft)  kb.steer = clamp(kb.steer + 2.2 * rawDt, -V.dMax, V.dMax);
@@ -584,8 +543,7 @@ export default function TorqueVectoringSimModule() {
         s = physicsStep(s, steer, throttle, brake, modeRef.current, dt);
       stateRef.current = s;
 
-      // ── Lap crossing ─────────────────────────────────────────────────────
-      // Detect: x near FL_X AND prevY < −FL_Y_ARM AND currY >= −FL_Y_ARM
+      // Lap crossing: car near rightmost point (x ≈ FL_X), y crossing north
       const prevY = prevYRef.current;
       const currY = s.y;
       if (
@@ -605,13 +563,11 @@ export default function TorqueVectoringSimModule() {
       }
       prevYRef.current = currY;
 
-      // Trail
       const cw = logW, ch = logH;
       const [tx, ty] = w2c(s.x, s.y, cw, ch);
       trailRef.current.push([tx, ty]);
-      if (trailRef.current.length > 550) trailRef.current.shift();
+      if (trailRef.current.length > 600) trailRef.current.shift();
 
-      // Render
       ctx.clearRect(0, 0, cw, ch);
       drawTrack(ctx, cw, ch);
       drawFinishLine(ctx, cw, ch);
@@ -619,7 +575,6 @@ export default function TorqueVectoringSimModule() {
       drawCar(ctx, cw, ch, s, modeRef.current);
       renderHUD(ctx, s, modeRef.current, steer);
 
-      // React sync ~15 fps
       if (++tick % 4 === 0) {
         setDisp({
           speed: Math.hypot(s.vx, s.vy) * 3.6,
@@ -645,9 +600,10 @@ export default function TorqueVectoringSimModule() {
     return () => { cancelAnimationFrame(rafRef.current); lastTRef.current = null; };
   }, []);
 
+  // SLIDER SIGN FIX: slider-right → -v → negative steer → right turn ✓
   const onSlSteer = useCallback(e => {
     const v = parseFloat(e.target.value);
-    slRef.current.steer = v;
+    slRef.current.steer = -v;   // ← negated so slider-right = car-right
     setSlSteer(v);
   }, []);
   const onSlThr = useCallback(e => {
@@ -678,7 +634,7 @@ export default function TorqueVectoringSimModule() {
                 TORQUE VECTORING SIMULATOR
               </span>
               <span style={{ fontSize: 9, color: C.dm, fontFamily: C.dt, marginLeft: 12 }}>
-                Ter26 RWD · Stadium track · 540 Nm/wheel · PI yaw-moment controller
+                Ter26 RWD · Stadium 44m × 26m · 10m corner radius · 540 Nm/wheel
               </span>
             </div>
           </div>
@@ -690,18 +646,17 @@ export default function TorqueVectoringSimModule() {
         </div>
       </div>
 
-      {/* Mode selector */}
+      {/* Mode */}
       <div style={{ display: "flex", gap: 8, marginBottom: 14, alignItems: "center", flexWrap: "wrap" }}>
         <Pill active={mode === "simple"}   label="⊗  Simple TV"  onClick={() => onModeChange("simple")}   color={C.red} />
         <Pill active={mode === "advanced"} label="◎  Advanced TV" onClick={() => onModeChange("advanced")} color={C.cy}  />
         <span style={{ fontSize: 8, color: C.dm, fontFamily: C.dt, marginLeft: 8 }}>
-          WASD / Arrow Keys · or sliders · cross checkered line to record laps
+          WASD / Arrows · sliders · cross checkered line (right arc) to record laps
         </span>
       </div>
 
-      {/* Canvas + right panel */}
+      {/* Canvas + panel */}
       <div style={{ display: "grid", gridTemplateColumns: "1fr 200px", gap: 10, marginBottom: 10 }}>
-
         <div style={{
           ...GL, padding: 0, overflow: "hidden",
           border: `1px solid ${ac}28`, transition: "border-color 0.4s",
@@ -709,9 +664,8 @@ export default function TorqueVectoringSimModule() {
         }}>
           <canvas
             ref={canvasRef}
-            style={{ display: "block", width: "100%", height: "auto", aspectRatio: "680/340" }}
+            style={{ display: "block", width: "100%", height: "auto", aspectRatio: "640/320" }}
           />
-          {/* Wheel colour legend */}
           <div style={{ position: "absolute", bottom: 10, right: 12, display: "flex", flexDirection: "column", gap: 4 }}>
             {[
               { c: "rgba(0,200,0,0.8)",   l: "Low"  },
@@ -726,9 +680,8 @@ export default function TorqueVectoringSimModule() {
           </div>
         </div>
 
-        {/* Right column: torque + lap timer */}
         <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-          <div style={{ ...GL, padding: "12px 10px", flex: "0 0 auto" }}>
+          <div style={{ ...GL, padding: "12px 10px" }}>
             <div style={{ fontSize: 7.5, fontWeight: 700, color: C.dm, fontFamily: C.dt, letterSpacing: 2, textAlign: "center", marginBottom: 8 }}>
               PER-WHEEL
             </div>
@@ -753,7 +706,6 @@ export default function TorqueVectoringSimModule() {
               </div>
             </div>
           </div>
-
           <LapTimer current={lapDisp.current} best={lapDisp.best} history={lapDisp.history} />
         </div>
       </div>
@@ -763,9 +715,9 @@ export default function TorqueVectoringSimModule() {
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 22 }}>
           <div>
             <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6 }}>
-              <span style={{ fontSize: 8, color: C.dm, fontFamily: C.dt, letterSpacing: 1.5 }}>STEERING ← →</span>
+              <span style={{ fontSize: 8, color: C.dm, fontFamily: C.dt, letterSpacing: 1.5 }}>← LEFT · STEER · RIGHT →</span>
               <span style={{ fontSize: 8, color: C.br, fontFamily: C.dt, fontWeight: 700 }}>
-                {(slSteer * V.dMax * 180 / Math.PI).toFixed(1)}°
+                {Math.abs(slSteer * V.dMax * 180 / Math.PI).toFixed(1)}°{slSteer > 0.02 ? " R" : slSteer < -0.02 ? " L" : ""}
               </span>
             </div>
             <input type="range" min={-1} max={1} step={0.01} value={slSteer} onChange={onSlSteer}
@@ -774,9 +726,7 @@ export default function TorqueVectoringSimModule() {
           <div>
             <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6 }}>
               <span style={{ fontSize: 8, color: C.dm, fontFamily: C.dt, letterSpacing: 1.5 }}>THROTTLE ↑</span>
-              <span style={{ fontSize: 8, color: C.br, fontFamily: C.dt, fontWeight: 700 }}>
-                {(slThr * 100).toFixed(0)} %
-              </span>
+              <span style={{ fontSize: 8, color: C.br, fontFamily: C.dt, fontWeight: 700 }}>{(slThr * 100).toFixed(0)} %</span>
             </div>
             <input type="range" min={0} max={1} step={0.01} value={slThr} onChange={onSlThr}
               style={{ width: "100%", accentColor: C.gn, cursor: "pointer", height: 4 }} />
@@ -786,9 +736,9 @@ export default function TorqueVectoringSimModule() {
 
       {/* KPIs */}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 10, marginBottom: 14 }}>
-        <KPI label="Speed"   value={`${disp.speed.toFixed(1)} km/h`}         sub="body speed"        sentiment={disp.speed > 20 ? "positive" : "neutral"}                               delay={0} />
-        <KPI label="ψ̇  ref" value={`${disp.wzRef.toFixed(3)} r/s`}          sub="Ackermann target"  sentiment="neutral"                                                                delay={1} />
-        <KPI label="ψ̇  act" value={`${disp.wzAct.toFixed(3)} r/s`}          sub="measured yaw rate" sentiment={Math.abs(disp.wzErr) < 0.06 ? "positive" : "amber"}                    delay={2} />
+        <KPI label="Speed"   value={`${disp.speed.toFixed(1)} km/h`}          sub="body speed"        sentiment={disp.speed > 20 ? "positive" : "neutral"}                                    delay={0} />
+        <KPI label="ψ̇  ref" value={`${disp.wzRef.toFixed(3)} r/s`}           sub="Ackermann target"  sentiment="neutral"                                                                     delay={1} />
+        <KPI label="ψ̇  act" value={`${disp.wzAct.toFixed(3)} r/s`}           sub="measured yaw rate" sentiment={Math.abs(disp.wzErr) < 0.06 ? "positive" : "amber"}                         delay={2} />
         <KPI label="Yaw Err" value={`${(disp.wzErr * 1000).toFixed(1)} mr/s`} sub={mode === "advanced" ? "PI corrected" : "feedforward"}
           sentiment={Math.abs(disp.wzErr) < 0.06 ? "positive" : mode === "advanced" ? "amber" : "negative"} delay={3} />
       </div>
