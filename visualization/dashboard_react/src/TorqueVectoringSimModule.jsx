@@ -42,8 +42,8 @@ const V = {
 };
 
 // PI TV controller gains  (tuned to match SOCP bandwidth at ~50 Hz)
-const KP_TV = 1200;   // Nm/(rad/s)  proportional
-const KI_TV = 70;     // Nm/rad      integral
+const KP_TV = 1500;   // Nm/(rad/s)  — faster snap, corrects exit oscillation
+const KI_TV = 14;     // Nm/rad      — low: avoids windup on corner exit
 
 // ─────────────────────────────────────────────────────────────────────────────
 // §2  Track geometry  (ellipse, rendered with ctx.ellipse → pixel-perfect)
@@ -91,18 +91,30 @@ function physicsStep(s, steer, throttle, brake, mode, dt) {
   let Trl, Trr, wz_int = s.wz_int;
 
   if (mode === "simple") {
-    // Open differential — equal torque split, zero yaw moment
-    Trl = Tdrive / 2;
-    Trr = Tdrive / 2;
+    // Simple TV: steer-proportional feedforward — outer wheel bias, no yaw feedback.
+    // Positive steer = left turn → outer wheel = RR → dT_s > 0 → Trr > Trl.
+    const dT_s = clamp(steer * Tdrive * 0.30, -V.Tp * 0.45, V.Tp * 0.45);
+    Trl = clamp(Tdrive / 2 - dT_s, 0, V.Tp);
+    Trr = clamp(Tdrive / 2 + dT_s, 0, V.Tp);
   } else {
-    // Advanced — PI feedback on yaw-rate error → differential torque
-    const err   = wzRef - s.r;
-    wz_int      = clamp(s.wz_int + err * dt, -5, 5);
-    const dM    = KP_TV * err + KI_TV * wz_int;
-    // Convert yaw-moment demand → ΔT per wheel at the tyre contact patch
-    const dT    = clamp(dM / (V.tw / V.rw), -V.Tp * 0.65, V.Tp * 0.65);
-    Trl         = clamp(Tdrive / 2 - dT, 0, V.Tp);
-    Trr         = clamp(Tdrive / 2 + dT, 0, V.Tp);
+    const err = wzRef - s.r;
+    // Anti-windup: exponential decay scales with inverse error magnitude.
+    // When |err| < 0.08 rad/s (straight/exit), integral bleeds down fast.
+    const decayRate = 1 - 14 * dt * Math.max(0, 1 - Math.abs(err) / 0.08);
+    wz_int = clamp(s.wz_int * decayRate + err * dt, -3.5, 3.5);
+    const dM = KP_TV * err + KI_TV * wz_int;
+    const dT = clamp(dM / (V.tw / V.rw), -V.Tp * 0.55, V.Tp * 0.55);
+    // Thrust-preserving allocation: recover any floor-clamp deficit.
+    // Mirrors SOCP behaviour — TV is a differential overlay, not a thrust reduction.
+    const rawRl = Tdrive / 2 - dT;
+    const rawRr = Tdrive / 2 + dT;
+    Trl = clamp(rawRl, 0, V.Tp);
+    Trr = clamp(rawRr, 0, V.Tp);
+    const deficit = Math.max(0, -rawRl) + Math.max(0, -rawRr);
+    if (deficit > 0) {
+      Trl = Math.min(V.Tp, Trl + deficit * 0.5);
+      Trr = Math.min(V.Tp, Trr + deficit * 0.5);
+    }
   }
 
   const Fx    = (Trl + Trr) / V.rw - Fbrake;
