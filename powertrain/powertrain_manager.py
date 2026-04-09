@@ -50,7 +50,7 @@ from powertrain.modes.advanced.traction_control import (
 )
 from powertrain.modes.advanced.launch_control import (
     LaunchParams, LaunchState, LaunchOutput,
-    launch_step,
+    launch_step, launch_step_v2,
 )
 from powertrain.modes.advanced.virtual_impedance import (
     ImpedanceParams, ImpedanceState,
@@ -150,6 +150,9 @@ class PowertrainDiagnostics(NamedTuple):
     launch_active: jax.Array        # scalar: 0/1 launch active
     mu_probe_est: jax.Array         # scalar: probed friction coefficient
     f_front: jax.Array              # scalar: front torque fraction
+    tc_ceiling: jax.Array           # (4,) launch TC ceiling [Nm]
+    yaw_correction: jax.Array       # (4,) differential yaw-lock torque [Nm]
+    abort_triggered: jax.Array      # scalar: 1.0 if abort fired this step
 
     # Virtual impedance
     throttle_filtered: jax.Array    # scalar: impedance-filtered throttle
@@ -311,6 +314,7 @@ def powertrain_step(
     # ── Time ─────────────────────────────────────────────────────────────
     dt: jax.Array,
     # ── Configuration ────────────────────────────────────────────────────
+    launch_button: jax.Array = jnp.array(0.0),  # [0, 1] steering wheel LC button
     config: PowertrainConfig = PowertrainConfig(),
 ) -> tuple[PowertrainDiagnostics, PowertrainManagerState]:
     """
@@ -463,17 +467,22 @@ def powertrain_step(
     cbf_active = (cbf_intervention > 1.0).astype(jnp.float32)
 
     # ═══════════════════════════════════════════════════════════════════════
-    # STEP 10: Launch Controller (blends with SOCP output)
+    # STEP 10: Launch Controller (v2.1 — button arming + TC ceiling + yaw lock)
     # ═══════════════════════════════════════════════════════════════════════
-    launch_output, launch_state_new = launch_step(
+    launch_output, launch_state_new = launch_step_v2(
         throttle=throttle_filt,
         brake=brake_filt,
         vx=vx,
         omega_wheel=omega_wheel,
-        T_tc=T_safe,  # TC/TV torques as the handoff target
+        Fz=Fz,                                  # (4,) normal loads from vehicle model
+        T_max=T_max,                            # (4,) max torque from STEP 5
+        T_tc=T_safe,                            # TC/TV torques as the handoff target
         launch_state=manager_state.launch,
         dt=dt,
         params=config.launch,
+        launch_button=launch_button,            # v2.1: steering wheel button signal
+        kappa_star=tc_output.kappa_star,        # v2.1: DESC optimal slip → TC ceiling
+        wz=wz,                                  # v2.1: yaw rate → yaw lock PI
     )
 
     # Final torque selection: launch overrides TV/TC when active
@@ -527,6 +536,9 @@ def powertrain_step(
         launch_active=launch_active,
         mu_probe_est=launch_output.mu_estimate,
         f_front=launch_output.f_front,
+        tc_ceiling=launch_output.tc_ceiling,
+        yaw_correction=launch_output.yaw_correction,
+        abort_triggered=launch_output.abort_triggered,
         throttle_filtered=throttle_filt,
         brake_filtered=brake_filt,
         T_motors=pt_new.T_motors,
