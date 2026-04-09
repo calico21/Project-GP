@@ -34,12 +34,14 @@ from typing import NamedTuple, Callable
 # ─────────────────────────────────────────────────────────────────────────────
 
 class ControlMode(str, Enum):
-    SIMPLE   = "simple"
-    ADVANCED = "advanced"
+    SIMPLE       = "simple"
+    INTERMEDIATE = "intermediate"
+    ADVANCED     = "advanced"
 
     @staticmethod
     def from_env(default: str = "advanced") -> "ControlMode":
         """Read GP_CONTROL_MODE env var; fall back to default."""
+        # Valid values: simple | intermediate | advanced
         raw = os.environ.get("GP_CONTROL_MODE", default).lower().strip()
         try:
             return ControlMode(raw)
@@ -56,17 +58,38 @@ class ControlMode(str, Enum):
 
 class SimplePipeline(NamedTuple):
     """
-    Callables for SIMPLE mode. Both are JIT-compiled at construction.
+    Callables for SIMPLE mode.
 
     tv_allocate: simple_dyc_torque_vectoring
-        (vx, wz, delta, Fx_driver, T_min, T_max, Kp_yaw?, geo?) → T (4,)
-
+        (..., is_rwd=pipeline.is_rwd) → T (4,)
+        Callers must forward pipeline.is_rwd as a keyword arg.
     tc_correct: tc_simple
         (T_requested, omega_wheel, vx, state, params, dt) → (T_out, state, diag)
     """
     tv_allocate: Callable
     tc_correct: Callable
+    is_rwd: bool = False
     mode: ControlMode = ControlMode.SIMPLE
+
+
+class IntermediatePipeline(NamedTuple):
+    """
+    Callables for INTERMEDIATE mode.
+
+    tv_allocate: intermediate_tv_step  (already @partial(jax.jit, static_argnames=...))
+        (vx, wz, delta, ax, Fx_driver, mu_est, T_min_hw, T_max_hw,
+         tv_state, dt, geo?, params?, is_rwd?) → (IntermediateTVOutput, IntermediateTVState)
+
+    tc_correct: tc_simple  (reused from SIMPLE — PI slip correction, stateful)
+        (T_requested, omega_wheel, vx, state, params, dt) → (T_out, state, diag)
+
+    Note: tv_allocate is NOT wrapped with jax.jit() here because intermediate_tv_step
+    carries static_argnames — double-wrapping drops those, recompiling on every call.
+    """
+    tv_allocate: Callable
+    tc_correct: Callable
+    is_rwd: bool = False
+    mode: ControlMode = ControlMode.INTERMEDIATE
 
 
 class AdvancedPipeline(NamedTuple):
@@ -89,6 +112,7 @@ class AdvancedPipeline(NamedTuple):
     tc_step: Callable
     solve_allocation: Callable
     cbf_filter: Callable
+    is_rwd: bool = False
     mode: ControlMode = ControlMode.ADVANCED
 
 
@@ -96,19 +120,33 @@ class AdvancedPipeline(NamedTuple):
 # §3  Factory
 # ─────────────────────────────────────────────────────────────────────────────
 
-def build_powertrain(mode: ControlMode) -> SimplePipeline | AdvancedPipeline:
+def _is_rwd_from_env(default: bool = False) -> bool:
+    """Read GP_DRIVE_CONFIG env var. Values: 'rwd' → True, 'awd' → False."""
+    raw = os.environ.get("GP_DRIVE_CONFIG", "rwd" if default else "awd").lower().strip()
+    if raw == "rwd":
+        return True
+    if raw == "awd":
+        return False
+    raise ValueError(
+        f"GP_DRIVE_CONFIG='{raw}' is invalid. Valid values: 'rwd', 'awd'"
+    )
+
+
+def build_powertrain(
+    mode: ControlMode,
+    is_rwd: bool = False,
+) -> SimplePipeline | IntermediatePipeline | AdvancedPipeline:
     """
     Instantiate a mode-specific pipeline.
 
-    Imports are deferred to this call so that each mode's dependencies are
-    only loaded when actually needed. Both modes' callables are JIT-compiled
-    at construction time — the first call is the trace, not the hot path.
-
     Args:
-        mode: ControlMode.SIMPLE or ControlMode.ADVANCED
+        mode:   ControlMode.SIMPLE | INTERMEDIATE | ADVANCED
+        is_rwd: True  → Ter26 RWD (driven=[RL,RR], front bounds zeroed in SOCP/CBF)
+                False → Ter27 AWD (driven=[FL,FR,RL,RR], full 4-wheel allocation)
 
-    Returns:
-        SimplePipeline or AdvancedPipeline (NamedTuple of JIT-compiled fns)
+    is_rwd is stored on the returned pipeline so callers can read it via
+    pipeline.is_rwd rather than tracking it separately.
+    The value is a Python bool — each (mode, is_rwd) pair compiles a distinct XLA graph.
     """
     import jax
 
@@ -117,8 +155,19 @@ def build_powertrain(mode: ControlMode) -> SimplePipeline | AdvancedPipeline:
         from powertrain.modes.simple.traction_control import tc_simple
 
         return SimplePipeline(
-            tv_allocate=jax.jit(simple_dyc_torque_vectoring),
+            tv_allocate=simple_dyc_torque_vectoring,  # static_argnums=(6,7,8); do not re-jit
             tc_correct=jax.jit(tc_simple),
+            is_rwd=is_rwd,
+        )
+
+    elif mode is ControlMode.INTERMEDIATE:
+        from powertrain.modes.intermediate.torque_vectoring import intermediate_tv_step
+        from powertrain.modes.simple.traction_control import tc_simple
+
+        return IntermediatePipeline(
+            tv_allocate=intermediate_tv_step,  # static_argnames=(...,'is_rwd'); do not re-jit
+            tc_correct=jax.jit(tc_simple),
+            is_rwd=is_rwd,
         )
 
     elif mode is ControlMode.ADVANCED:
@@ -129,8 +178,9 @@ def build_powertrain(mode: ControlMode) -> SimplePipeline | AdvancedPipeline:
 
         return AdvancedPipeline(
             tc_step=jax.jit(tc_step),
-            solve_allocation=jax.jit(solve_torque_allocation),
-            cbf_filter=jax.jit(cbf_safety_filter),
+            solve_allocation=solve_torque_allocation,  # static_argnames=('is_rwd',); do not re-jit
+            cbf_filter=cbf_safety_filter,              # same
+            is_rwd=is_rwd,
         )
 
     else:
@@ -138,9 +188,12 @@ def build_powertrain(mode: ControlMode) -> SimplePipeline | AdvancedPipeline:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# §4  Convenience entry point
+# §4  Convenience entry points
 # ─────────────────────────────────────────────────────────────────────────────
 
-def get_pipeline() -> SimplePipeline | AdvancedPipeline:
-    """Build pipeline from GP_CONTROL_MODE env var (default: advanced)."""
-    return build_powertrain(ControlMode.from_env())
+def get_pipeline() -> SimplePipeline | IntermediatePipeline | AdvancedPipeline:
+    """Build pipeline from GP_CONTROL_MODE + GP_DRIVE_CONFIG env vars."""
+    return build_powertrain(
+        mode=ControlMode.from_env(),
+        is_rwd=_is_rwd_from_env(default=True),  # default RWD = Ter26 (current car)
+    )

@@ -21,6 +21,13 @@ cd simulator
 python udp_server.py
 python visualizer_client.py
 
+# Ter26 RWD 
+export GP_CONTROL_MODE=advanced
+export GP_DRIVE_CONFIG=rwd
+
+# Ter27 AWD
+export GP_CONTROL_MODE=advanced
+export GP_DRIVE_CONFIG=awd
 
 python sanity_checks.py
 

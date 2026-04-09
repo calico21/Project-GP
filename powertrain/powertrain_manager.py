@@ -77,6 +77,8 @@ class PowertrainConfig(NamedTuple):
     max_throttle_force: float = 6000.0   # N max force from throttle pedal
     max_brake_force: float = 8000.0      # N max force from brake pedal
     regen_blend: float = 0.7             # fraction of braking via regen (0=all friction, 1=all regen)
+    is_rwd: bool = False   # True = Ter26 RWD, False = Ter27 AWD
+
 
     @staticmethod
     def from_vehicle_params(vp: dict) -> 'PowertrainConfig':
@@ -444,6 +446,7 @@ def powertrain_step(
         P_max=P_max,
         geo=geo,
         w=alloc_w,
+        is_rwd=config.is_rwd,
     )
 
     # ═══════════════════════════════════════════════════════════════════════
@@ -454,6 +457,7 @@ def powertrain_step(
         T_alloc, manager_state.tv.T_prev,
         vx, vy, wz, Fz, Fy_total, mu_est, omega_wheel,
         T_min, T_max, gp_sigma, geo, config.cbf,
+        is_rwd=config.is_rwd,
     )
     cbf_intervention = jnp.linalg.norm(T_safe - T_alloc)
     cbf_active = (cbf_intervention > 1.0).astype(jnp.float32)

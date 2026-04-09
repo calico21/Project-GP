@@ -205,25 +205,31 @@ def allocator_cost(
 N_SOLVER_ITERS = 12    # fixed iteration count — deterministic timing
 STEP_SIZE = 0.3        # gradient descent step size (Armijo-tuned offline)
 
-@partial(jax.jit, static_argnums=())
+@partial(jax.jit, static_argnames=('is_rwd',))
 def solve_torque_allocation(
-    T_warmstart: jax.Array,   # (4,) initial guess (previous solution)
-    T_prev: jax.Array,        # (4,) torques from previous timestep
-    Fx_target: jax.Array,     # scalar [N]
-    Mz_target: jax.Array,     # scalar [Nm]
-    delta: jax.Array,         # scalar [rad]
-    Fz: jax.Array,            # (4,) [N]
-    Fy: jax.Array,            # (4,) [N]
-    mu: jax.Array,            # (4,) [-]
-    omega_wheel: jax.Array,   # (4,) [rad/s]
-    T_min: jax.Array,         # (4,) [Nm]
-    T_max: jax.Array,         # (4,) [Nm]
-    P_max: jax.Array,         # scalar [W]
+    T_warmstart: jax.Array,
+    T_prev: jax.Array,
+    Fx_target: jax.Array,
+    Mz_target: jax.Array,
+    delta: jax.Array,
+    Fz: jax.Array,
+    Fy: jax.Array,
+    mu: jax.Array,
+    omega_wheel: jax.Array,
+    T_min: jax.Array,
+    T_max: jax.Array,
+    P_max: jax.Array,
     geo: TVGeometry = TVGeometry(),
     w: AllocatorWeights = AllocatorWeights(),
+    is_rwd: bool = False,
 ) -> jax.Array:
     """
     Solve the torque allocation problem via projected gradient descent.
+
+    is_rwd=True: front bounds are zeroed at compile time before the solver runs.
+    The SOCP is algorithmically unchanged — RWD emerges from the tightened box:
+      T ∈ [0, 0, T_min_rl, T_min_rr] × [0, 0, T_max_rl, T_max_rr]
+    The projected-gradient projection step then trivially satisfies the front constraint.
 
     Fixed 12 iterations with:
       1. Gradient computation via jax.grad(cost)
@@ -234,6 +240,13 @@ def solve_torque_allocation(
 
     Returns: (4,) optimal wheel torques [Nm]
     """
+    # Python branch — resolved at trace time, not part of XLA graph
+    if is_rwd:
+        _mask = jnp.array([0., 0., 1., 1.])
+        T_min = T_min * _mask
+        T_max = T_max * _mask
+        T_warmstart = T_warmstart * _mask  # sanitise warm-start: no phantom front torque
+
     r_w = geo.r_w
 
     # Cost gradient function (closed over all parameters)
@@ -308,22 +321,23 @@ class CBFParams(NamedTuple):
     sigma_cap: float = 0.20      # maximum σ_GP effect (prevents over-conservatism)
 
 
-@partial(jax.jit, static_argnums=())
+@partial(jax.jit, static_argnames=('is_rwd',))
 def cbf_safety_filter(
-    T_alloc: jax.Array,       # (4,) torques from SOCP allocator [Nm]
-    T_prev: jax.Array,        # (4,) previous applied torques [Nm]
-    vx: jax.Array,            # scalar longitudinal velocity [m/s]
-    vy: jax.Array,            # scalar lateral velocity [m/s]
-    wz: jax.Array,            # scalar yaw rate [rad/s]
-    Fz: jax.Array,            # (4,) vertical loads [N]
-    Fy_total: jax.Array,      # scalar total lateral force [N]
-    mu_est: jax.Array,        # scalar estimated friction coefficient
-    omega_wheel: jax.Array,   # (4,) wheel speeds [rad/s]
-    T_min: jax.Array,         # (4,) motor min torque
-    T_max: jax.Array,         # (4,) motor max torque
-    gp_sigma: jax.Array = jnp.array(0.05),  # ← NEW: GP tire uncertainty
+    T_alloc: jax.Array,
+    T_prev: jax.Array,
+    vx: jax.Array,
+    vy: jax.Array,
+    wz: jax.Array,
+    Fz: jax.Array,
+    Fy_total: jax.Array,
+    mu_est: jax.Array,
+    omega_wheel: jax.Array,
+    T_min: jax.Array,
+    T_max: jax.Array,
+    gp_sigma: jax.Array = jnp.array(0.05),
     geo: TVGeometry = TVGeometry(),
     cbf: CBFParams = CBFParams(),
+    is_rwd: bool = False,
 ) -> jax.Array:
     """
     Input-Delay Discrete-Time CBF safety filter.
@@ -342,6 +356,15 @@ def cbf_safety_filter(
 
     Returns: (4,) safety-filtered wheel torques [Nm]
     """
+    # RWD: mask front torques and bounds at compile time.
+    # The CBF Lie derivatives (Lg_Bwz) use arms — front arms are non-zero but
+    # with T_alloc_front=0 and T_max_front=0 the projection step leaves them at zero.
+    if is_rwd:
+        _mask = jnp.array([0., 0., 1., 1.])
+        T_alloc = T_alloc * _mask
+        T_min   = T_min   * _mask
+        T_max   = T_max   * _mask
+
     r_w = geo.r_w
     vx_safe = jnp.maximum(jnp.abs(vx), 0.5)
 
