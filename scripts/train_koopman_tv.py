@@ -61,7 +61,7 @@ _MU_MAX = 1.5       # peak friction coefficient
 
 def bicycle_forces(vy: float, wz: float, vx: float, delta: float, mu: float):
     """Pacejka-linearised lateral forces and effective stiffness."""
-    vx_s  = max(vx, 1.0)
+    vx_s  = jnp.maximum(vx, 1.0)
     alpha_f = vy / vx_s + wz * _LF / vx_s - delta
     alpha_r = vy / vx_s - wz * _LR / vx_s
     # Saturating cornering stiffness (tanh approximation of Pacejka peak)

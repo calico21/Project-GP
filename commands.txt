@@ -38,3 +38,7 @@ streamlit run visualization/dashboard.py
 python -m optimization.residual_fitting
 
 python simulator/physics_server.py --track fsg_autocross
+
+python -m powertrain.powertrain_manager
+
+PYTHONPATH=. python scripts/train_koopman_tv.py --n_samples 100000 --n_epochs 300
