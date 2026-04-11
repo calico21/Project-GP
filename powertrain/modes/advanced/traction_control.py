@@ -26,7 +26,7 @@ from typing import NamedTuple
 # S1  DESC Configuration + State
 # ─────────────────────────────────────────────────────────────────────────────
 
-class DESCParams :  # rename to DESCParams when applying
+class DESCParams(NamedTuple):
     """
     DESC hyperparameters — calibrated for Hoosier R20 on FS vehicle.
  
@@ -107,7 +107,7 @@ def desc_step(
     Uses Fx (from motor torque accounting) not a_x (from IMU) to bypass
     chassis vibration. Returns (new_state, kappa_ref_with_dither).
     """
-    kappa_base, integrator, hpf_state, lpf_state = state
+    kappa_base, integrator, hpf_state, lpf_state, _ = state
 
     # Dither signal
     t_now = state.t_acc + dt
@@ -117,7 +117,7 @@ def desc_step(
     Fx_hp = Fx_measured - hpf_new
 
     # Lock-in correlation: extract Fx component at exactly omega_es
-    grad_raw = Fx_hp * jnp.sin(params.omega_es * t) * (2.0 / (params.A_dither + 1e-8))
+    grad_raw = Fx_hp * jnp.sin(params.omega_es * t_now) * (2.0 / (params.A_dither + 1e-8))
 
     # Low-pass: smooth noisy gradient estimate
     lpf_new = params.alpha_lp * lpf_state + (1.0 - params.alpha_lp) * grad_raw
@@ -419,8 +419,8 @@ def tc_step(
     Fx_front_avg = (Fx_est[0] + Fx_est[1]) * 0.5
     Fx_rear_avg  = (Fx_est[2] + Fx_est[3]) * 0.5
 
-    desc_f_new, kappa_ref_f = desc_step(tc_state.desc_front, Fx_front_avg, t, vx, desc_params)
-    desc_r_new, kappa_ref_r = desc_step(tc_state.desc_rear,  Fx_rear_avg,  t, vx, desc_params)
+    desc_f_new, kappa_ref_f = desc_step(tc_state.desc_front, Fx_front_avg, omega_wheel, vx, dt, desc_params)
+    desc_r_new, kappa_ref_r = desc_step(tc_state.desc_rear,  Fx_rear_avg,  omega_wheel, vx, dt, desc_params)
     kappa_esc = jnp.array([kappa_ref_f, kappa_ref_f, kappa_ref_r, kappa_ref_r])
 
     kappa_model_vals = jax.vmap(
