@@ -35,6 +35,10 @@ from powertrain.motor_model import (
     MotorParams, BatteryParams, PowertrainState,
     motor_torque_limits_at_wheel, motor_power_loss, total_power_limit,
 )
+from powertrain.modes.advanced.koopman_tv import (
+    KoopmanTVBundle, KoopmanTVConfig, make_default_koopman_bundle,
+    koopman_mz_reference,
+)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -605,6 +609,7 @@ class TVOutput(NamedTuple):
     wz_ref: jax.Array        # scalar yaw rate reference [rad/s]
     cost: jax.Array          # scalar allocator cost (for diagnostics)
     cbf_active: jax.Array    # scalar 0/1 CBF intervention flag
+    rho_util: jax.Array      # scalar grip utilisation ρ ∈ [0,1] (Koopman diagnostics)
 
 
 @partial(jax.jit, static_argnums=())
@@ -634,6 +639,7 @@ def tv_step(
     mp: MotorParams = MotorParams(),
     bp: BatteryParams = BatteryParams(),
     T_ribs: jax.Array = jnp.full(4, 25.0),  # (4,) mean surface rib temp per wheel [°C]
+    koopman_bundle: KoopmanTVBundle = None,  # None → resolved to default at call time
 
 ) -> tuple[TVOutput, TVState]:
     """
@@ -649,16 +655,32 @@ def tv_step(
 
     Returns (TVOutput, TVState_new).
     """
+    # ── Resolve default Koopman bundle (once per module import, not per step)
+    _bundle = koopman_bundle if koopman_bundle is not None else make_default_koopman_bundle()
+
     # ── 1. Yaw rate reference ────────────────────────────────────────────
     delta_dot = (delta - tv_state.delta_prev) / (dt + 1e-6)
     wz_ref = yaw_rate_reference(delta, vx, delta_dot, wz, mu_est, geo)
 
-    # ── 2. Yaw moment demand (proportional + derivative) ─────────────────
-    wz_error = wz_ref - wz
-    dwz_error = (wz_ref - tv_state.wz_ref_prev) / (dt + 1e-6) - 0.0  # D-term on ref
-    Kp_yaw = 80.0   # Nm / (rad/s) yaw P-gain
-    Kd_yaw = 5.0    # Nm / (rad/s²) yaw D-gain
-    Mz_target = Kp_yaw * wz_error + Kd_yaw * dwz_error
+    # ── 2. Yaw moment demand — Dictionary-Switched Koopman LQR (Phase 2) ─
+    #       Replaces: Mz = Kp·e_ψ + Kd·ė_ψ  with a predictive LQR in
+    #       Koopman lifted space, blended with PD fallback via trained_blend.
+    #       One-step-delayed Fx from T_prev used for grip utilisation ρ.
+    wz_error  = wz_ref - wz
+    dwz_error = (wz_ref - tv_state.wz_ref_prev) / (dt + 1e-6)
+    Fx_prev   = tv_state.T_prev / geo.r_w          # (4,) delayed Fx for ρ
+    Mz_target, rho_util = koopman_mz_reference(
+        wz_err  = wz_error,
+        dwz_err = dwz_error,
+        vy      = vy,
+        vx      = vx,
+        delta   = delta,
+        Fx      = Fx_prev,
+        Fy      = Fy,
+        Fz      = Fz,
+        mu_est  = mu_est,
+        bundle  = _bundle,
+    )
 
     # ── 3. Motor torque limits ──────────────────────────────────────────
     T_min, T_max = motor_torque_limits_at_wheel(
@@ -720,6 +742,7 @@ def tv_step(
         wz_ref=wz_ref,
         cost=cost,
         cbf_active=cbf_active,
+        rho_util=rho_util,
     )
 
     new_state = TVState(

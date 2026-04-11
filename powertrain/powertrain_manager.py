@@ -42,6 +42,10 @@ from powertrain.modes.advanced.torque_vectoring import (
     yaw_moment_arms, solve_torque_allocation, cbf_safety_filter,
     smooth_output,
 )
+from powertrain.modes.advanced.koopman_tv import (
+    KoopmanTVBundle, KoopmanTVConfig, make_default_koopman_bundle,
+    load_koopman_bundle,
+)
 from powertrain.modes.advanced.traction_control import (
     DESCParams, TCWeights, TCState, TCOutput,
     tc_step, compute_blend_weights as compute_blending_weights,
@@ -78,6 +82,7 @@ class PowertrainConfig(NamedTuple):
     max_brake_force: float = 8000.0      # N max force from brake pedal
     regen_blend: float = 0.7             # fraction of braking via regen (0=all friction, 1=all regen)
     is_rwd: bool = False   # True = Ter26 RWD, False = Ter27 AWD
+    koopman_bundle: KoopmanTVBundle = None  # None → default inert bundle
 
 
     @staticmethod
@@ -172,6 +177,7 @@ class PowertrainDiagnostics(NamedTuple):
 
     # Allocator cost (for optimization diagnostics)
     allocator_cost: jax.Array       # scalar SOCP cost value
+    koopman_rho: jax.Array          # scalar grip utilisation from Koopman TV [0, 1]
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -290,7 +296,7 @@ def compute_trail_brake_yaw_target(
 # §7  Main Step Function — THE SINGLE ENTRY POINT
 # ─────────────────────────────────────────────────────────────────────────────
 
-@partial(jax.jit, static_argnums=())
+@partial(jax.jit, static_argnames=('config',))
 def powertrain_step(
     # ── Raw driver inputs ────────────────────────────────────────────────
     throttle_raw: jax.Array,       # [0, 1] raw throttle pedal
@@ -449,6 +455,7 @@ def powertrain_step(
         T_max=T_max,
         P_max=P_max,
         T_ribs=T_tire,
+        koopman_bundle=config.koopman_bundle,
         geo=geo,
         w=alloc_w,
         is_rwd=config.is_rwd,
@@ -551,6 +558,7 @@ def powertrain_step(
         sensor_confidence=tc_output.confidence,
         degradation_level=degradation,
         allocator_cost=cost_val,
+        koopman_rho=rho_util,
     )
 
     new_state = PowertrainManagerState(
