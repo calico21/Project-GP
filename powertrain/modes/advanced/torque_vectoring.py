@@ -119,6 +119,31 @@ class AllocatorWeights(NamedTuple):
     w_feel: float = 0.05        # steering torque minimization (feel)
     w_friction_barrier: float = 50.0  # friction circle log-barrier
     w_power: float = 10.0       # power budget barrier
+    # ── Thermal-aware TV (Phase 1 — Report §4.3) ──────────────────────────
+    w_thermal: float = 2.0        # thermal-weighted workload penalty
+    w_thermal_balance: float = 1.0 # cross-wheel thermal variance penalty
+    T_opt: float = 85.0           # °C  Pacejka peak temperature (Hoosier R20)
+    beta_T: float = 5e-4          # °C⁻²  Gaussian bandwidth around T_opt
+
+
+@jax.jit
+def thermal_grip_factor(T_ribs: jax.Array, T_opt: float = 85.0, beta_T: float = 5e-4) -> jax.Array:
+    """
+    Per-wheel thermal grip factor μ_T(T) ∈ (0, 1].
+
+    Differentiable Gaussian centred on T_opt. Returns 1.0 when the tyre
+    surface is at the Pacejka optimum, less than 1.0 when cold or overheated.
+
+        μ_T(T) = exp(−β_T · (T − T_opt)²)
+
+    Args:
+        T_ribs:  (4,) mean surface rib temperature per wheel [°C]
+        T_opt:   optimal temperature at Pacejka grip peak [°C]
+        beta_T:  Gaussian bandwidth [°C⁻²]
+
+    Returns: (4,) ∈ (0, 1]
+    """
+    return jnp.exp(-beta_T * (T_ribs - T_opt) ** 2)
 
 
 @partial(jax.jit, static_argnums=())
@@ -135,6 +160,7 @@ def allocator_cost(
     T_min: jax.Array,         # (4,) motor min torque at wheel [Nm]
     T_max: jax.Array,         # (4,) motor max torque at wheel [Nm]
     P_max: jax.Array,         # scalar max battery power [W]
+    T_ribs: jax.Array = jnp.full(4, 25.0),  # (4,) mean surface rib temp per wheel [°C]
     geo: TVGeometry = TVGeometry(),
     w: AllocatorWeights = AllocatorWeights(),
 ) -> jax.Array:
@@ -195,7 +221,22 @@ def allocator_cost(
     safe_power = jax.nn.softplus(power_margin * 20.0) / 20.0 + 1e-6
     J_power = w.w_power * (-jnp.log(safe_power))
 
-    return J_force + J_yaw + J_workload + J_energy + J_smooth + J_feel + J_friction + J_power
+    # ── 9. Thermal-weighted workload: amplifies workload penalty for thermally
+    #       sub-optimal tyres. At T_opt: mu_T = 1.0, factor = 1.0 (no change).
+    #       Cold or overheated: mu_T < 1.0, factor = (2 − mu_T) > 1.0 → solver
+    #       steers torque toward thermally optimal wheels.
+    mu_T = thermal_grip_factor(T_ribs, w.T_opt, w.beta_T)  # (4,) ∈ (0, 1]
+    thermal_amplifier = 2.0 - mu_T                          # (4,) ∈ [1, 2)
+    J_thermal = w.w_thermal * jnp.sum(thermal_amplifier * workload)
+
+    # ── 10. Thermal balance: penalise cross-wheel temperature variance.
+    #        Discourages asymmetric loading that degrades one tyre faster.
+    #        Pure quadratic variance — no discontinuities, trivially differentiable.
+    T_mean = jnp.mean(T_ribs)
+    J_thermal_balance = w.w_thermal_balance * jnp.mean((T_ribs - T_mean) ** 2)
+
+    return (J_force + J_yaw + J_workload + J_energy + J_smooth + J_feel
+            + J_friction + J_power + J_thermal + J_thermal_balance)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -219,6 +260,7 @@ def solve_torque_allocation(
     T_min: jax.Array,
     T_max: jax.Array,
     P_max: jax.Array,
+    T_ribs: jax.Array = jnp.full(4, 25.0),  # (4,) mean surface rib temp [°C]
     geo: TVGeometry = TVGeometry(),
     w: AllocatorWeights = AllocatorWeights(),
     is_rwd: bool = False,
@@ -253,7 +295,7 @@ def solve_torque_allocation(
     def cost_fn(T):
         return allocator_cost(
             T, T_prev, Fx_target, Mz_target, delta,
-            Fz, Fy, mu, omega_wheel, T_min, T_max, P_max, geo, w,
+            Fz, Fy, mu, omega_wheel, T_min, T_max, P_max, T_ribs, geo, w,
         )
 
     grad_fn = jax.grad(cost_fn)
@@ -591,6 +633,8 @@ def tv_step(
     cbf_params: CBFParams = CBFParams(),
     mp: MotorParams = MotorParams(),
     bp: BatteryParams = BatteryParams(),
+    T_ribs: jax.Array = jnp.full(4, 25.0),  # (4,) mean surface rib temp per wheel [°C]
+
 ) -> tuple[TVOutput, TVState]:
     """
     Single timestep of the full TV controller.
@@ -640,6 +684,7 @@ def tv_step(
         T_min=T_min,
         T_max=T_max,
         P_max=P_max,
+        T_ribs=T_ribs,
         geo=geo,
         w=w,
     )
@@ -663,7 +708,7 @@ def tv_step(
     Mz_actual = jnp.sum(T_output * arms)
     cost = allocator_cost(
         T_output, tv_state.T_prev, Fx_driver, Mz_target, delta,
-        Fz, Fy, mu_per_wheel, omega_wheel, T_min, T_max, P_max, geo, w,
+        Fz, Fy, mu_per_wheel, omega_wheel, T_min, T_max, P_max, T_ribs, geo, w,
     )
 
     # ── 9. Pack outputs ─────────────────────────────────────────────────

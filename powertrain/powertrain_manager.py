@@ -448,6 +448,7 @@ def powertrain_step(
         T_min=T_min,
         T_max=T_max,
         P_max=P_max,
+        T_ribs=T_tire,
         geo=geo,
         w=alloc_w,
         is_rwd=config.is_rwd,
