@@ -27,7 +27,31 @@
 #
 #   All ops are C∞, purely JAX — safe inside jit/grad/vmap/scan.
 # ═══════════════════════════════════════════════════════════════════════════════
-
+# CONTEXT:
+# The Koopman LQR operators were trained on synthetic bicycle model trajectories
+# (3-DOF, linear tires, no thermal coupling). The deployed system is a 46-DOF
+# Port-Hamiltonian with Pacejka + PINN + GP tires and full thermal/aero coupling.
+#
+# At trained_blend = 1.0 (full Koopman), the structural mismatch causes:
+#   - Incorrect Mz demand in the tire saturation regime (ρ > 0.92) where
+#     thermal coupling is largest and bicycle model diverges most from H_net.
+#   - Regime interpolation instability: Σ w_k(-L_k @ φ_k(e)) is not a valid
+#     LQR control law for any consistent dynamical system when φ_0 ≠ φ_1 ≠ φ_2.
+#   - Training data distribution had μ ∈ [0.8, 1.5]; real track μ ∈ [0.6, 1.8].
+#
+# SAFE RE-ENABLEMENT CHECKLIST (do not increase trained_blend until ALL items ✓):
+#   □ 1. Generate H_net trajectory dataset: run jax.vmap(physics_step) over
+#        random (vx, vy, wz, delta, Mz) sequences for 1000+ trajectories.
+#        Save as (E_raw, Mz_norm, E_next_norm) matching generate_training_data() format.
+#   □ 2. Retrain all three Koopman operators using H_net trajectories via
+#        scripts/train_koopman_tv.py --n_samples 500000 --n_epochs 500
+#   □ 3. Validate regime coverage: confirm saturation regime (ρ > 0.92) has
+#        ≥ 15% of training samples (bicycle model bias toward linear regime).
+#   □ 4. Physical shakedown validation: compare Mz_koopman vs Mz_PD on first
+#        5 laps with trained_blend = 0.3 (30% Koopman). Yaw tracking error
+#        must not increase vs trained_blend = 0.0 on the same manoeuvre.
+#   □ 5. Ramp to 1.0 only after items 1–4 complete.
+# ═══════════════════════════════════════════════════════════════════════════════
 from __future__ import annotations
 
 from typing import Any, NamedTuple
@@ -75,7 +99,7 @@ class KoopmanTVConfig(NamedTuple):
 
     # ── Trained blend ramp ─────────────────────────────────────────────
     # 0.0 = pure PD fallback  →  1.0 = full Koopman LQR
-    trained_blend: float = 0.0
+    trained_blend: float = 0.0   # LOCKED to 0.0 pending H_net retraining (see koopman_tv.py header).
 
     # ── PD fallback (active when trained_blend < 1.0) ─────────────────
     Kp_fallback: float = 80.0    # Nm / (rad/s)
