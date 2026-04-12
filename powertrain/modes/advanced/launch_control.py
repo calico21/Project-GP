@@ -383,7 +383,7 @@ def launch_yaw_correction(
 #       Backward-compatible: legacy args unchanged, new args appended with defaults
 # ─────────────────────────────────────────────────────────────────────────────
 
-@partial(jax.jit, static_argnums=())
+
 def _launch_step_internal(
     t: jax.Array,
     vx: jax.Array,
@@ -549,7 +549,7 @@ def _launch_step_internal(
 # §14  Public API — v1 (backward-compatible, no TC ceiling / yaw lock)
 # ─────────────────────────────────────────────────────────────────────────────
 
-@partial(jax.jit, static_argnums=())
+@partial(jax.jit, static_argnums=(7,))
 def launch_step(
     throttle: jax.Array,
     brake: jax.Array,
@@ -588,7 +588,7 @@ def launch_step(
 # §15  Public API — v2.1 (button arming + TC ceiling + yaw lock)
 # ─────────────────────────────────────────────────────────────────────────────
 
-@partial(jax.jit, static_argnums=())
+@partial(jax.jit, static_argnums=(9,))
 def launch_step_v2(
     throttle: jax.Array,         # [0, 1] throttle pedal
     brake: jax.Array,            # [0, 1] brake pedal

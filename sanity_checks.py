@@ -382,7 +382,7 @@ def test_spring_rate_not_pinned():
     try:
         print("Running brief MORL simulation to verify parameter bounding...")
         opt = MORL_SB_TRPO_Optimizer(ensemble_size=10, dim=8)
-        setups, grips, stabs, _ = opt.run(iterations=2)
+        setups, grips, stabs, *_ = opt.run(iterations=2)
 
         k_f_vals = setups[:, 0]
         lower_bound_count = sum(1 for k in k_f_vals if k < 16000)
@@ -521,7 +521,7 @@ def test_socp_allocator():
     t0 = time.perf_counter()
     T_alloc = solve_torque_allocation(
         T_warmstart, T_prev, Fx_target, Mz_target, delta,
-        Fz, Fy, mu, omega_w, T_min, T_max, P_max, geo, w,
+        Fz, Fy, mu, omega_w, T_min, T_max, P_max, jnp.full(4, 25.0), geo, w,
     )
     _ = float(T_alloc[0])  # force evaluation
     t_solve = (time.perf_counter() - t0) * 1000
@@ -711,47 +711,57 @@ def test_desc_convergence():
 
 def test_launch_state_machine():
     print("\n" + "=" * 60)
-    print("TEST 14: LAUNCH CONTROL STATE MACHINE")
+    print("TEST 14: LAUNCH CONTROL STATE MACHINE (v2.1 BOTÓN)")
     print("=" * 60)
     from powertrain.modes.advanced.launch_control import (
-        LaunchParams, LaunchState, launch_step,
+        LaunchConfig, LaunchState, launch_step_v2,
         PHASE_IDLE, PHASE_ARMED, PHASE_LAUNCH, PHASE_TC,
     )
 
-    params = LaunchParams()
+    params = LaunchConfig()
     state = LaunchState.default(params)
     dt = jnp.array(0.005)
     T_tc = jnp.full(4, 200.0)
 
-    # Phase 1: IDLE (throttle = 0, brake = 0)
-    out, state = launch_step(
-        jnp.array(0.0), jnp.array(0.0), jnp.array(0.0),
-        jnp.zeros(4), T_tc, state, dt, params,
+    # Entradas base (Simulación)
+    vx = jnp.array(0.0)
+    omega = jnp.zeros(4)
+    Fz = jnp.full(4, 750.0)
+    T_max = jnp.full(4, 450.0)
+
+    # Fase 1: IDLE (Acelerador=0, Freno=0, Botón=Suelto)
+    out, state = launch_step_v2(
+        throttle=jnp.array(0.0), brake=jnp.array(0.0), vx=vx, omega_wheel=omega,
+        Fz=Fz, T_max=T_max, T_tc=T_tc, launch_state=state, dt=dt, params=params,
+        launch_button=jnp.array(0.0),
     )
     phase_idle = float(out.phase)
 
-    # Phase 2: ARM (throttle > 0.95, brake > 0.5)
+    # Fase 2: ARM (Acelerador a fondo, Botón PULSADO) -> El coche se prepara
     for _ in range(20):
-        out, state = launch_step(
-            jnp.array(0.98), jnp.array(0.7), jnp.array(0.0),
-            jnp.zeros(4), T_tc, state, dt, params,
+        out, state = launch_step_v2(
+            throttle=jnp.array(0.98), brake=jnp.array(0.0), vx=vx, omega_wheel=omega,
+            Fz=Fz, T_max=T_max, T_tc=T_tc, launch_state=state, dt=dt, params=params,
+            launch_button=jnp.array(1.0),
         )
     phase_armed = float(out.phase)
 
-    # Phase 3: LAUNCH (brake released while throttle held)
-    # Run enough steps for probe to complete
+    # Fase 3: LAUNCH (Acelerador a fondo, Botón SUELTO) -> El coche sale disparado
     for _ in range(50):
-        out, state = launch_step(
-            jnp.array(0.98), jnp.array(0.0), jnp.array(0.0),
-            jnp.full(4, 5.0), T_tc, state, dt, params,
+        out, state = launch_step_v2(
+            throttle=jnp.array(0.98), brake=jnp.array(0.0), vx=vx, omega_wheel=omega,
+            Fz=Fz, T_max=T_max, T_tc=T_tc, launch_state=state, dt=dt, params=params,
+            launch_button=jnp.array(0.0),
         )
     phase_launch = float(out.phase)
 
-    # Phase 4: Simulate acceleration to handoff speed
+    # Fase 4: HANDOFF -> TC (Simulamos que el coche ya alcanzó 8.0 m/s)
+    vx_fast = jnp.array(8.0)
     for _ in range(400):
-        out, state = launch_step(
-            jnp.array(0.98), jnp.array(0.0), jnp.array(8.0),
-            jnp.full(4, 40.0), T_tc, state, dt, params,
+        out, state = launch_step_v2(
+            throttle=jnp.array(0.98), brake=jnp.array(0.0), vx=vx_fast, omega_wheel=omega,
+            Fz=Fz, T_max=T_max, T_tc=T_tc, launch_state=state, dt=dt, params=params,
+            launch_button=jnp.array(0.0),
         )
     phase_final = float(out.phase)
 
@@ -764,7 +774,7 @@ def test_launch_state_machine():
     else:
         print(f"[FAIL] Non-monotonic phase progression detected")
 
-    # Check launch torque is non-zero during LAUNCH phase
+    # Verificar que generamos par durante el LAUNCH y hacemos Handoff
     T_mag = float(jnp.sum(jnp.abs(out.T_command)))
     if T_mag > 10.0 or phase_final >= PHASE_TC:
         print(f"[PASS] Launch produces torque or has handed off to TC "

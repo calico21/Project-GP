@@ -463,7 +463,7 @@ class MORL_SB_TRPO_Optimizer:
         mu = np.array(ensemble_params['mu'])
         for k in range(self.ensemble_size):
             setup_norm = jax.nn.sigmoid(jnp.array(mu[k]))
-            _, _, safety = self.evaluate_setup_jax(setup_norm)
+            _, _, safety, *_ = self.evaluate_setup_jax(setup_norm)
             if float(safety) <= SAFETY_THRESHOLD:
                 p = jnp.array(mu[k])
                 for _ in range(30):
@@ -495,8 +495,8 @@ class MORL_SB_TRPO_Optimizer:
         # Warm-up compile
         test_soft = jnp.full(self.dim, 0.1)
         test_hard = jnp.full(self.dim, 0.9)
-        g_s, _, _ = self.evaluate_setup_jax(test_soft)
-        g_h, _, _ = self.evaluate_setup_jax(test_hard)
+        g_s, *_ = self.evaluate_setup_jax(test_soft)
+        g_h, *_ = self.evaluate_setup_jax(test_hard)
         print(f"   [DIAG] Soft grip: {float(g_s):.4f} G | Hard grip: {float(g_h):.4f} G")
 
         grad_test = jax.grad(lambda p: self.evaluate_setup_jax(p)[0])(test_soft)
@@ -514,7 +514,7 @@ class MORL_SB_TRPO_Optimizer:
         bo_rng = np.random.default_rng(seed=7)
 
         def bo_evaluate(setup_norm_np):
-            g, _, _ = self.evaluate_setup_jax(jnp.array(setup_norm_np, dtype=jnp.float32))
+            g, *_ = self.evaluate_setup_jax(jnp.array(setup_norm_np, dtype=jnp.float32))
             return float(g)
 
         n_basins = min(5, self.ensemble_size)
@@ -540,7 +540,7 @@ class MORL_SB_TRPO_Optimizer:
         bo_archive_count = 0
         for b_norm in basins:
             b_jax = jnp.array(b_norm, dtype=jnp.float32)
-            g, s, safe = self.evaluate_setup_jax(b_jax)
+            g, s, safe, *_ = self.evaluate_setup_jax(b_jax)
             g_f, s_f = float(g), float(s)
             stab_val = -s_f
             if np.isfinite(g_f) and np.isfinite(stab_val) and stab_val <= STABILITY_MAX:
@@ -568,7 +568,7 @@ class MORL_SB_TRPO_Optimizer:
         _morl_schedule = optax.join_schedules(
             schedules=[
                 optax.linear_schedule(1e-4, 1e-3, 50),
-                optax.cosine_decay_schedule(1e-3, iterations - 50, alpha=0.1),
+                optax.cosine_decay_schedule(1e-3, max(1, iterations - 50), alpha=0.1),
             ],
             boundaries=[50],
         )
@@ -625,7 +625,7 @@ class MORL_SB_TRPO_Optimizer:
             def member_loss(params_k, omega_k):
                 mu_k, ls_k = params_k['mu'], params_k['log_std']
                 setup_norm  = jax.nn.sigmoid(mu_k)
-                grip, stab, safety = self.evaluate_setup_jax(setup_norm)
+                grip, stab, safety, lte = self.evaluate_setup_jax(setup_norm)
 
                 lambda_lte = 0.15  # Tunable weight for endurance
                 # Add "+ lambda_lte * lte" to your existing math:
@@ -705,7 +705,7 @@ class MORL_SB_TRPO_Optimizer:
 
             for k in range(self.ensemble_size):
                 setup_norm = jax.nn.sigmoid(self.ensemble_params['mu'][k])
-                g, s, safe, lte = self.evaluate_setup_jax(setup_norm)
+                g, s, safe, lte, *_= self.evaluate_setup_jax(setup_norm)
                 g_f, s_f, sf_f = float(g), float(s), float(safe)
 
                 grips.append(g_f)

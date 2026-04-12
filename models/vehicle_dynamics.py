@@ -947,10 +947,10 @@ class DifferentiableMultiBodyVehicle:
         dFz_accel = self.m * jnp.clip(vx * wz, -50.0, 50.0) * self.vp.get('h_cg', 0.330) / self._L
         dFz_lat   = self.m * jnp.clip(vy * wz, -50.0, 50.0) * self.vp.get('h_cg', 0.330) / (self.track_f + 1e-6)
 
-        Fz_fl = _softplus_floor(F_grav_f * 0.5 - dFz_accel * 0.5 - dFz_lat * 0.5)
-        Fz_fr = _softplus_floor(F_grav_f * 0.5 - dFz_accel * 0.5 + dFz_lat * 0.5)
-        Fz_rl = _softplus_floor(F_grav_r * 0.5 + dFz_accel * 0.5 - dFz_lat * 0.5)
-        Fz_rr = _softplus_floor(F_grav_r * 0.5 + dFz_accel * 0.5 + dFz_lat * 0.5)
+        Fz_fl = _softplus_floor(F_grav_f * 0.5 - dFz_accel * 0.5 - dFz_lat * 0.5, 10.0)
+        Fz_fr = _softplus_floor(F_grav_f * 0.5 - dFz_accel * 0.5 + dFz_lat * 0.5, 10.0)
+        Fz_rl = _softplus_floor(F_grav_r * 0.5 + dFz_accel * 0.5 - dFz_lat * 0.5, 10.0)
+        Fz_rr = _softplus_floor(F_grav_r * 0.5 + dFz_accel * 0.5 + dFz_lat * 0.5, 10.0)
 
         Fz_aero_f, Fz_aero_r, Fx_aero, My_aero, Mx_aero = self.aero_map.apply(
             self.Aero_params, vx, theta_pitch, phi_roll,

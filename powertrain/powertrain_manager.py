@@ -53,7 +53,7 @@ from powertrain.modes.advanced.traction_control import (
     wheel_speed_confidence,
 )
 from powertrain.modes.advanced.launch_control import (
-    LaunchParams, LaunchState, LaunchOutput,
+    LaunchConfig, LaunchState, LaunchOutput,
     launch_step, launch_step_v2,
 )
 from powertrain.modes.advanced.virtual_impedance import (
@@ -75,7 +75,7 @@ class PowertrainConfig(NamedTuple):
     cbf: CBFParams = CBFParams()
     desc: DESCParams = DESCParams()
     tc_weights: TCWeights = TCWeights()
-    launch: LaunchParams = LaunchParams()
+    launch: LaunchConfig = LaunchConfig()
     impedance: ImpedanceParams = ImpedanceParams()
     # Global tuning
     max_throttle_force: float = 6000.0   # N max force from throttle pedal
@@ -320,8 +320,8 @@ def powertrain_step(
     # ── Time ─────────────────────────────────────────────────────────────
     dt: jax.Array,
     # ── Configuration ────────────────────────────────────────────────────
-    launch_button: jax.Array = jnp.array(0.0),  # [0, 1] steering wheel LC button
-    config: PowertrainConfig = PowertrainConfig(),
+    config: PowertrainConfig = PowertrainConfig(),              # <-- MOVED UP
+    launch_button: jax.Array = jnp.array(0.0),                  # <-- MOVED DOWN
 ) -> tuple[PowertrainDiagnostics, PowertrainManagerState]:
     """
     Execute one complete powertrain control cycle at 200 Hz.
