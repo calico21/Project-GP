@@ -5,7 +5,7 @@ git rm --cached data/logs/20250816_185811.asc
 echo "data/logs/*.asc" >> .gitignore
 
 git add .
-git commit -m "VERSION 1.0"
+git commit -m "LGTM"
 git push
 
 npm run build && npx vercel --prod
@@ -29,7 +29,7 @@ export GP_DRIVE_CONFIG=rwd
 export GP_CONTROL_MODE=advanced
 export GP_DRIVE_CONFIG=awd
 
-python sanity_checks.py
+PYTHONPATH=. python sanity_checks.py
 
 python main.py --mode setup
 
