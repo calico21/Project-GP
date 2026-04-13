@@ -319,7 +319,7 @@ def koopman_mz_reference(
     Mz_koopman = w[0] * Mz0 + w[1] * Mz1 + w[2] * Mz2   # scalar
 
     # ── PD fallback (Kp + Kd, identical to legacy tv_step behaviour) ─────
-    Mz_pd = cfg.Kp_fallback * wz_err + cfg.Kd_fallback * dwz_err
+    Mz_pd = cfg.Kp_fallback * (-wz_err) + cfg.Kd_fallback * (-dwz_err)
 
     # ── Smooth blend: 0.0 = pure PD  →  1.0 = full Koopman ──────────────
     # trained_blend as jnp array so value updates don't trigger recompilation

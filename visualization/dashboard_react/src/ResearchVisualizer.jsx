@@ -50,7 +50,9 @@ function computeDerived(v, carCfg) {
 
   // Natural frequencies
   const fnHeave = Math.sqrt((2 * wrF + 2 * wrR) / mS) / (2 * Math.PI);
-  const fnRoll  = Math.sqrt((wrF + arbF) * tF * tF * 0.5 + (wrR + arbR) * tR * tR * 0.5) / (Ix > 0 ? Math.sqrt(Ix) : 1) / (2 * Math.PI);
+  const KphiF = (wrF + arbF) * (tF / 2) * (tF / 2);   // N·m/rad
+  const KphiR = (wrR + arbR) * (tR / 2) * (tR / 2);
+  const fnRoll = Math.sqrt((KphiF + KphiR) / Ix) / (2 * Math.PI);
   const fnPitch = Math.sqrt(wrF * lf * lf + wrR * lr * lr) / (Iy > 0 ? Math.sqrt(Iy) : 1) / (2 * Math.PI);
   const fnWheelF = Math.sqrt((wrF + kTire) / mUsF) / (2 * Math.PI);
   const fnWheelR = Math.sqrt((wrR + kTire) / mUsR) / (2 * Math.PI);

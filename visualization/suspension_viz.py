@@ -309,8 +309,9 @@ class SuspensionPhysics:
         return (Fz - Fz_s) / (wr + arb)
 
     def body_roll(self, ay: float) -> float:
-        """Body roll angle in degrees (+ve = roll right = left corner in bump)."""
-        return np.degrees(self.m_s * ay * (self.h_cg - self.h_rc_f) / self.K_phi)
+        # Roll axis height at CG longitudinal position (linear interpolation)
+        h_rc_eff = self.h_rc_f + (self.h_rc_r - self.h_rc_f) * (self.lf / self.wb)
+        return np.degrees(self.m_s * ay * (self.h_cg - h_rc_eff) / self.K_phi)
 
     def body_pitch(self, ax: float) -> float:
         """Body pitch angle in degrees (+ve = nose down = front in bump under braking)."""

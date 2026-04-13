@@ -91,7 +91,7 @@ _TRIL_14 = jnp.tril_indices(14)
 # Using canonical DEFAULT_SETUP spring rates. Defined here as a module-level
 # constant so NeuralEnergyLandscape.__call__ and residual_fitting.py share
 # identical values — single source of truth. See also compute_equilibrium_suspension().
-_Z_EQ: jnp.ndarray = jnp.array([0.0128, 0.0128, 0.0135, 0.0135], dtype=jnp.float32)
+_Z_EQ: jnp.ndarray = jnp.array([0.0128, 0.0128, 0.0142, 0.0142], dtype=jnp.float32)
 
 # Structural spring prior per corner — must match V_structural in
 # NeuralEnergyLandscape.__call__ and _V_STRUCT_PRIOR_K in residual_fitting.py.
@@ -933,10 +933,15 @@ class DifferentiableMultiBodyVehicle:
         F_susp_rl = F_spring_rl + F_damp_rl + F_bs_rl
         F_susp_rr = F_spring_rr + F_damp_rr + F_bs_rr
 
-        z_roll_f  = (z_fl - z_fr) * 0.5
-        z_roll_r  = (z_rl - z_rr) * 0.5
-        F_arb_f   = s.arb_f * z_roll_f / (tf2 + 1e-6)
-        F_arb_r   = s.arb_r * z_roll_r / (tr2 + 1e-6)
+        phi_roll_f  = (z_fl - z_fr) / (2.0 * tf2 + 1e-6)   # roll angle [rad]
+        M_arb_f     = s.arb_f * phi_roll_f                   # ARB moment [N·m]
+        F_arb_f     = M_arb_f / (tf2 + 1e-6)                # corner force [N]
+
+        phi_roll_r  = (z_rl - z_rr) / (2.0 * tr2 + 1e-6)
+        M_arb_r     = s.arb_r * phi_roll_r
+        F_arb_r     = M_arb_r / (tr2 + 1e-6)
+
+        # Applied symmetrically: bump side gets +F, droop side gets -F
         F_susp_fl = F_susp_fl + F_arb_f
         F_susp_fr = F_susp_fr - F_arb_f
         F_susp_rl = F_susp_rl + F_arb_r
@@ -944,13 +949,21 @@ class DifferentiableMultiBodyVehicle:
 
         F_grav_f  = self.m * self.g * self.lr / self._L
         F_grav_r  = self.m * self.g * self.lf / self._L
-        dFz_accel = self.m * jnp.clip(vx * wz, -50.0, 50.0) * self.vp.get('h_cg', 0.330) / self._L
-        dFz_lat   = self.m * jnp.clip(vy * wz, -50.0, 50.0) * self.vp.get('h_cg', 0.330) / (self.track_f + 1e-6)
+        # These are the quasi-static equivalents without ẋ_v/ẏ_v terms
+        # (instantaneous centripetal balance — valid at steady state and low-freq transients)
+        ay_centripetal = vx * wz     # dominant lateral acceleration [m/s²]
+        ax_coriolis    = -vy * wz    # dominant longitudinal perturbation [m/s²]
 
-        Fz_fl = _softplus_floor(F_grav_f * 0.5 - dFz_accel * 0.5 - dFz_lat * 0.5, 10.0)
-        Fz_fr = _softplus_floor(F_grav_f * 0.5 - dFz_accel * 0.5 + dFz_lat * 0.5, 10.0)
-        Fz_rl = _softplus_floor(F_grav_r * 0.5 + dFz_accel * 0.5 - dFz_lat * 0.5, 10.0)
-        Fz_rr = _softplus_floor(F_grav_r * 0.5 + dFz_accel * 0.5 + dFz_lat * 0.5, 10.0)
+        dFz_accel = self.m * jnp.clip(ax_coriolis,    -15.0, 15.0) * self.vp.get('h_cg', 0.330) / self._L
+        h_cg_val   = self.vp.get('h_cg', 0.330)
+        ay_clipped = jnp.clip(ay_centripetal, -50.0, 50.0)
+        dFz_lat_f  = self.m * ay_clipped * h_cg_val / (self.track_f + 1e-6)
+        dFz_lat_r  = self.m * ay_clipped * h_cg_val / (self.track_r + 1e-6)
+
+        Fz_fl = _softplus_floor(F_grav_f * 0.5 - dFz_accel * 0.5 - dFz_lat_f * 0.5, 10.0)
+        Fz_fr = _softplus_floor(F_grav_f * 0.5 - dFz_accel * 0.5 + dFz_lat_f * 0.5, 10.0)
+        Fz_rl = _softplus_floor(F_grav_r * 0.5 + dFz_accel * 0.5 - dFz_lat_r * 0.5, 10.0)
+        Fz_rr = _softplus_floor(F_grav_r * 0.5 + dFz_accel * 0.5 + dFz_lat_r * 0.5, 10.0)
 
         Fz_aero_f, Fz_aero_r, Fx_aero, My_aero, Mx_aero = self.aero_map.apply(
             self.Aero_params, vx, theta_pitch, phi_roll,
@@ -973,9 +986,11 @@ class DifferentiableMultiBodyVehicle:
         delta_bs_fl = compute_bump_steer(z_fl, s.bump_steer_f, self._bs2_f)
         delta_bs_fr = compute_bump_steer(z_fr, s.bump_steer_f, self._bs2_f)
 
-        Fy_total_approx = jnp.clip((vy * self.m * self.g) / (vx + 1.0), -5000.0, 5000.0)
-        delta_comply_f  = jnp.deg2rad(self._comply_f * Fy_total_approx / 1000.0)
-        delta_comply_r  = jnp.deg2rad(self._comply_r * Fy_total_approx / 1000.0)
+        # Use the centripetal lateral acceleration already computed
+        Fy_total_approx = jnp.clip(self.m * ay_centripetal, -5000.0, 5000.0)
+
+        delta_comply_f = jnp.deg2rad(self._comply_f * Fy_total_approx / 1000.0)
+        delta_comply_r = jnp.deg2rad(self._comply_r * Fy_total_approx / 1000.0)
 
         ack      = self._ackermann
         wb       = self._L
@@ -996,8 +1011,6 @@ class DifferentiableMultiBodyVehicle:
         d_alpha_fr = (alpha_kin_fr - alpha_t_fr) / tau
         d_alpha_rl = (alpha_kin_rl - alpha_t_rl) / tau
         d_alpha_rr = (alpha_kin_rr - alpha_t_rr) / tau
-        d_kappa_fl = (0.0 - kappa_t_fl) / tau
-        d_kappa_fr = (0.0 - kappa_t_fr) / tau
 
         T_ribs_f = x[28:31]
         T_gas_f  = x[31]
@@ -1016,6 +1029,18 @@ class DifferentiableMultiBodyVehicle:
             jnp.maximum(-u[1], 0.0), Fz_fl + Fz_fr, Fz_rl + Fz_rr, vx, s.brake_bias_f)
         Fx_brake_f = F_brake_f
         Fx_brake_r = F_brake_r
+
+        eta        = self.vp.get('drivetrain_efficiency', 0.92)
+        T_fw       = T_drive * 0.25 * eta
+        vx_s       = jnp.maximum(jnp.abs(vx), 0.5)
+        v_fl_g     = jnp.maximum(jnp.abs(vx - wz * tf2), 0.5)
+        v_fr_g     = jnp.maximum(jnp.abs(vx + wz * tf2), 0.5)
+        omega_fl_d = v_fl_g / self.R_wheel + T_fw / (10.0 * self.R_wheel)
+        omega_fr_d = v_fr_g / self.R_wheel + T_fw / (10.0 * self.R_wheel)
+        kappa_ref_fl = 0.5 * jnp.tanh((omega_fl_d * self.R_wheel - v_fl_g) / (vx_s * 0.5))
+        kappa_ref_fr = 0.5 * jnp.tanh((omega_fr_d * self.R_wheel - v_fr_g) / (vx_s * 0.5))
+        d_kappa_fl = (kappa_ref_fl - kappa_t_fl) / tau
+        d_kappa_fr = (kappa_ref_fr - kappa_t_fr) / tau
 
         Fx_rl, Fx_rr, Fy_rl, Fy_rr, kappa_t_rl_new, kappa_t_rr_new = \
             self.compute_differential_forces(
@@ -1053,8 +1078,8 @@ class DifferentiableMultiBodyVehicle:
         F_ext = F_ext.at[21].set(-F_susp_fr + Fz_fr - self.m_us_f * self.g)
         F_ext = F_ext.at[22].set(-F_susp_rl + Fz_rl - self.m_us_r * self.g)
         F_ext = F_ext.at[23].set(-F_susp_rr + Fz_rr - self.m_us_r * self.g)
-        F_ext = F_ext.at[24].set(-Fx_fl * self.R_wheel)
-        F_ext = F_ext.at[25].set(-Fx_fr * self.R_wheel)
+        F_ext = F_ext.at[24].set(-Fx_fl * self.R_wheel + T_fw)
+        F_ext = F_ext.at[25].set(-Fx_fr * self.R_wheel + T_fw)
         F_ext = F_ext.at[26].set(-Fx_rl * self.R_wheel + T_drive * 0.5)
         F_ext = F_ext.at[27].set(-Fx_rr * self.R_wheel + T_drive * 0.5)
 
@@ -1068,7 +1093,8 @@ class DifferentiableMultiBodyVehicle:
         dx_therm = (self.tire.compute_thermal_derivatives(
             x[28:38],
             jnp.array([Fz_fl, Fz_fr, Fz_rl, Fz_rr]),
-            jnp.array([0.0, 0.0, jnp.abs(kappa_t_rl_new), jnp.abs(kappa_t_rr_new)]),
+            jnp.array([jnp.abs(kappa_ref_fl), jnp.abs(kappa_ref_fr),
+                       jnp.abs(kappa_t_rl_new), jnp.abs(kappa_t_rr_new)]),
             jnp.abs(vx),
         ) if hasattr(self.tire, 'compute_thermal_derivatives') else jnp.zeros(10))
 

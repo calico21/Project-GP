@@ -419,7 +419,7 @@ def powertrain_step(
     wz_ref = yaw_rate_reference(delta, vx, delta_dot, wz, mu_est, geo)
 
     # PD yaw moment demand
-    wz_error = wz_ref - wz
+    wz_error = wz - wz_ref
     Kp_yaw = 80.0
     Kd_yaw = 5.0
     dwz_ref = (wz_ref - manager_state.tv.wz_ref_prev) / (dt + 1e-6)
@@ -565,6 +565,7 @@ def powertrain_step(
             T_prev=T_final,
             delta_prev=delta,
             wz_ref_prev=wz_ref,
+            T_qp_prev=T_alloc,    # pre-CBF SOCP solution for warm-start
         ),
         tc=tc_state_new,
         launch=launch_state_new,
