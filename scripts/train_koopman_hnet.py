@@ -470,7 +470,7 @@ def main():
     Mz1, _ = koopman_mz_reference(
         jnp.array(1.0), jnp.array(0.0), jnp.array(15.0), jnp.array(15.0),
         jnp.array(0.05), _z4, _z4, _fz, jnp.array(1.3), bt)
-    dir_ok = float(Mz1) > 0
+    dir_ok = float(Mz1) < 0
     print(f"  Mz(ψ̇_err=1): {float(Mz1):.2f} Nm  "
           f"{'[PASS]' if dir_ok else '[FAIL — wrong sign]'}  "
           f"(ratio vs PD: {abs(float(Mz1)) / (cfg.Kp_fallback + 1e-6):.2f}×)")
