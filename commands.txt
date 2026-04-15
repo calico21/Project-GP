@@ -42,3 +42,22 @@ python simulator/physics_server.py --track fsg_autocross
 python -m powertrain.powertrain_manager
 
 PYTHONPATH=. python scripts/train_koopman_tv.py --n_samples 100000 --n_epochs 300
+
+env -i HOME=$HOME PATH=/usr/bin:/bin:/usr/sbin:/sbin \
+  PYTHONPATH=/home/alexr/project_gp_env/lib/python3.12/site-packages:/home/alexr/FS_Driver_Setup_Optimizer \
+  bash --norc --noprofile -c "
+    source /opt/ros/jazzy/setup.bash
+    source ~/ros2_ws/install/setup.bash
+    ros2 run project_gp mirena_bridge
+  "
+
+
+
+  source /opt/ros/jazzy/setup.bash
+source ~/ros2_ws/install/setup.bash
+ros2 topic pub /as_status mirena_common/msg/ASStatus \
+  "{header: {stamp: {sec: 0}}, state: 2, mission: 3}" --once
+
+ros2 topic pub /car/state mirena_common/msg/Car \
+  "{header: {stamp: {sec: 0}}, x: 0.0, y: 0.0, psi: 0.0, u: 10.0, v: 0.1, omega: 0.05, covariance: [0.01,0,0,0,0,0, 0,0.01,0,0,0,0, 0,0,0.01,0,0,0, 0,0,0,0.01,0,0, 0,0,0,0,0.01,0, 0,0,0,0,0,0.01]}" \
+  -r 50
