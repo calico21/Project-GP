@@ -22,18 +22,18 @@ Training H_net and R_net for 2000 epochs (synthetic chassis flex)...
   [GP-vX2] setup-dependent target: V_spring_dev + V_arb + V_torsion
   Phase 1 (ep 1→2500): PURE MSE.
   Phase 2 (ep 2501→2500): AL-constrained MSE | PhantomRate [α=3.0] | passivity via Augmented Lagrangian (ρ_init=1e-03)
-  Epoch  200 | Loss: 1.894637 | lr: 9.84e-04 | Phase 1 (MSE)
-  Epoch  400 | Loss: 0.969628 | lr: 9.39e-04 | Phase 1 (MSE)
-  Epoch  600 | Loss: 0.229985 | lr: 8.66e-04 | Phase 1 (MSE)
-  Epoch  800 | Loss: 0.068883 | lr: 7.70e-04 | Phase 1 (MSE)
-  Epoch 1000 | Loss: 0.031064 | lr: 6.58e-04 | Phase 1 (MSE)
-  Epoch 1200 | Loss: 0.017914 | lr: 5.36e-04 | Phase 1 (MSE)
-  Epoch 1400 | Loss: 0.012180 | lr: 4.12e-04 | Phase 1 (MSE)
-  Epoch 1600 | Loss: 0.009370 | lr: 2.94e-04 | Phase 1 (MSE)
-  Epoch 1800 | Loss: 0.007880 | lr: 1.89e-04 | Phase 1 (MSE)
-  Epoch 2000 | Loss: 0.007085 | lr: 1.05e-04 | Phase 1 (MSE)
-  Epoch 2200 | Loss: 0.006698 | lr: 4.48e-05 | Phase 1 (MSE)
-  Epoch 2400 | Loss: 0.006548 | lr: 1.39e-05 | Phase 1 (MSE)
+  Epoch  200 | Loss: 1.894711 | lr: 9.84e-04 | Phase 1 (MSE)
+  Epoch  400 | Loss: 0.969969 | lr: 9.39e-04 | Phase 1 (MSE)
+  Epoch  600 | Loss: 0.230648 | lr: 8.66e-04 | Phase 1 (MSE)
+  Epoch  800 | Loss: 0.072593 | lr: 7.70e-04 | Phase 1 (MSE)
+  Epoch 1000 | Loss: 0.032980 | lr: 6.58e-04 | Phase 1 (MSE)
+  Epoch 1200 | Loss: 0.019054 | lr: 5.36e-04 | Phase 1 (MSE)
+  Epoch 1400 | Loss: 0.012905 | lr: 4.12e-04 | Phase 1 (MSE)
+  Epoch 1600 | Loss: 0.009789 | lr: 2.94e-04 | Phase 1 (MSE)
+  Epoch 1800 | Loss: 0.008199 | lr: 1.89e-04 | Phase 1 (MSE)
+  Epoch 2000 | Loss: 0.007338 | lr: 1.05e-04 | Phase 1 (MSE)
+  Epoch 2200 | Loss: 0.006921 | lr: 4.48e-05 | Phase 1 (MSE)
+  Epoch 2400 | Loss: 0.006760 | lr: 1.39e-05 | Phase 1 (MSE)
 
 [Neural Physics] Training R_net (Dissipation Matrix Residual)...
   Epoch  200 | MSE Loss: 0.367977 | lr: 9.84e-04
@@ -53,14 +53,14 @@ Training H_net and R_net for 2000 epochs (synthetic chassis flex)...
 [VehicleDynamics] Loaded h_net.bytes
 [VehicleDynamics] Loaded r_net.bytes
 
-[Neural Physics] Passive energy injection: ✓ PASS  (-31.5 mJ < 100 mJ budget)
-[Neural Physics] FiLM sensitivity: std(H | varied_setup) = 1.5675 J  (threshold: 0.7192 J)  ✓ PASS — FiLM active
+[Neural Physics] Passive energy injection: ✗ WARN  (268.9 mJ — injection) — passivity not fully converged with synthetic data.
+[Neural Physics] FiLM sensitivity: std(H | varied_setup) = 1.5933 J  (threshold: 0.7192 J)  ✓ PASS — FiLM active
 
 [Neural Physics] Pre-training complete!
 Scale factors:  h_scale=14.3849 J  |  r_scale=76.8194
 [Neural Physics] Weights saved → /home/alexr/FS_Driver_Setup_Optimizer/models/h_net.bytes
 [Neural Physics] Scale saved   → /home/alexr/FS_Driver_Setup_Optimizer/models/h_net_scale.txt  (14.3849 J)
-[Neural Physics] LAST_TRAIN_MSE=0.006515  LAST_PHRATE=nan
+[Neural Physics] LAST_TRAIN_MSE=0.006725  LAST_PHRATE=nan
 [PASS] Weights saved → /home/alexr/FS_Driver_Setup_Optimizer/models/h_net.bytes
 [PASS] Scale saved   → /home/alexr/FS_Driver_Setup_Optimizer/models/h_net_scale.txt  (14.38 J)
 [PASS] Test 2 will load passivity-trained H_net from disk.
@@ -74,14 +74,14 @@ Instantiating DifferentiableMultiBodyVehicle...
 [VehicleDynamics] Loaded r_net.bytes
 
   ── Passive energy budget check (u=[0,0]) ──
-  > Passive ΔKE: -2.86 mJ  (budget: 150 mJ)
-[PASS] Energy budget satisfied — H_net is passive.
+  > Passive ΔKE: 1035.7 mJ  (budget: 150 mJ)
+[WARN] Energy budget EXCEEDED by 7× — passivity not yet converged.
 
   ── Active forward pass (u=[0.2, 1000]) ──
 Executing single simulate_step (dt=0.01s)...
-  > Speed changed: 10.000 m/s -> 10.031 m/s
-  > Yaw rate built to: -0.845 rad/s
-  > Transient Slip Angle FL: 0.0566 rad
+  > Speed changed: 10.000 m/s -> 10.057 m/s
+  > Yaw rate built to: -0.599 rad/s
+  > Transient Slip Angle FL: 0.0561 rad
 [PASS] Forward pass is mathematically stable and outputs are finite.
 
 ============================================================
@@ -91,7 +91,7 @@ Solving MPC for constant curvature (R=20m). Expected physical limit ~16.6 m/s (P
 [VehicleDynamics] H_net train scale (diagnostic): 14.3849 J  [NOT applied to architecture]
 [VehicleDynamics] Loaded h_net.bytes
 [VehicleDynamics] Loaded r_net.bytes
-   [DEBUG] 200-step rollout clean. Final vx=19.222 m/s — physics is stable.
+   [DEBUG] 200-step rollout clean. Final vx=17.535 m/s — physics is stable.
 [VehicleDynamics] H_net train scale (diagnostic): 14.3849 J  [NOT applied to architecture]
 [VehicleDynamics] Loaded h_net.bytes
 [VehicleDynamics] Loaded r_net.bytes
@@ -99,23 +99,23 @@ Solving MPC for constant curvature (R=20m). Expected physical limit ~16.6 m/s (P
 [Diff-WMPC] Physics P-ctrl warm start (N=64, Kp=6000 N/(m/s)).
 [Diff-WMPC] AL iter 1/5 — ρ=10.0, λ_max=0.000
 [Diff-WMPC] Optimising 3-level Db4 basis over N=64 via L-BFGS-B…
-[Diff-WMPC] Constraint max violation: 0.0428 (0=feasible). Updated λ_max=0.428
-[Diff-WMPC] AL iter 2/5 — ρ=40.0, λ_max=0.428
+[Diff-WMPC] Constraint max violation: 0.2677 (0=feasible). Updated λ_max=2.677
+[Diff-WMPC] AL iter 2/5 — ρ=40.0, λ_max=2.677
 [Diff-WMPC] Optimising 3-level Db4 basis over N=64 via L-BFGS-B…
-[Diff-WMPC] Constraint max violation: 0.0000 (0=feasible). Updated λ_max=0.000
-[Diff-WMPC] AL iter 3/5 — ρ=150.0, λ_max=0.000
+[Diff-WMPC] Constraint max violation: 0.1356 (0=feasible). Updated λ_max=8.101
+[Diff-WMPC] AL iter 3/5 — ρ=150.0, λ_max=8.101
 [Diff-WMPC] Optimising 3-level Db4 basis over N=64 via L-BFGS-B…
-[Diff-WMPC] Constraint max violation: 0.0000 (0=feasible). Updated λ_max=0.000
-[Diff-WMPC] AL iter 4/5 — ρ=500.0, λ_max=0.000
+[Diff-WMPC] Constraint max violation: 0.1384 (0=feasible). Updated λ_max=24.305
+[Diff-WMPC] AL iter 4/5 — ρ=500.0, λ_max=24.305
 [Diff-WMPC] Optimising 3-level Db4 basis over N=64 via L-BFGS-B…
-[Diff-WMPC] Constraint max violation: 0.0000 (0=feasible). Updated λ_max=0.000
-[Diff-WMPC] AL iter 5/5 — ρ=500.0, λ_max=0.000
+[Diff-WMPC] Constraint max violation: 0.1384 (0=feasible). Updated λ_max=93.520
+[Diff-WMPC] AL iter 5/5 — ρ=500.0, λ_max=93.520
 [Diff-WMPC] Optimising 3-level Db4 basis over N=64 via L-BFGS-B…
-[Diff-WMPC] Constraint max violation: 0.0000 (0=feasible). Updated λ_max=0.000
-[Diff-WMPC] L-BFGS-B converged: CONVERGENCE: RELATIVE REDUCTION OF F <= FACTR*EPSMCH (nit=1, nfev=17)
-[Diff-WMPC] Friction circle: 100.0% inside μ=1.4 (max G_combined=0.998)
-  > Solver achieved mean speed: 14.71 m/s
-  > Solver achieved Lat G: 1.11 G
+[Diff-WMPC] Constraint max violation: 0.1384 (0=feasible). Updated λ_max=162.735
+[Diff-WMPC] L-BFGS-B converged: CONVERGENCE: RELATIVE REDUCTION OF F <= FACTR*EPSMCH (nit=1, nfev=20)
+[Diff-WMPC] Friction circle: 98.4% inside μ=1.4 (max G_combined=1.067)
+  > Solver achieved mean speed: 13.79 m/s
+  > Solver achieved Lat G: 0.98 G
 [PASS] Solver correctly discovered the exact physical limit of the tires.
 
 ============================================================
@@ -196,18 +196,18 @@ Running brief MORL simulation to verify parameter bounding...
 [SB-TRPO] i=   0 | Safe: 10/10 | Valid: 10/10 | Grip: 1.6421 G | log_std: -1.000 | Trust: off
 [SB-TRPO] i=   1 | Safe: 10/10 | Valid: 10/10 | Grip: 1.6422 G | log_std: -1.000 | Trust: off
 
-[MORL-SB-TRPO] Pareto front: 5 setups | Best grip: 1.6422 G | Stability range: 0.70–0.78 rad/s
+[MORL-SB-TRPO] Pareto front: 5 setups | Best grip: 1.6422 G | Stability range: 0.68–0.88 rad/s
 
 [MORL] Setup sensitivity analysis (top-10 |dGrip/dparam| at Pareto front):
   Setup   Grip   Stab       k_f       k_r     arb_f     arb_r   c_low_f   c_low_r  c_high_f  c_high_r
   ─────────────────────────────────────────────────────────────────────────────────────────────────────
-      1  1.599   0.70  -0.33  +0.14  -0.01  +0.02  +0.00  +0.00  +0.00  +0.00
-      2  1.599   0.70  -0.33  +0.14  -0.01  +0.02  +0.00  +0.00  +0.00  +0.00
-      3  1.642   0.78  +0.20  -0.37  +0.03  -0.04  +0.00  +0.00  +0.00  +0.00
-      4  1.599   0.70  -0.33  +0.14  -0.01  +0.02  +0.00  +0.00  +0.00  +0.00
-      5  1.380   0.70  +0.17  -0.52  +0.03  -0.03  +0.00  +0.00  +0.00  +0.00
+      1  1.642   0.88  +0.20  -0.37  +0.03  -0.04  +0.00  +0.00  +0.00  +0.00
+      2  1.642   0.88  +0.20  -0.37  +0.03  -0.04  +0.00  +0.00  +0.00  +0.00
+      3  1.636   0.68  +0.11  -0.34  +0.02  -0.03  +0.00  +0.00  +0.00  +0.00
+      4  1.642   0.88  +0.20  -0.37  +0.03  -0.04  +0.00  +0.00  +0.00  +0.00
+      5  1.636   0.68  +0.11  -0.34  +0.02  -0.03  +0.00  +0.00  +0.00  +0.00
 [PASS] Optimizer search domain healthy. Lower bound fraction: 0% (Target <50%)
-[PASS] Stability cap working: max Stability_Overshoot = 0.78 ≤ 5.0
+[PASS] Stability cap working: max Stability_Overshoot = 0.88 ≤ 5.0
 
 ============================================================
 TEST 10: MOTOR TORQUE ENVELOPE (FIELD-WEAKENING CONTINUITY)
@@ -223,7 +223,7 @@ TEST 11: SOCP TORQUE ALLOCATOR (FRICTION FEASIBILITY)
 [PASS] All torques within motor limits (T=[0.0, 0.0, 0.0, 0.0] Nm)
 [PASS] Friction circles feasible (max utilization: 0.000)
 [PASS] Straight-line yaw moment ≈ 0 (actual: 0.0 Nm)
-[WARN] SOCP solve time: 302.3ms (exceeds 50ms budget)
+[WARN] SOCP solve time: 213.2ms (exceeds 50ms budget)
 
 ============================================================
 TEST 12: CBF SAFETY FILTER (SIDESLIP INVARIANCE)
@@ -236,7 +236,7 @@ TEST 12: CBF SAFETY FILTER (SIDESLIP INVARIANCE)
 ============================================================
 TEST 13: DESC EXTREMUM-SEEKING (GRADIENT CONVERGENCE)
 ============================================================
-[WARN] DESC partially converged: κ_base = 0.0837 (target ≈ 0.12, error = 0.0363)
+[WARN] DESC partially converged: κ_base = 0.0862 (target ≈ 0.12, error = 0.0338)
 [WARN] Model-based κ* = 0.0200 (outside expected 0.05–0.25)
 
 ============================================================
@@ -258,12 +258,89 @@ TEST 15: VIRTUAL IMPEDANCE (PIO SUPPRESSION)
 TEST 16: FULL POWERTRAIN PIPELINE (JIT + TIMING)
 ============================================================
   Compiling full pipeline (first call)...
-  Compile time: 2.36s
+  Compile time: 0.67s
   Running 50 warm steps for timing...
-[WARN] Per-step time: 17.680ms (exceeds 5.0ms budget — expected on CPU, OK if <1ms on target SBC)
-[PASS] Output torques finite: [3.2, 5.0, 3.1, 5.1] Nm
+[WARN] Per-step time: 13.303ms (exceeds 5.0ms budget — expected on CPU, OK if <1ms on target SBC)
+[PASS] Output torques finite: [3.3, 2.1, 3.3, 2.0] Nm
 [PASS] Thermal dynamics active: ΔT_motor = +0.2759°C after 50 steps
-[PASS] SoC decreasing under load: 94.9812% (Δ = -0.018799%)
+[PASS] SoC decreasing under load: 94.9816% (Δ = -0.018379%)
   Diagnostics: 31 fields available for telemetry/dashboard
 
+============================================================
+TEST 17: RLS SLIP-SLOPE OBSERVER
+============================================================
+  κ* true:  0.1170
+  κ* RLS:   0.2156  (error = 0.0986)
+  slope @κ=0.22: 591.6 N/unit_κ (expected < 0 above peak)
+  [FAIL-A] RLS did not converge (error=0.0986 >= 0.030)
+  [FAIL-A2] Slope sign wrong: expected negative above κ*, got 591.6
+  [PASS-B] High RLS SNR → w_rls=1.000 > 0.80 (RLS dominates)
+  [PASS-B2] Low RLS SNR → w_rls=0.001 < 0.20 (DESC dominates)
+  [PASS-C] rls_tc_step: shapes OK, no NaN, κ*∈[0.02,0.25]
+           κ*_fused = ['0.1004', '0.1004', '0.1001', '0.1001']
+           w_rls    = [0.967, 0.933]
+  [INFO-D] 1000 steps in 445.1 ms (0.4451 ms/step avg)
+  [PASS-D] Runtime well within 5 ms step budget
+
 ✅ END-TO-END VALIDATION COMPLETE.
+
+(project_gp_env) alexr@ALEXRP:~/FS_Driver_Setup_Optimizer$ 
+
+
+(project_gp_env) alexr@ALEXRP:~/FS_Driver_Setup_Optimizer$ pkill -9 -f gradient_server.py
+python scripts/gradient_server.py --port 8766
+[JAX Config] XLA cache : /home/alexr/FS_Driver_Setup_Optimizer/.jax_cache
+[JAX Config] Device    : gpu
+[JAX Config] Devices   : [CudaDevice(id=0)]
+==============================================================
+  PROJECT-GP  ·  GRADIENT COMPUTATION SERVER
+==============================================================
+  (Lazy compilation: first request will trigger XLA compile)
+
+  Listening on http://0.0.0.0:8766
+  Endpoints:
+    GET  /health   — health check
+    GET  /default  — gradient at default setup
+    POST /gradient — gradient at custom setup (JSON body: {setup: [28 floats]})
+
+──────────────────────────────────────────────────────────────
+[GradientEngine] Compiling short-horizon Jacobian sensitivity...
+[VehicleDynamics] H_net train scale (diagnostic): 14.3849 J  [NOT applied to architecture]
+[VehicleDynamics] Loaded h_net.bytes
+[VehicleDynamics] Loaded r_net.bytes
+[GradientEngine] Tracing + XLA compile (~30s)...
+[GradientEngine] Compiled in 15.2s
+[GradientEngine] Default setup: v_x(100ms) = 15.753 m/s
+[GradientEngine] Top-5 lap-time sensitivities (s/unit):
+  bump_steer_f              -0.039724    (‖Jᵢ‖ = 1.577e-02)
+  camber_f                  -0.033684    (‖Jᵢ‖ = 1.842e-02)
+  diff_lock_ratio           -0.025066    (‖Jᵢ‖ = 8.763e-03)
+  castor_f                  +0.000700    (‖Jᵢ‖ = 1.170e-03)
+  camber_r                  +0.000018    (‖Jᵢ‖ = 1.584e-04)
+[GradientEngine] 20/28 parameters graph-connected
+
+(project_gp_env) alexr@ALEXRP:~/FS_Driver_Setup_Optimizer$ curl http://localhost:8766/default
+{"lap_time": 47.61062102270887, "gradients": {"k_f": -6.322612193798705e-07, "k_r": -3.611428667227301e-07, 
+"arb_f": -1.0952207958325744e-06, "arb_r": -2.337311144628984e-07, "c_low_f": -1.6519846894880175e-06, 
+"c_low_r": -5.143401722307317e-07, "c_high_f": -2.224711748155528e-09, "c_high_r": -4.463156955125669e-09, 
+"v_knee_f": -0.0002110000204993412, "v_knee_r": -0.00032898690551519394, "rebound_ratio_f": -0.001527556567452848, 
+"rebound_ratio_r": -6.035445494489977e-06, "h_ride_f": -2.5752224922180176, "h_ride_r": -2.2115604877471924, 
+"camber_f": 0.0018120839959010482, "camber_r": -1.7373909940943122e-05, "toe_f": -0.0, "toe_r": -0.0, 
+"castor_f": -0.00014779760385863483, "anti_squat": -0.0, "anti_dive_f": -0.0, "anti_dive_r": -0.0, "anti_lift": -0.0, 
+"diff_lock_ratio": 0.0004512698797043413, "brake_bias_f": -0.0, "h_cg": -1.9160690499120392e-05, "bump_steer_f": 0.0008654817356728017, 
+"bump_steer_r": -0.0}, 
+"gradient_vector": [-6.322612193798705e-07, -3.611428667227301e-07, -1.0952207958325744e-06, -2.337311144628984e-07, -1.6519846894880175e-06, -5.143401722307317e-07, -2.224711748155528e-09, -4.463156955125669e-09, -0.0002110000204993412, -0.00032898690551519394, -0.001527556567452848, -6.035445494489977e-06, -2.5752224922180176, -2.2115604877471924, 0.0018120839959010482, -1.7373909940943122e-05, -0.0, -0.0, -0.00014779760385863483, -0.0, -0.0, -0.0, -0.0, 0.0004512698797043413, -0.0, -1.9160690499120392e-05, 0.0008654817356728017, -0.0], "jacobian_colnorm": [1.2645224304619014e-05, 7.2228573462249186e-06, 2.1904415916633232e-05, 4.6746223839931034e-06, 3.3039693031820564e-05, 1.0286803444606062e-05, 4.4494236443370844e-08, 8.926313910243898e-08, 0.004220000312970539, 0.006579738110298395, 0.030551130572929353, 0.00012070891292134796, 51.50444984431743, 44.23121134436418, 0.036241679262356684, 0.0003474781807695047, 0.0, 0.0, 0.0029559519819146373, 0.0, 0.0, 0.0, 0.0, 0.009025397399638235, 0.0, 0.0003832137978554925, 0.017309635198155697, 0.0], "ranked": [{"param": "h_ride_f", "sensitivity": -2.5752224922180176}, 
+{"param": "h_ride_r", "sensitivity": -2.2115604877471924}, {"param": "camber_f", "sensitivity": 0.0018120839959010482}, 
+{"param": "rebound_ratio_f", "sensitivity": -0.001527556567452848}, {"param": "bump_steer_f", "sensitivity": 0.0008654817356728017}, 
+{"param": "diff_lock_ratio", "sensitivity": 0.0004512698797043413}, {"param": "v_knee_r", "sensitivity": -0.00032898690551519394}, 
+{"param": "v_knee_f", "sensitivity": -0.0002110000204993412}, {"param": "castor_f", "sensitivity": -0.00014779760385863483}, 
+{"param": "h_cg", "sensitivity": -1.9160690499120392e-05}, {"param": "camber_r", "sensitivity": -1.7373909940943122e-05}, 
+{"param": "rebound_ratio_r", "sensitivity": -6.035445494489977e-06}, {"param": "c_low_f", "sensitivity": -1.6519846894880175e-06},
+{"param": "arb_f", "sensitivity": -1.0952207958325744e-06}, {"param": "k_f", "sensitivity": -6.322612193798705e-07}, 
+{"param": "c_low_r", "sensitivity": -5.143401722307317e-07}, {"param": "k_r", "sensitivity": -3.611428667227301e-07}, 
+{"param": "arb_r", "sensitivity": -2.337311144628984e-07}, {"param": "c_high_r", "sensitivity": -4.463156955125669e-09}, 
+{"param": "c_high_f", "sensitivity": -2.224711748155528e-09}, {"param": "toe_f", "sensitivity": -0.0}, 
+{"param": "toe_r", "sensitivity": -0.0}, {"param": "anti_squat", "sensitivity": -0.0}, {"param": "anti_dive_f", "sensitivity": -0.0}, 
+{"param": "anti_dive_r", "sensitivity": -0.0}, {"param": "anti_lift", "sensitivity": -0.0}, {"param": "brake_bias_f", "sensitivity": -0.0}, 
+{"param": "bump_steer_r", "sensitivity": -0.0}], "compute_ms": 643.4204299999919, "compiled": true, "track": "fsg_autocross"}(project_gp_env) alexr@ALEXRP:~/FS_Driver_Setup_Optimizer$ 
+
