@@ -1,0 +1,65 @@
+/* Project-GP Wiki — Custom Theme */
+
+:root {
+  --gp-cyan: #00d4ff;
+  --gp-green: #00ff88;
+  --gp-amber: #ffaa00;
+  --gp-red: #ff4444;
+  --gp-bg: #0a0a0f;
+}
+
+/* Hero banner on index page */
+.hero-banner {
+  background: linear-gradient(135deg, rgba(0,212,255,0.08), rgba(0,255,136,0.05));
+  border: 1px solid rgba(0,212,255,0.2);
+  border-radius: 8px;
+  padding: 2rem;
+  margin: 1rem 0 2rem;
+  text-align: center;
+}
+
+.hero-banner strong {
+  color: var(--gp-cyan);
+}
+
+.hero-banner em {
+  display: block;
+  margin-top: 0.5rem;
+  font-size: 0.95rem;
+  opacity: 0.85;
+}
+
+/* Code blocks */
+.md-typeset code {
+  font-family: 'JetBrains Mono', monospace;
+}
+
+/* Tables */
+.md-typeset table:not([class]) {
+  font-size: 0.82rem;
+}
+
+.md-typeset table:not([class]) th {
+  font-weight: 700;
+  text-transform: uppercase;
+  font-size: 0.72rem;
+  letter-spacing: 0.05em;
+}
+
+/* Boxed equations */
+.md-typeset .arithmatex mjx-container[display="true"] {
+  margin: 1.5rem 0;
+}
+
+/* Admonition customisation */
+.md-typeset .admonition.info {
+  border-color: var(--gp-cyan);
+}
+
+.md-typeset .admonition.success {
+  border-color: var(--gp-green);
+}
+
+.md-typeset .admonition.warning {
+  border-color: var(--gp-amber);
+}

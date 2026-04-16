@@ -1,0 +1,103 @@
+site_name: "Project-GP Technical Reference"
+site_description: "End-to-End Differentiable Digital Twin for Formula Student — Tecnun eRacing"
+site_author: "Tecnun eRacing — Driverless & Simulation Department"
+
+theme:
+  name: material
+  palette:
+    - scheme: slate
+      primary: cyan
+      accent: amber
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+    - scheme: default
+      primary: cyan
+      accent: amber
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+  font:
+    text: "IBM Plex Sans"
+    code: "JetBrains Mono"
+  features:
+    - navigation.tabs
+    - navigation.sections
+    - navigation.expand
+    - navigation.top
+    - search.suggest
+    - content.code.copy
+    - content.tabs.link
+    - toc.follow
+
+extra_css:
+  - stylesheets/extra.css
+
+markdown_extensions:
+  - pymdownx.arithmatex:
+      generic: true
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.details
+  - pymdownx.critic
+  - pymdownx.emoji
+  - admonition
+  - attr_list
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+
+extra_javascript:
+  - javascripts/mathjax.js
+  - https://polyfill.io/v3/polyfill.min.js?features=es6
+  - https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js
+
+nav:
+  - Home: index.md
+  - Architecture:
+    - Philosophy: architecture/philosophy.md
+    - State Vector: architecture/state_vector.md
+    - Design Rules: architecture/design_rules.md
+    - Computational Graph: architecture/xla_graph.md
+  - Physics Engine:
+    - Port-Hamiltonian Dynamics: physics/port_hamiltonian.md
+    - Symplectic Integration: physics/integration.md
+    - Neural Energy Networks: physics/h_net_r_net.md
+    - Passivity Guarantees: physics/passivity.md
+  - Tire Model:
+    - Multi-Fidelity Architecture: tires/architecture.md
+    - Pacejka MF6.2: tires/pacejka.md
+    - 5-Node Thermal Model: tires/thermal.md
+    - PINN Drift Correction: tires/pinn.md
+    - Sparse GP Uncertainty: tires/gaussian_process.md
+  - Optimal Control:
+    - Diff-WMPC Overview: control/wmpc_overview.md
+    - Wavelet Decomposition: control/wavelets.md
+    - Augmented Lagrangian: control/augmented_lagrangian.md
+    - Stochastic Tubes: control/stochastic_tubes.md
+  - Powertrain:
+    - 13-Stage Coordinator: powertrain/coordinator.md
+    - SOCP Torque Allocation: powertrain/socp.md
+    - CBF Safety Filter: powertrain/cbf.md
+    - DESC Traction Control: powertrain/desc.md
+    - Launch Control: powertrain/launch.md
+  - Setup Optimization:
+    - MORL-SB-TRPO: optimization/morl.md
+    - Pareto Front Analysis: optimization/pareto.md
+    - CMA-ES Validation: optimization/cmaes.md
+    - Sensitivity Analysis: optimization/sensitivity.md
+  - Validation:
+    - Twin Fidelity Methodology: validation/methodology.md
+    - Sensor Noise Model: validation/noise_model.md
+    - Deployment Benchmarks: validation/benchmarks.md
+  - Appendices:
+    - Symbol Table: appendices/symbols.md
+    - Parameter Bounds: appendices/bounds.md

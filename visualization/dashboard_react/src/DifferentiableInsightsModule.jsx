@@ -17,7 +17,8 @@
 //   Route: case "diff": return <DifferentiableInsightsModule />
 // ═══════════════════════════════════════════════════════════════════════════
 
-import React, { useState, useMemo, useCallback } from "react";
+import React, { useState, useMemo, useCallback, useEffect } from "react";
+import { useGradientServer } from "./hooks/useGradientServer.js";
 import {
 LineChart, Line, AreaChart, Area, BarChart, Bar, ScatterChart, Scatter,
 ComposedChart, XAxis, YAxis, CartesianGrid, Tooltip,
@@ -26,6 +27,8 @@ ResponsiveContainer, ReferenceLine, ReferenceArea, Cell, Legend,
 import { C, GL, GS, TT } from "./theme.js";
 import { KPI, Sec, GC, Pill } from "./components.jsx";
 
+import { useEffect } from "react";
+import { useGradientServer } from "./hooks/useGradientServer.js";
 // ═══════════════════════════════════════════════════════════════════════════
 // SEEDED RNG
 // ═══════════════════════════════════════════════════════════════════════════
@@ -461,51 +464,93 @@ return (
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// TAB: LAP TIME SENSITIVITY
+// TAB: LAP TIME SENSITIVITY — v5.1: live gradient server integration
 // ═══════════════════════════════════════════════════════════════════════════
-function LapSensTab() {
-const sensData = useMemo(() => gLapTimeSens(), []);
-const top5 = sensData.slice(0, 5);
-const maxAbsSens = Math.max(...sensData.map(s => s.absSens));
+function LapSensTab({ gradServer, mode }) {
+  const syntheticSens = useMemo(() => gLapTimeSens(), []);
 
-return (
-<div>
-<div style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 10, marginBottom: 14 }}>
-{top5.map((d) => (
-<KPI key={d.param} label={`#${d.rank} ${d.param}`}
-value={`${d.dtLap > 0 ? "+" : ""}${(d.dtLap * 1000).toFixed(1)} ms`}
-sub={d.sign === "faster" ? "decrease → faster" : "decrease → slower"}
-sentiment={d.dtLap < 0 ? "positive" : "amber"} delay={d.rank - 1} />
-))}
-</div>
+  // Prefer server data when in LIVE mode AND server returned a ranking
+  const useLive = mode === "LIVE" && gradServer?.connected && gradServer?.ranked?.length > 0;
 
+  const sensData = useMemo(() => {
+    if (!useLive) return syntheticSens;
 
-  <Sec title="∂t_lap / ∂(setup_param) — Full 28-Parameter Sensitivity [ms]">
-    <GC><ResponsiveContainer width="100%" height={420}>
-      <BarChart data={sensData} layout="vertical" margin={{ top: 8, right: 16, bottom: 8, left: 90 }}>
-        <CartesianGrid strokeDasharray="3 3" stroke={GS} horizontal={false} />
-        <XAxis type="number" {...ax()} domain={[-maxAbsSens * 1.1, maxAbsSens * 1.1]}
-          tickFormatter={v => `${(v * 1000).toFixed(0)}ms`} />
-        <YAxis dataKey="param" type="category" tick={{ fontSize: 8, fill: C.br, fontFamily: C.dt }} stroke={C.b1} width={85} />
-        <Tooltip contentStyle={TT} formatter={v => `${(v * 1000).toFixed(1)} ms`} />
-        <ReferenceLine x={0} stroke={C.dm} />
-        <Bar dataKey="dtLap" barSize={12} radius={[4, 4, 4, 4]} name="∂t_lap">
-          {sensData.map((e, i) => <Cell key={i} fill={e.dtLap < 0 ? C.gn : C.am} fillOpacity={0.7} />)}
-        </Bar>
-      </BarChart>
-    </ResponsiveContainer></GC>
-  </Sec>
+    // Map server response → same shape LapSensTab already consumes
+    // Server returns: [{ param: "k_f", sensitivity: -0.0234 }, ...]
+    // Chart expects:  [{ param, dtLap, absSens, sign, rank }]
+    return gradServer.ranked.map((r, i) => ({
+      param: r.param,
+      dtLap: +r.sensitivity.toFixed(4),
+      absSens: +Math.abs(r.sensitivity).toFixed(4),
+      sign: r.sensitivity < 0 ? "faster" : "slower",
+      rank: i + 1,
+    }));
+  }, [useLive, gradServer?.ranked, syntheticSens]);
 
-  <div style={{ ...GL, padding: "10px 14px", marginTop: 10, fontSize: 9, color: C.dm, fontFamily: C.dt, lineHeight: 1.7 }}>
-    The top 5 most sensitive parameters should be tuned with highest priority.
-    Parameters with near-zero sensitivity can be safely fixed at nominal values, reducing the effective optimization dimensionality.
-    <br/><br/>
-    <span style={{ color: C.am, fontWeight: 600 }}>This is impossible with traditional simulators.</span> CasADi/IPOPT can only compute finite-difference approximations requiring 28 additional sim runs. Our analytical gradient is exact, computed in a single backward pass.
-  </div>
-</div>
+  const top5 = sensData.slice(0, 5);
+  const maxAbsSens = Math.max(...sensData.map(s => s.absSens));
 
+  return (
+    <div>
+      {/* Data source indicator */}
+      <div style={{
+        ...GL, padding: "6px 12px", marginBottom: 10,
+        borderLeft: `2px solid ${useLive ? C.gn : C.am}`,
+        display: "flex", alignItems: "center", gap: 10,
+        fontSize: 8, fontFamily: C.dt, letterSpacing: 1,
+      }}>
+        <span style={{ color: useLive ? C.gn : C.am, fontWeight: 700 }}>
+          {useLive ? "◉ LIVE" : "◎ DEMO"}
+        </span>
+        <span style={{ color: C.dm }}>
+          {useLive
+            ? `Gradients from gradient_server.py (compute ${gradServer.computeMs?.toFixed(0)}ms) · lap_time=${gradServer.lapTime?.toFixed(3)}s`
+            : "Synthetic data · start scripts/gradient_server.py and toggle LIVE mode for real ∂t_lap/∂param"
+          }
+        </span>
+      </div>
 
-);
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 10, marginBottom: 14 }}>
+        {top5.map((d) => (
+          <KPI key={d.param} label={`#${d.rank} ${d.param}`}
+            value={`${d.dtLap > 0 ? "+" : ""}${(d.dtLap * 1000).toFixed(1)} ms`}
+            sub={d.sign === "faster" ? "decrease → faster" : "decrease → slower"}
+            sentiment={d.dtLap < 0 ? "positive" : "amber"} delay={d.rank - 1} />
+        ))}
+      </div>
+
+      <Sec title={useLive
+        ? "∂t_lap / ∂(setup_param) — 28-Parameter Sensitivity [ms] · LIVE from jax.grad"
+        : "∂t_lap / ∂(setup_param) — 28-Parameter Sensitivity [ms] · Demo data"}>
+        <GC><ResponsiveContainer width="100%" height={420}>
+          <BarChart data={sensData} layout="vertical" margin={{ top: 8, right: 16, bottom: 8, left: 90 }}>
+            <CartesianGrid strokeDasharray="3 3" stroke={GS} horizontal={false} />
+            <XAxis type="number" {...ax()} domain={[-maxAbsSens * 1.1, maxAbsSens * 1.1]}
+              tickFormatter={v => `${(v * 1000).toFixed(0)}ms`} />
+            <YAxis dataKey="param" type="category" tick={{ fontSize: 8, fill: C.br, fontFamily: C.dt }} stroke={C.b1} width={85} />
+            <Tooltip contentStyle={TT} formatter={v => `${(v * 1000).toFixed(1)} ms`} />
+            <ReferenceLine x={0} stroke={C.dm} />
+            <Bar dataKey="dtLap" barSize={12} radius={[4, 4, 4, 4]} name="∂t_lap">
+              {sensData.map((e, i) => <Cell key={i} fill={e.dtLap < 0 ? C.gn : C.am} fillOpacity={0.7} />)}
+            </Bar>
+          </BarChart>
+        </ResponsiveContainer></GC>
+      </Sec>
+
+      <div style={{ ...GL, padding: "10px 14px", marginTop: 10, fontSize: 9, color: C.dm, fontFamily: C.dt, lineHeight: 1.7 }}>
+        The top 5 most sensitive parameters should be tuned with highest priority.
+        Parameters with near-zero sensitivity can be safely fixed at nominal values, reducing the effective optimization dimensionality.
+        <br/><br/>
+        <span style={{ color: C.am, fontWeight: 600 }}>This is impossible with traditional simulators.</span> CasADi/IPOPT can only compute finite-difference approximations requiring 28 additional sim runs. Our analytical gradient is exact, computed in a single backward pass.
+        {useLive && (
+          <>
+            <br/><br/>
+            <span style={{ color: C.gn, fontWeight: 600 }}>Live computation:</span> gradient_server.py runs jax.value_and_grad(simulate_full_lap)(setup) on each request. One forward + one backward pass yields all 28 partials in {gradServer.computeMs?.toFixed(0)}ms.
+          </>
+        )}
+      </div>
+    </div>
+  );
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -825,12 +870,22 @@ return (
 // ═══════════════════════════════════════════════════════════════════════════
 // MAIN EXPORT
 // ═══════════════════════════════════════════════════════════════════════════
-export default function DifferentiableInsightsModule() {
-const [tab, setTab] = useState("jacobian");
+export default function DifferentiableInsightsModule({ mode = "ANALYZE" }) {
+  const [tab, setTab] = useState("jacobian");
 
-return (
-<div>
-{/* Header banner */}
+  // Live gradient connection — active when mode === "LIVE"
+  const gradServer = useGradientServer();
+  const { fetchDefault, connected: gradConnected, lapTime, computeMs } = gradServer;
+
+  useEffect(() => {
+    if (mode === "LIVE" && gradConnected) {
+      fetchDefault();
+    }
+  }, [mode, gradConnected, fetchDefault]);
+
+  return (
+    <div>
+      {/* Header banner */}
 <div style={{
 ...GL, padding: "12px 16px", marginBottom: 14,
 borderLeft: `3px solid ${C.cy}`,
@@ -843,11 +898,28 @@ background: `linear-gradient(90deg, ${C.cy}08, transparent)`,
 DIFFERENTIABLE INSIGHTS
 </span>
 <span style={{ fontSize: 9, color: C.dm, fontFamily: C.dt, marginLeft: 12 }}>
-Analytical gradients through the full physics engine — impossible with traditional simulators
-</span>
-</div>
-</div>
-</div>
+            Analytical gradients through the full physics engine — impossible with traditional simulators
+          </span>
+        </div>
+        <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 8 }}>
+          <div style={{
+            width: 6, height: 6, borderRadius: "50%",
+            background: mode === "LIVE" && gradConnected ? C.gn : C.am,
+            boxShadow: mode === "LIVE" && gradConnected ? `0 0 8px ${C.gn}` : "none",
+          }} />
+          <span style={{ fontSize: 8, fontWeight: 700, letterSpacing: 1.5, fontFamily: C.dt,
+                         color: mode === "LIVE" && gradConnected ? C.gn : C.am }}>
+            {mode === "LIVE" && gradConnected ? "LIVE GRADIENTS" :
+             mode === "LIVE" ? "SERVER OFFLINE" : "DEMO DATA"}
+          </span>
+          {mode === "LIVE" && gradConnected && lapTime != null && (
+            <span style={{ fontSize: 8, color: C.dm, fontFamily: C.dt, marginLeft: 4 }}>
+              t_lap={lapTime.toFixed(3)}s · ∇={computeMs?.toFixed(0)}ms
+            </span>
+          )}
+        </div>
+      </div>
+    </div>
 
 
   {/* Cross-link to Aerodynamics module */}
@@ -869,7 +941,7 @@ Analytical gradients through the full physics engine — impossible with traditi
 
   {tab === "jacobian" && <JacobianTab />}
   {tab === "eigen" && <EigenTab />}
-  {tab === "lapSens" && <LapSensTab />}
+  {tab === "lapSens" && <LapSensTab gradServer={gradServer} mode={mode} />}
   {tab === "hnetGrad" && <HnetGradTab />}
   {tab === "fim" && <FIMTab />}
   {tab === "wmpcCost" && <WMPCCostTab />}

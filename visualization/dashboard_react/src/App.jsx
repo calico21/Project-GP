@@ -48,6 +48,7 @@ import AerodynamicsModule from "./AerodynamicsModule.jsx";
 import ElectronicsModule from "./ElectronicsModule.jsx";
 import PowertrainControlModule from "./PowertrainControlModule.jsx";
 import TorqueVectoringSimModule from "./TorqueVectoringSimModule.jsx";
+import SuspensionExplorerModule from "./SuspensionExplorerModule.jsx";
 
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -69,6 +70,7 @@ const NAV_GROUPS = [
     label: "VEHICLE DYNAMICS", accent: C.am, items: [
       { key: "setup",      label: "Setup Opt",   icon: "◆" },
       { key: "suspension", label: "Suspension",  icon: "△" },
+      { key: "explorer", label: "Setup Explorer", icon: "⬢" },
       { key: "tire",       label: "Tire Physics", icon: "⊗" },
       { key: "weight",     label: "Weight & CG", icon: "⊿" },
     ],
@@ -282,10 +284,10 @@ energy={energy}
   case "coaching":    return <DriverCoachingModule />;
   case "endurance":   return <EnduranceStrategyModule />;
   case "suspension":  return <SuspensionModule data={susp} />;
+  case "explorer": return <SuspensionExplorerModule mode={mode} />;
   case "weight":      return <WeightBalanceModule />;
   case "compliance":  return <ComplianceModule />;
-  case "diff":        return <DifferentiableInsightsModule />;
-  case "research":    return <ResearchModule />;
+  case "diff": return <DifferentiableInsightsModule mode={mode} />;  case "research":    return <ResearchModule />;
   case "powertrain": return <PowertrainControlModule />;
   case "tvsim": return <TorqueVectoringSimModule />;
 
