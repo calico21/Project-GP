@@ -48,7 +48,27 @@ from powertrain.modes.advanced.koopman_tv import (
     KoopmanTVBundle, KoopmanTVConfig, make_default_koopman_bundle,
     koopman_mz_reference,
 )
+from powertrain.modes.advanced.explicit_mpqp_allocator import (
+    QPParams, explicit_allocator_step, ExplicitAllocatorState,
+    init_explicit_allocator_state,
+)
+from powertrain.modes.advanced.active_set_classifier import load_classifier
 
+from powertrain.modes.advanced.explicit_mpqp_allocator import make_explicit_allocator_step
+
+_EXPLICIT_ALLOC_STEP = None
+
+def _get_alloc_step():
+    global _EXPLICIT_ALLOC_STEP
+    if _EXPLICIT_ALLOC_STEP is None:
+        try:
+            clf = load_classifier()
+            _EXPLICIT_ALLOC_STEP = make_explicit_allocator_step(clf)
+            print("[TV] Loaded explicit mpQP classifier (Batch 3).")
+        except FileNotFoundError:
+            print("[TV] WARNING: active_set_classifier.bytes not found — "
+                  "falling back to projected-gradient SOCP.")
+    return _EXPLICIT_ALLOC_STEP
 
 # ─────────────────────────────────────────────────────────────────────────────
 # §1  Vehicle Geometry Constants (from vehicle_params)
@@ -703,23 +723,39 @@ def tv_step(
     mu_per_wheel = jnp.full(4, mu_est)
 
     # ── 5. SOCP allocation ──────────────────────────────────────────────
-    T_alloc = solve_torque_allocation(
-        T_warmstart=tv_state.T_qp_prev,   # v3: warm-start from previous QP
-        T_prev=tv_state.T_prev,
-        Fx_target=Fx_driver,
-        Mz_target=Mz_target,
-        delta=delta,
-        Fz=Fz,
-        Fy=Fy,
-        mu=mu_per_wheel,
-        omega_wheel=omega_wheel,
-        T_min=T_min,
-        T_max=T_max,
-        P_max=P_max,
-        T_ribs=T_ribs,
-        geo=geo,
-        w=w,
-    )
+    _alloc_step = _get_alloc_step()
+    if _alloc_step is not None:
+        _t_fric = mu_per_wheel * Fz * geo.r_w
+        _qp_params = QPParams(
+            mz_ref  = Mz_target,
+            fx_d    = Fx_driver,
+            t_min   = T_min,
+            t_max   = T_max,
+            t_fric  = _t_fric,
+            delta   = delta,
+            t_prev  = tv_state.T_qp_prev,
+            omega   = omega_wheel,
+        )
+        T_alloc, _active_set, _polished = _alloc_step(_qp_params, geo, w)
+    else:
+        # Fallback: original projected-gradient SOCP (unchanged)
+        T_alloc = solve_torque_allocation(
+            T_warmstart=tv_state.T_qp_prev,
+            T_prev=tv_state.T_prev,
+            Fx_target=Fx_driver,
+            Mz_target=Mz_target,
+            delta=delta,
+            Fz=Fz,
+            Fy=Fy,
+            mu=mu_per_wheel,
+            omega_wheel=omega_wheel,
+            T_min=T_min,
+            T_max=T_max,
+            P_max=P_max,
+            T_ribs=T_ribs,
+            geo=geo,
+            w=w,
+        )
 
     # ── 6. CBF safety filter ────────────────────────────────────────────
     Fy_total = jnp.sum(Fy)

@@ -72,6 +72,8 @@ import jax
 import jax.numpy as jnp
 import flax.linen as nn
 import flax.serialization
+from physics.h_net_icnn import PassiveHNet
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Module-level XLA-static constants
@@ -735,7 +737,7 @@ class DifferentiableMultiBodyVehicle:
                   "run train_neural_residuals() first.")
 
         # h_scale=1.0 ALWAYS — weights were trained with h_scale=1.0 default.
-        self.H_net    = NeuralEnergyLandscape(M_diag=self.M_diag, h_scale=1.0)
+        self.H_net    = PassiveHNet(q_dim=14, p_dim=14, setup_dim=28)
         self.R_net    = NeuralDissipationMatrix(dim=14)
         self.aero_map = PhysicsInformedAeroMap(
             base_A  = self.vp.get('A_ref',  1.10),
@@ -832,7 +834,12 @@ class DifferentiableMultiBodyVehicle:
         q, v = x[0:14], x[14:28]
         p    = self.M_diag * v
 
-        grad_H_fn    = jax.grad(self.H_net.apply, argnums=(1, 2))
+        def _full_H(h_params, q_, p_, setup_):
+            T       = 0.5 * jnp.sum((p_ ** 2) / (self.M_diag + 1e-8))
+            V       = 0.5 * jnp.sum(q_[6:10] ** 2) * _V_STRUCT_PRIOR_K
+            susp_sq = jnp.sum((q_[6:10] - _Z_EQ) ** 2) + 1e-4
+            return T + V + self.H_net.apply(h_params, q_, p_, setup_) * susp_sq
+        grad_H_fn    = jax.grad(_full_H, argnums=(1, 2))
         dH_dq, dH_dp = grad_H_fn(self.H_params, q, p, setup_params)
 
         FORCE_CAP = 12000.0; VEL_CAP = 150.0

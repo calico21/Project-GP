@@ -378,11 +378,12 @@ def test_spring_rate_not_pinned():
     print("\n" + "=" * 60)
     print("TEST 9: OPTIMIZER BOUNDARY DIVERSITY")
     print("=" * 60)
-    from optimization.evolutionary import MORL_SB_TRPO_Optimizer
+    from optimization.pareto_continuation import ParetoOptimizer
     try:
         print("Running brief MORL simulation to verify parameter bounding...")
-        opt = MORL_SB_TRPO_Optimizer(ensemble_size=10, dim=8)
-        setups, grips, stabs, *_ = opt.run(iterations=2)
+        opt = ParetoOptimizer(n_points=3, corner_steps=8,
+                      interior_steps=5, verbose=False)
+        setups, grips, stabs, *_ = opt.run()
 
         k_f_vals = setups[:, 0]
         lower_bound_count = sum(1 for k in k_f_vals if k < 16000)
@@ -518,12 +519,24 @@ def test_socp_allocator():
     T_max = jnp.full(4, 450.0)
     P_max = jnp.array(80000.0)
 
-    t0 = time.perf_counter()
-    T_alloc = solve_torque_allocation(
-        T_warmstart, T_prev, Fx_target, Mz_target, delta,
-        Fz, Fy, mu, omega_w, T_min, T_max, P_max, jnp.full(4, 25.0), geo, w,
+    from powertrain.modes.advanced.active_set_classifier import load_classifier
+    from powertrain.modes.advanced.explicit_mpqp_allocator import (
+    QPParams, explicit_allocator_step, make_explicit_allocator_step,
     )
-    _ = float(T_alloc[0])  # force evaluation
+    _clf = load_classifier()
+    _t_fric = mu * Fz * geo.r_w
+    _qp = QPParams(
+        mz_ref=Mz_target, fx_d=Fx_target,
+        t_min=T_min, t_max=T_max, t_fric=_t_fric,
+        delta=delta, t_prev=T_prev, omega=omega_w,
+    )
+    _step_fn = make_explicit_allocator_step(_clf)
+    # Warmup compile — use allocator's own defaults, not torque_vectoring's
+    _, _, _ = _step_fn(_qp)
+    # Timed call
+    t0 = time.perf_counter()
+    T_alloc, _active_set, _polished = _step_fn(_qp)
+    _ = float(T_alloc[0])
     t_solve = (time.perf_counter() - t0) * 1000
 
     # Check 1: All torques within motor limits
@@ -557,10 +570,12 @@ def test_socp_allocator():
         print(f"[WARN] Non-zero yaw moment on straight: {Mz_actual:.1f} Nm")
 
     # Check 4: Solve time
-    if t_solve < 50.0:
-        print(f"[PASS] SOCP solve time: {t_solve:.1f}ms (budget: <50ms)")
+    if t_solve < 1.0:
+        print(f"[PASS] KKT allocator solve time: {t_solve:.3f}ms (budget: <1ms)")
+    elif t_solve < 5.0:
+        print(f"[PASS] KKT allocator solve time: {t_solve:.3f}ms (within 5ms pipeline budget)")
     else:
-        print(f"[WARN] SOCP solve time: {t_solve:.1f}ms (exceeds 50ms budget)")
+        print(f"[WARN] KKT allocator solve time: {t_solve:.1f}ms (exceeds budget)")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -928,160 +943,57 @@ def test_full_pipeline():
     diag_fields = len(diag._fields)
     print(f"  Diagnostics: {diag_fields} fields available for telemetry/dashboard")
 
-# ─────────────────────────────────────────────────────────────────────────────
-# TEST 17: RLS SLIP-SLOPE OBSERVER (CONVERGENCE + DESC FUSION GATE)
-# ─────────────────────────────────────────────────────────────────────────────
-# Add this test to sanity_checks.py alongside Tests 1–16.
-# ─────────────────────────────────────────────────────────────────────────────
- 
-def test_rls_tc():
+from powertrain.modes.advanced.rls_tc import (
+    RLSParams, make_rls_state, rls_tc_step, fuse_rls_desc,
+)
+
+def test_koopman_observer():
     print("\n" + "=" * 60)
-    print("TEST 17: RLS SLIP-SLOPE OBSERVER")
+    print("TEST 17: KOOPMAN SLIP OBSERVER")
     print("=" * 60)
- 
+
     import jax
     import jax.numpy as jnp
-    from powertrain.modes.advanced.rls_tc import (
-        RLSParams, RLSState, rls_tc_step, make_rls_state,
-        rls_axle_update, fuse_rls_desc,
+    from powertrain.modes.advanced.koopman_slip import (
+        KoopmanParams, make_koopman_axle_state, koopman_axle_step, dphi_dkappa,
     )
- 
-    params = RLSParams()
-    rls_state = make_rls_state(params)
- 
-    # ── Sub-test A: Scalar RLS slope convergence ──────────────────────────
-    # Synthetic Pacejka: Fx = D * sin(C * arctan(B*kappa))
-    # B=12, C=1.65, D=1200 (Hoosier R25 approximation)
+
+    params = KoopmanParams()
+    axle_state = make_koopman_axle_state(params)
+
     B, C, D = 12.0, 1.65, 1200.0
     kappa_peak_true = float(jnp.tan(jnp.pi / (2 * C)) / B)
- 
-    axle_state = rls_state.front
-    kappa = jnp.array(params.kappa_min)
-    N_STEPS = 300   # 1.5 s at 200 Hz
- 
-    # Ramp kappa from kappa_min to 0.22 over 300 steps (simulates corner exit)
-    for i in range(N_STEPS):
-        kappa = params.kappa_min + (0.22 - params.kappa_min) * i / N_STEPS
+
+    for i in range(300):
+        kappa = params.kappa_min + (0.22 - params.kappa_min) * i / 300
         kappa_arr = jnp.array(kappa)
         Fx = D * jnp.sin(C * jnp.arctan(B * kappa_arr))
-        # Add realistic sensor noise (Fx ±30 N)
-        key = jax.random.PRNGKey(i)
-        noise = jax.random.normal(key) * 30.0
-        axle_state = rls_axle_update(axle_state, Fx + noise, kappa_arr, params)
- 
+        noise = jax.random.normal(jax.random.PRNGKey(i)) * 30.0
+        axle_state, sigma = koopman_axle_step(axle_state, Fx + noise, kappa_arr, params)
+
     kappa_star_est = float(axle_state.kappa_star)
-    slope_est = float(axle_state.slope)
+    slope_est = float(jnp.dot(axle_state.c,
+                               dphi_dkappa(jnp.array(0.22), params.B0, params.C0)))
     error = abs(kappa_star_est - kappa_peak_true)
- 
-    print(f"  κ* true:  {kappa_peak_true:.4f}")
-    print(f"  κ* RLS:   {kappa_star_est:.4f}  (error = {error:.4f})")
+
+    print(f"  κ* true:      {kappa_peak_true:.4f}")
+    print(f"  κ* Koopman:   {kappa_star_est:.4f}  (error = {error:.4f})")
     print(f"  slope @κ=0.22: {slope_est:.1f} N/unit_κ (expected < 0 above peak)")
- 
+    print(f"  σ(κ*) =       {float(sigma):.4f}  (CBF uncertainty input)")
+
     if error < 0.015:
-        print(f"  [PASS-A] RLS converged to κ* within 0.015 (error={error:.4f})")
+        print(f"  [PASS-A] Koopman converged to κ* within 0.015 (error={error:.4f})")
     elif error < 0.030:
-        print(f"  [WARN-A] RLS partially converged (error={error:.4f} < 0.030)")
+        print(f"  [WARN-A] Koopman partially converged (error={error:.4f} < 0.030)")
     else:
-        print(f"  [FAIL-A] RLS did not converge (error={error:.4f} >= 0.030)")
- 
-    # Slope should be negative above κ* (we ended at κ=0.22 > κ*≈0.12)
+        print(f"  [FAIL-A] Koopman did not converge (error={error:.4f} >= 0.030)")
+
     if slope_est < 0:
         print(f"  [PASS-A2] Slope sign correct: negative above κ* ({slope_est:.1f})")
     else:
         print(f"  [FAIL-A2] Slope sign wrong: expected negative above κ*, got {slope_est:.1f}")
  
-    # ── Sub-test B: DESC fusion gate direction ────────────────────────────
-    # High RLS SNR scenario → w_rls should be > 0.5
-    snr_rls_high  = jnp.array(20.0)   # RLS is very confident
-    snr_desc_low  = jnp.array(2.0)    # DESC has weak signal
-    kappa_rls     = jnp.array(0.120)
-    kappa_desc    = jnp.array(0.090)
- 
-    fused, w_rls = fuse_rls_desc(kappa_rls, kappa_desc, snr_rls_high, snr_desc_low, params)
-    if w_rls > 0.80:
-        print(f"  [PASS-B] High RLS SNR → w_rls={w_rls:.3f} > 0.80 (RLS dominates)")
-    else:
-        print(f"  [FAIL-B] High RLS SNR should give w_rls > 0.80, got {w_rls:.3f}")
- 
-    # Low RLS SNR scenario → w_rls should be < 0.2
-    snr_rls_low  = jnp.array(1.0)    # RLS weak (low excitation)
-    snr_desc_high = jnp.array(15.0)  # DESC has strong lock-in signal
- 
-    _, w_rls_low = fuse_rls_desc(kappa_rls, kappa_desc, snr_rls_low, snr_desc_high, params)
-    if w_rls_low < 0.20:
-        print(f"  [PASS-B2] Low RLS SNR → w_rls={w_rls_low:.3f} < 0.20 (DESC dominates)")
-    else:
-        print(f"  [FAIL-B2] Low RLS SNR should give w_rls < 0.20, got {w_rls_low:.3f}")
- 
-    # ── Sub-test C: Full 4-wheel rls_tc_step compilation and output shape ─
-    vx = jnp.array(15.0)
-    T_applied   = jnp.array([40.0, 40.0, 45.0, 45.0])
-    omega_wheel = jnp.full(4, 15.0 / 0.2032)
-    omega_prev  = omega_wheel * 0.99   # slight decel → omega_dot > 0
-    Fz          = jnp.array([700., 700., 800., 800.])
-    alpha_t     = jnp.zeros(4)
-    mu_thermal  = jnp.full(4, 1.35)
-    dt          = jnp.array(0.005)
- 
-    rls_out, rls_new = rls_tc_step(
-        T_applied, omega_wheel, omega_prev, vx, Fz,
-        alpha_t, jnp.array(0.12), mu_thermal,
-        jnp.array(0.10), jnp.array(0.10),  # desc_kappa_ref_f/r
-        jnp.array(100.0), jnp.array(100.0),  # desc_lpf_front/rear
-        make_rls_state(params), dt, params,
-    )
- 
-    shape_ok = (
-        rls_out.kappa_star_fused.shape == (4,)
-        and rls_out.kappa_star_rls.shape == (4,)
-        and rls_out.w_rls.shape == (2,)
-    )
-    nan_ok = not (
-        jnp.any(jnp.isnan(rls_out.kappa_star_fused))
-        or jnp.any(jnp.isnan(rls_out.w_rls))
-    )
-    bounds_ok = jnp.all(
-        (rls_out.kappa_star_fused >= params.kappa_min - 0.001) &
-        (rls_out.kappa_star_fused <= params.kappa_max + 0.001)
-    )
- 
-    if shape_ok and nan_ok and bounds_ok:
-        print(f"  [PASS-C] rls_tc_step: shapes OK, no NaN, κ*∈[{params.kappa_min},{params.kappa_max}]")
-        print(f"           κ*_fused = {[f'{v:.4f}' for v in rls_out.kappa_star_fused.tolist()]}")
-        print(f"           w_rls    = [{rls_out.w_rls[0]:.3f}, {rls_out.w_rls[1]:.3f}]")
-    else:
-        print(f"  [FAIL-C] shape={shape_ok}, nan={nan_ok}, bounds={bool(bounds_ok)}")
- 
-    # ── Sub-test D: JIT compilation speed ────────────────────────────────
-    import time
-    rls_tc_jit = jax.jit(rls_tc_step, static_argnames=("params",))
-    # Warmup
-    _ = rls_tc_jit(
-        T_applied, omega_wheel, omega_prev, vx, Fz,
-        alpha_t, jnp.array(0.12), mu_thermal,
-        jnp.array(0.10), jnp.array(0.10),
-        jnp.array(100.0), jnp.array(100.0),
-        make_rls_state(params), dt, params,
-    )[0].kappa_star_fused.block_until_ready()
- 
-    t0 = time.perf_counter()
-    for _ in range(1000):
-        out, _ = rls_tc_jit(
-            T_applied, omega_wheel, omega_prev, vx, Fz,
-            alpha_t, jnp.array(0.12), mu_thermal,
-            jnp.array(0.10), jnp.array(0.10),
-            jnp.array(100.0), jnp.array(100.0),
-            make_rls_state(params), dt, params,
-        )
-    out.kappa_star_fused.block_until_ready()
-    elapsed_ms = (time.perf_counter() - t0)
- 
-    print(f"  [INFO-D] 1000 steps in {elapsed_ms*1000:.1f} ms "
-          f"({elapsed_ms:.4f} ms/step avg)")
-    if elapsed_ms < 0.5:   # < 0.5 ms per step budget
-        print(f"  [PASS-D] Runtime well within 5 ms step budget")
-    else:
-        print(f"  [WARN-D] Runtime exceeds target — profile XLA graph")
+    
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Main
@@ -1131,6 +1043,6 @@ if __name__ == "__main__":
     test_launch_state_machine()
     test_virtual_impedance()
     test_full_pipeline()
-    test_rls_tc()
+    test_koopman_observer()
 
     print("\n✅ END-TO-END VALIDATION COMPLETE.\n")

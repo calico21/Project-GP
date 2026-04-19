@@ -54,6 +54,10 @@ from powertrain.modes.advanced.rls_tc import (
     RLSParams, RLSState, RLSOutput,
     rls_tc_step, make_rls_state,
 )
+from powertrain.modes.advanced.koopman_slip import (
+    KoopmanState, KoopmanParams, make_koopman_state,
+    koopman_observer_step, KoopmanOutput,
+)
 import jax
 import jax.numpy as jnp
 from functools import partial
@@ -390,7 +394,7 @@ class TCState(NamedTuple):
     omega_prev: jax.Array     # (4,) previous wheel speeds
     kappa_star: jax.Array     # (4,) current targets
     t_current: jax.Array      # scalar: accumulated sim time [s] for DESC dither phase
-    rls: RLSState             # Batch 2: RLS slip-slope observer state
+    koopman: KoopmanState     # Batch 4: Koopman slip observer state
 
     @classmethod
     def default(cls, params: DESCParams = DESCParams()) -> "TCState":
@@ -407,7 +411,7 @@ def make_tc_state(
         omega_prev=jnp.zeros(4),
         kappa_star=jnp.full(4, params.kappa_init),
         t_current=jnp.array(0.0),
-        rls=make_rls_state(rls_params),    # Batch 2: RLS init
+        koopman=make_koopman_state(),       # Batch 4: Koopman init
     )
 
 class TCOutput(NamedTuple):
@@ -482,24 +486,18 @@ def tc_step(
                                          omega_wheel, vx, dt, desc_params)
 
     # ── 5. RLS observer step (Batch 2: primary κ* path) ──────────────────
-    rls_out, rls_new = rls_tc_step(
-        T_applied      = T_applied,
-        omega_wheel    = omega_wheel,
-        omega_prev     = tc_state.omega_prev,
-        vx             = vx,
-        Fz             = Fz,
-        alpha_t        = alpha_t,
-        alpha_peak     = jnp.array(alpha_peak),
-        mu_thermal     = mu_per_wheel,
-        desc_kappa_ref_f = kappa_ref_f,
-        desc_kappa_ref_r = kappa_ref_r,
-        desc_lpf_front   = desc_f_new.lpf_state,
-        desc_lpf_rear    = desc_r_new.lpf_state,
-        rls_state      = tc_state.rls,
-        dt             = dt,
-        # RLSParams uses defaults — add rls_params to tc_step signature if
-        # you want to override from PowertrainConfig (see NOTE below).
-    )
+    rls_out, koopman_new = koopman_observer_step(
+        T_applied     = T_applied,
+        omega_wheel   = omega_wheel,
+        omega_prev    = tc_state.omega_prev,
+        vx            = vx,
+        Fz            = Fz,
+        alpha_t       = alpha_t,
+        alpha_peak    = jnp.array(alpha_peak),
+        mu_thermal    = mu_per_wheel,
+        koopman_state = tc_state.koopman,
+        dt            = dt,
+    )  
 
     # ── 6. kappa_star: RLS fused output replaces the old Pacejka+DESC blend
     #     The Pacejka model is kept as a clip guard (physical upper bound).
@@ -537,7 +535,7 @@ def tc_step(
         confidence     = conf,
         # Batch 2 diagnostics
         rls_output     = rls_out,
-        kappa_star_rls = rls_out.kappa_star_rls,
+        kappa_star_rls = rls_out.kappa_star_fused,
         w_rls          = rls_out.w_rls,
         slope_front    = rls_out.slope_front,
         slope_rear     = rls_out.slope_rear,
@@ -549,7 +547,7 @@ def tc_step(
         omega_prev  = omega_wheel,
         kappa_star  = kappa_star,
         t_current   = t + dt,
-        rls         = rls_new,          # Batch 2: propagate RLS state
+        koopman     = koopman_new,      # Batch 4: propagate Koopman state
     )
     return output, new_state
 
