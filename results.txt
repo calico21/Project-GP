@@ -87,6 +87,40 @@ Executing single simulate_step (dt=0.01s)...
 [PASS] Forward pass is mathematically stable and outputs are finite.
 
 ============================================================
+TEST 3: WMPC CIRCULAR TRACK OPTIMIZATION
+============================================================
+Solving MPC for constant curvature (R=20m). Expected physical limit ~16.6 m/s (PASS envelope: 13.0–17.5 m/s)...
+[VehicleDynamics] H_net train scale (diagnostic): 4977.7896 J  [NOT applied to architecture]
+[VehicleDynamics] Loaded h_net.bytes
+[VehicleDynamics] Loaded r_net.bytes
+   [DEBUG] 200-step rollout clean. Final vx=18.119 m/s — physics is stable.
+[VehicleDynamics] H_net train scale (diagnostic): 4977.7896 J  [NOT applied to architecture]
+[VehicleDynamics] Loaded h_net.bytes
+[VehicleDynamics] Loaded r_net.bytes
+[Diff-WMPC] Built canonical 28-param setup (k_f=35030, arb_f=200)
+[Diff-WMPC] Physics P-ctrl warm start (N=64, Kp=6000 N/(m/s)).
+[Diff-WMPC] AL iter 1/5 — ρ=10.0, λ_max=0.000
+[Diff-WMPC] Optimising 3-level Db4 basis over N=64 via L-BFGS-B…
+[Diff-WMPC] Constraint max violation: 0.5830 (0=feasible). Updated λ_max=5.830
+[Diff-WMPC] AL iter 2/5 — ρ=40.0, λ_max=5.830
+[Diff-WMPC] Optimising 3-level Db4 basis over N=64 via L-BFGS-B…
+[Diff-WMPC] Constraint max violation: 0.5830 (0=feasible). Updated λ_max=29.152
+[Diff-WMPC] AL iter 3/5 — ρ=150.0, λ_max=29.152
+[Diff-WMPC] Optimising 3-level Db4 basis over N=64 via L-BFGS-B…
+[Diff-WMPC] Constraint max violation: 0.5830 (0=feasible). Updated λ_max=116.609
+[Diff-WMPC] AL iter 4/5 — ρ=500.0, λ_max=116.609
+[Diff-WMPC] Optimising 3-level Db4 basis over N=64 via L-BFGS-B…
+[Diff-WMPC] Constraint max violation: 0.5830 (0=feasible). Updated λ_max=408.130
+[Diff-WMPC] AL iter 5/5 — ρ=500.0, λ_max=408.130
+[Diff-WMPC] Optimising 3-level Db4 basis over N=64 via L-BFGS-B…
+[Diff-WMPC] Constraint max violation: 0.5830 (0=feasible). Updated λ_max=699.651
+[Diff-WMPC] L-BFGS-B converged: CONVERGENCE: RELATIVE REDUCTION OF F <= FACTR*EPSMCH (nit=1, nfev=22)
+[Diff-WMPC] Friction circle: 0.0% inside μ=1.4 (max G_combined=1.258)
+  > Solver achieved mean speed: 17.71 m/s
+  > Solver achieved Lat G: 1.60 G
+[FAIL] Solver velocity (17.71 m/s) EXCEEDS physical tire limit (17.5 m/s). Trajectory violates friction constraint.
+
+============================================================
 TEST 4: FRICTION CIRCLE (COMBINED SLIP COUPLING)
 ============================================================
 [PASS] Friction circle working: 26.0% Fy reduction at kappa=-0.15
@@ -119,6 +153,26 @@ TEST 8: SPOOL DIFFERENTIAL YAW MOMENT
 [PASS] Locked differential successfully generating track-realistic asymmetric yaw moment.
 
 ============================================================
+TEST 9: OPTIMIZER BOUNDARY DIVERSITY
+============================================================
+Running brief MORL simulation to verify parameter bounding...
+[VehicleDynamics] H_net train scale (diagnostic): 4977.7896 J  [NOT applied to architecture]
+[VehicleDynamics] Loaded h_net.bytes
+[VehicleDynamics] Loaded r_net.bytes
+
+[Pareto-IFT] Done in 189.7s  (3 candidates → 2 non-dominated)
+  Best grip:       1.5427 G
+  Stability range: -0.759–-0.748  (higher = more stable)
+
+[Pareto-IFT] Setup sensitivity (∂grip/∂param) at Pareto front:
+  Setup   Grip   Stab      k_f      k_r    arb_f    arb_r  c_low_f  c_low_r  c_high_  c_high_
+  ───────────────────────────────────────────────────────────────────────────────────────────
+      1  1.543  -0.76    -0.00    -0.00    +0.00    -0.00    -0.00    -0.00    -0.00    -0.00
+      2  1.523  -0.75    -0.00    -0.00    +0.00    -0.00    -0.00    -0.00    -0.00    -0.00
+[PASS] Optimizer search domain healthy. Lower bound fraction: 0% (Target <50%)
+[PASS] Stability cap working: max Stability_Overshoot = 0.76 ≤ 5.0
+
+============================================================
 TEST 10: MOTOR TORQUE ENVELOPE (FIELD-WEAKENING CONTINUITY)
 ============================================================
 [PASS] Low-speed torque: 119.9 Nm (expected ≈120 Nm, error <5%)
@@ -132,7 +186,7 @@ TEST 11: SOCP TORQUE ALLOCATOR (FRICTION FEASIBILITY)
 [PASS] All torques within motor limits (T=[-199.1, -199.1, -227.6, -227.6] Nm)
 [PASS] Friction circles feasible (max utilization: 1.000)
 [PASS] Straight-line yaw moment ≈ 0 (actual: 0.0 Nm)
-[PASS] KKT allocator solve time: 0.267ms (budget: <1ms)
+[PASS] KKT allocator solve time: 0.600ms (budget: <1ms)
 
 ============================================================
 TEST 12: CBF SAFETY FILTER (SIDESLIP INVARIANCE)
@@ -167,13 +221,13 @@ TEST 15: VIRTUAL IMPEDANCE (PIO SUPPRESSION)
 TEST 16: FULL POWERTRAIN PIPELINE (JIT + TIMING)
 ============================================================
   Compiling full pipeline (first call)...
-  Compile time: 0.74s
+  Compile time: 2.57s
   Running 50 warm steps for timing...
-[WARN] Per-step time: 13.016ms (exceeds 5.0ms budget — expected on CPU, OK if <1ms on target SBC)
+[WARN] Per-step time: 31.516ms (exceeds 5.0ms budget — expected on CPU, OK if <1ms on target SBC)
 [PASS] Output torques finite: [-44.5, 55.3, -41.8, 57.1] Nm
 [PASS] Thermal dynamics active: ΔT_motor = +0.4586°C after 50 steps
 [PASS] SoC decreasing under load: 94.9770% (Δ = -0.022957%)
-  Diagnostics: 34 fields available for telemetry/dashboard
+  Diagnostics: 39 fields available for telemetry/dashboard
 
 ============================================================
 TEST 17: KOOPMAN SLIP OBSERVER
@@ -195,7 +249,20 @@ TEST 17b: KOOPMAN E-ABS SLIP CONTAINMENT (BATCH 8)
 [PASS] Disabled barrier: lockup torque trivially feasible (rhs=1e6)
 [PASS] make_slip_barrier_inputs factory: b_slip finite, b[0]=0.2308
 
+============================================================
+TEST 18: DYNAMIC REGEN BLEND (BATCH 9)
+============================================================
+[PASS] SoC taper: α = ['0.387', '0.382', '0.275', '0.193', '0.137'] (monotone ↓ with rising SoC)
+[PASS] Thermal derating: α = ['0.386', '0.386', '0.180', '0.077', '0.000'] (monotone ↓ with rising T_cell)
+[PASS] No spurious hydraulic during throttle (F_hyd = 0.69 N)
+[PASS] Battery-limited: hydraulic fills deficit (F_hyd = 5178 N, α = 0.137)
+[PASS] Energy balance: regen(2314N) + hyd(3686N) ≈ demand(6000N) (error 0.0%)
+[PASS] ∂α/∂Fx finite: 6.43e-05
+[PASS] Selective scaling: drive torques preserved, regen scaled (rear: [-180.0, -180.0] Nm)
+[PASS] Energy integrator: E_regen = 12857.0 mWh over 1.0s braking
+
 ✅ END-TO-END VALIDATION COMPLETE.
+
 
 (project_gp_env) alexr@ALEXRP:~/FS_Driver_Setup_Optimizer$ 
 
