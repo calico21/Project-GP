@@ -60,6 +60,17 @@ from powertrain.modes.advanced.virtual_impedance import (
     ImpedanceParams, ImpedanceState,
     impedance_step,
 )
+from powertrain.modes.advanced.slip_barrier import (
+    SlipBarrierInputs, SlipBarrierParams,
+    make_slip_barrier_inputs, build_slip_barrier_rows,
+)
+try:
+    from powertrain.modes.advanced.active_set_classifier import load_classifier_v2
+except ImportError:
+    load_classifier_v2 = None
+from powertrain.modes.advanced.explicit_mpqp_allocator import (
+    make_explicit_allocator_step_auto,
+)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -76,9 +87,10 @@ class PowertrainConfig(NamedTuple):
     desc: DESCParams = DESCParams()
     tc_weights: TCWeights = TCWeights()
     launch: LaunchConfig = LaunchConfig()
-    impedance: ImpedanceParams = ImpedanceParams()
+    impedance:    ImpedanceParams    = ImpedanceParams()
+    slip_barrier: SlipBarrierParams  = SlipBarrierParams()   # Batch 8
     # Global tuning
-    max_throttle_force: float = 6000.0   # N max force from throttle pedal
+    max_throttle_force: float = 6000.0
     max_brake_force: float = 8000.0      # N max force from brake pedal
     regen_blend: float = 0.7             # fraction of braking via regen (0=all friction, 1=all regen)
     is_rwd: bool = False   # True = Ter26 RWD, False = Ter27 AWD
@@ -178,6 +190,11 @@ class PowertrainDiagnostics(NamedTuple):
     # Allocator cost (for optimization diagnostics)
     allocator_cost: jax.Array       # scalar SOCP cost value
     koopman_rho: jax.Array          # scalar grip utilisation from Koopman TV [0, 1]
+
+    # Batch 8: slip-barrier diagnostics
+    slip_barrier_active: jax.Array    # scalar [0, 1]  — gate was open
+    slip_viol_max:       jax.Array    # scalar [Nm] max slip-constraint residual
+    kappa_star_fused:    jax.Array    # (4,)  κ* per wheel from Koopman
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -426,6 +443,31 @@ def powertrain_step(
     Mz_target = Kp_yaw * wz_error + Kd_yaw * dwz_ref + Mz_trail
 
     # ═══════════════════════════════════════════════════════════════════════
+    # STEP 7b: Batch 8 — Slip Barrier Inputs (E-ABS + Trail-Brake Regen)
+    # ═══════════════════════════════════════════════════════════════════════
+    # Build per-wheel κ-CBF rows from Koopman observer output.
+    # These rows enter the extended 24×24 KKT in Step 8's V2 allocator.
+    # During launch (launch_active → 1), the barrier is gated off smoothly.
+    slip_inputs = make_slip_barrier_inputs(
+        kappa_star_front = tc_output.kappa_star[0],    # FL (front axle)
+        kappa_star_rear  = tc_output.kappa_star[2],    # RL (rear  axle)
+        sigma_front      = tc_output.sigma_front if hasattr(tc_output, "sigma_front")
+                           else jnp.array(0.03),       # fallback if V1 TC
+        sigma_rear       = tc_output.sigma_rear  if hasattr(tc_output, "sigma_rear")
+                           else jnp.array(0.03),
+        kappa_measured   = tc_output.kappa_measured,
+        T_prev           = manager_state.tv.T_prev,
+        omega_wheel      = omega_wheel,
+        omega_prev       = manager_state.tc.omega_prev,
+        vx               = vx,
+        launch_active    = manager_state.launch.phase.astype(jnp.float32)
+                           / 5.0,                     # crude: phase 3 (LAUNCH) → ~0.6
+        dt               = dt,
+        r_w              = float(geo.r_w),
+        I_w              = 1.2,
+    )
+ 
+    # ═══════════════════════════════════════════════════════════════════════
     # STEP 8: SOCP Torque Allocation
     # ═══════════════════════════════════════════════════════════════════════
 
@@ -441,24 +483,48 @@ def powertrain_step(
         w_power=config.alloc_weights.w_power,
     )
 
-    T_alloc = solve_torque_allocation(
-            T_warmstart=manager_state.tv.T_prev,
-            T_prev=manager_state.tv.T_prev,
-            Fx_target=Fx_driver,
-            Mz_target=Mz_target,
-            delta=delta,
-            Fz=Fz,
-            Fy=Fy,
-            mu=mu_scaled,
-            omega_wheel=omega_wheel,
-            T_min=T_min,
-            T_max=T_max,
-            P_max=P_max,
-            T_ribs=T_tire,
-            geo=geo,
-            w=alloc_w,
-            is_rwd=config.is_rwd,
-        )
+    T_alloc_socp = solve_torque_allocation(
+        T_warmstart=manager_state.tv.T_prev,
+        T_prev=manager_state.tv.T_prev,
+        Fx_target=Fx_driver,
+        Mz_target=Mz_target,
+        delta=delta,
+        Fz=Fz,
+        Fy=Fy,
+        mu=mu_scaled,
+        omega_wheel=omega_wheel,
+        T_min=T_min,
+        T_max=T_max,
+        P_max=P_max,
+        T_ribs=T_tire,
+        geo=geo,
+        w=alloc_w,
+        is_rwd=config.is_rwd,
+    )
+    # Batch 8: enforce slip constraints via V2 extended polish
+    from powertrain.modes.advanced.explicit_mpqp_allocator import (
+        build_qp_matrices, polish_step_v2, QPParams,
+    )
+    from powertrain.modes.advanced.slip_barrier import build_slip_barrier_rows
+    A_slip_mgr, b_slip_mgr = build_slip_barrier_rows(slip_inputs, config.slip_barrier)
+    _qp_p_mgr = QPParams(
+        mz_ref=Mz_target, fx_d=Fx_driver,
+        t_min=T_min, t_max=T_max,
+        t_fric=mu_scaled * Fz * geo.r_w,
+        delta=delta, t_prev=manager_state.tv.T_prev, omega=omega_wheel,
+    )
+    from powertrain.modes.advanced.explicit_mpqp_allocator import (
+        build_qp_matrices as _bqpm, check_slip_feasibility,
+    )
+    _Q_mgr, _c_mgr = _bqpm(_qp_p_mgr, geo)
+    slip_ok_mgr = check_slip_feasibility(T_alloc_socp, A_slip_mgr, b_slip_mgr)
+    T_alloc = jax.lax.cond(
+        slip_ok_mgr,
+        lambda t: t,
+        lambda t: polish_step_v2(t, _Q_mgr, _c_mgr, _qp_p_mgr,
+                                  A_slip_mgr, b_slip_mgr),
+        T_alloc_socp,
+    )
 
     # ═══════════════════════════════════════════════════════════════════════
     # STEP 9: CBF Safety Filter
@@ -558,6 +624,9 @@ def powertrain_step(
         degradation_level=degradation,
         allocator_cost=cost_val,
         koopman_rho=jnp.array(0.0),
+        slip_barrier_active = slip_inputs.active,
+        slip_viol_max       = jnp.max(A_slip_mgr @ T_alloc - b_slip_mgr),
+        kappa_star_fused    = slip_inputs.kappa_star,
     )
 
     new_state = PowertrainManagerState(
