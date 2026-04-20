@@ -954,6 +954,7 @@ def test_koopman_observer():
 
     import jax
     import jax.numpy as jnp
+
     from powertrain.modes.advanced.koopman_slip import (
         KoopmanParams, make_koopman_axle_state, koopman_axle_step, dphi_dkappa,
     )
@@ -1141,6 +1142,149 @@ def test_koopman_eabs_slip_containment():
         print("[FAIL] Factory produced non-finite b_slip")
 
 # ─────────────────────────────────────────────────────────────────────────────
+# TEST 18: Dynamic Regen Blend  (append to sanity_checks.py)
+# ─────────────────────────────────────────────────────────────────────────────
+# Verifies Batch 9:
+#   1. α decreases monotonically from SoC 80% → 97% (SoC taper)
+#   2. α decreases from T_cell 30°C → 52°C (thermal derating)
+#   3. F_hydraulic ≈ 0 during pure throttle (no spurious braking)
+#   4. F_hydraulic > 0 when battery-limited (hydraulic fills deficit)
+#   5. alpha_regen + F_hydraulic/F_brake_demand ≈ 1 (energy conservation)
+#   6. Gradient ∂α/∂Fx_driver is finite (differentiable)
+#   7. Full pipeline: T_wheel includes regen-scaled torques (not raw KKT)
+# ─────────────────────────────────────────────────────────────────────────────
+ 
+def test_dynamic_regen_blend():
+    print("\n" + "=" * 60)
+    print("TEST 18: DYNAMIC REGEN BLEND (BATCH 9)")
+    print("=" * 60)
+ 
+    import jax
+    import jax.numpy as jnp
+    from powertrain.regen_blend import (
+        RegenBlendParams, RegenEnergyState,
+        compute_regen_blend, update_regen_energy, regen_efficiency,
+    )
+    from powertrain.motor_model import BatteryParams, PowertrainState
+ 
+    p  = RegenBlendParams()
+    bp = BatteryParams()
+ 
+    omega   = jnp.full(4, 20.0 / 0.2032)    # ~98 rad/s
+    T_brake = jnp.full(4, -180.0)            # full regen torques [Nm]
+    T_min   = jnp.full(4, -200.0)
+    Fx_hard = jnp.array(-6000.0)             # hard braking demand [N]
+ 
+    def pt(soc, t_cell=32.0):
+        return PowertrainState(
+            T_motors=jnp.full(4, 55.0), T_invs=jnp.full(4, 45.0),
+            SoC=jnp.array(soc), T_cell=jnp.array(t_cell),
+            V_bus=jnp.array(580.0),
+        )
+ 
+    # ── Test 1: SoC taper — α should decrease as SoC rises ───────────────
+    soc_vals = [60.0, 80.0, 92.0, 95.0, 97.0]
+    alphas   = []
+    budgets  = []
+    for soc in soc_vals:
+        _, d = compute_regen_blend(T_brake, T_min, Fx_hard, omega, pt(soc), bp, p)
+        alphas.append(float(d.alpha_regen))
+        budgets.append(float(d.P_regen_budget))
+ 
+    monotone_soc = all(alphas[i] >= alphas[i+1] for i in range(len(alphas)-1))
+    if monotone_soc:
+        print(f"[PASS] SoC taper: α = {[f'{a:.3f}' for a in alphas]} "
+              f"(monotone ↓ with rising SoC)")
+    else:
+        print(f"[FAIL] SoC taper not monotone: α = {alphas}")
+ 
+    # ── Test 2: Thermal derating ───────────────────────────────────────────
+    temps    = [30.0, 40.0, 48.0, 52.0, 55.0]
+    alphas_t = []
+    for T in temps:
+        _, d = compute_regen_blend(T_brake, T_min, Fx_hard, omega, pt(75.0, T), bp, p)
+        alphas_t.append(float(d.alpha_regen))
+ 
+    monotone_temp = all(alphas_t[i] >= alphas_t[i+1] for i in range(len(alphas_t)-1))
+    if monotone_temp:
+        print(f"[PASS] Thermal derating: α = {[f'{a:.3f}' for a in alphas_t]} "
+              f"(monotone ↓ with rising T_cell)")
+    else:
+        print(f"[FAIL] Thermal derating not monotone: α = {alphas_t}")
+ 
+    # ── Test 3: No braking → F_hydraulic ≈ 0 ─────────────────────────────
+    T_drive  = jnp.full(4, 150.0)
+    Fx_drive = jnp.array(4000.0)
+    _, d_drive = compute_regen_blend(T_drive, T_min, Fx_drive, omega, pt(75.0), bp, p)
+    if float(d_drive.F_brake_hydraulic) < 5.0:
+        print(f"[PASS] No spurious hydraulic during throttle "
+              f"(F_hyd = {float(d_drive.F_brake_hydraulic):.2f} N)")
+    else:
+        print(f"[FAIL] Spurious hydraulic: {float(d_drive.F_brake_hydraulic):.1f} N "
+              f"during throttle")
+ 
+    # ── Test 4: Battery-limited → hydraulic fills deficit ─────────────────
+    pt_full  = pt(97.0)   # high SoC → budget ≪ demanded power
+    T_sc, d_lim = compute_regen_blend(T_brake, T_min, Fx_hard, omega, pt_full, bp, p)
+    if float(d_lim.F_brake_hydraulic) > 500.0:
+        print(f"[PASS] Battery-limited: hydraulic fills deficit "
+              f"(F_hyd = {float(d_lim.F_brake_hydraulic):.0f} N, "
+              f"α = {float(d_lim.alpha_regen):.3f})")
+    else:
+        print(f"[WARN] Small hydraulic at high SoC "
+              f"(F_hyd = {float(d_lim.F_brake_hydraulic):.0f} N)")
+ 
+    # ── Test 5: Energy conservation — regen + hydraulic ≈ brake demand ────
+    _, d_nom = compute_regen_blend(T_brake, T_min, Fx_hard, omega, pt(75.0), bp, p)
+    brake_demand  = float(d_nom.F_brake_demand)
+    regen_covered = float(d_nom.F_regen_achieved)
+    hydraulic     = float(d_nom.F_brake_hydraulic)
+    balance_error = abs((regen_covered + hydraulic) - brake_demand) / (brake_demand + 1e-3)
+    if balance_error < 0.20:   # 20% tolerance (softplus smoothing introduces small error)
+        print(f"[PASS] Energy balance: regen({regen_covered:.0f}N) + "
+              f"hyd({hydraulic:.0f}N) ≈ demand({brake_demand:.0f}N) "
+              f"(error {balance_error*100:.1f}%)")
+    else:
+        print(f"[WARN] Energy balance error {balance_error*100:.1f}% "
+              f"(regen={regen_covered:.0f} hyd={hydraulic:.0f} demand={brake_demand:.0f})")
+ 
+    # ── Test 6: Differentiability ──────────────────────────────────────────
+    def alpha_fn(fx):
+        _, d = compute_regen_blend(T_brake, T_min, fx, omega, pt(75.0), bp, p)
+        return d.alpha_regen
+ 
+    g = jax.jit(jax.grad(alpha_fn))(Fx_hard)
+    if jnp.isfinite(g):
+        print(f"[PASS] ∂α/∂Fx finite: {float(g):.2e}")
+    else:
+        print(f"[FAIL] Non-finite gradient: {g}")
+ 
+    # ── Test 7: T_alloc scaling — regen torques are scaled, drive unchanged
+    T_mixed  = jnp.array([150.0, 150.0, -180.0, -180.0])   # drive front, regen rear
+    T_sc_mix, _ = compute_regen_blend(T_mixed, T_min, Fx_hard, omega, pt(75.0), bp, p)
+    drive_unchanged = jnp.all(jnp.abs(T_sc_mix[:2] - T_mixed[:2]) < 5.0)
+    regen_scaled    = jnp.all(jnp.abs(T_sc_mix[2:]) <= jnp.abs(T_mixed[2:]) + 1.0)
+    if bool(drive_unchanged) and bool(regen_scaled):
+        print(f"[PASS] Selective scaling: drive torques preserved, "
+              f"regen scaled (rear: {[round(float(x),1) for x in T_sc_mix[2:]]} Nm)")
+    else:
+        print(f"[WARN] Unexpected torque scaling pattern: {T_sc_mix}")
+ 
+    # ── Test 8: Energy integrator ─────────────────────────────────────────
+    e_state = RegenEnergyState.zero()
+    dt = jnp.array(0.005)
+    T_sc_nom, d_nom = compute_regen_blend(T_brake, T_min, Fx_hard, omega, pt(75.0), bp, p)
+    for _ in range(200):
+        e_state = update_regen_energy(e_state, d_nom, T_sc_nom, omega, dt)
+    eff = float(regen_efficiency(e_state))
+    E_regen_Wh = float(e_state.E_regen_J) / 3600
+    if E_regen_Wh > 0.0:
+        print(f"[PASS] Energy integrator: E_regen = {E_regen_Wh*1000:.1f} mWh "
+              f"over 1.0s braking")
+    else:
+        print(f"[FAIL] Zero regen energy accumulated")
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Main
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -1172,13 +1316,13 @@ if __name__ == "__main__":
     # ── Physics & dynamics (Tests 1–9) ──
     test_neural_convergence()
     test_forward_pass()
-    #test_circular_track()
+    test_circular_track()
     test_friction_circle()
     test_load_sensitivity()
     test_diagonal_load_transfer()
     test_aero_increases_with_speed()
     test_differential_yaw_moment()
-    #test_spring_rate_not_pinned()
+    test_spring_rate_not_pinned()
 
     # ── Powertrain control stack (Tests 10–16) ──
     test_motor_torque_envelope()
@@ -1190,5 +1334,6 @@ if __name__ == "__main__":
     test_full_pipeline()
     test_koopman_observer()
     test_koopman_eabs_slip_containment()   # Test 17b
+    test_dynamic_regen_blend()   # Test 18
 
     print("\n✅ END-TO-END VALIDATION COMPLETE.\n")

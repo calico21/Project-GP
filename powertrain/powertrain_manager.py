@@ -64,6 +64,10 @@ from powertrain.modes.advanced.slip_barrier import (
     SlipBarrierInputs, SlipBarrierParams,
     make_slip_barrier_inputs, build_slip_barrier_rows,
 )
+from powertrain.regen_blend import (
+    RegenBlendParams, RegenDiagnostics, RegenEnergyState,
+    compute_regen_blend, update_regen_energy, regen_efficiency,
+)
 try:
     from powertrain.modes.advanced.active_set_classifier import load_classifier_v2
 except ImportError:
@@ -88,11 +92,12 @@ class PowertrainConfig(NamedTuple):
     tc_weights: TCWeights = TCWeights()
     launch: LaunchConfig = LaunchConfig()
     impedance:    ImpedanceParams    = ImpedanceParams()
-    slip_barrier: SlipBarrierParams  = SlipBarrierParams()   # Batch 8
+    slip_barrier:  SlipBarrierParams  = SlipBarrierParams()   # Batch 8
+    regen:         RegenBlendParams   = RegenBlendParams()    # Batch 9
     # Global tuning
     max_throttle_force: float = 6000.0
     max_brake_force: float = 8000.0      # N max force from brake pedal
-    regen_blend: float = 0.7             # fraction of braking via regen (0=all friction, 1=all regen)
+    regen_blend: float = 0.7             # deprecated scalar — superseded by Batch 9 regen params
     is_rwd: bool = False   # True = Ter26 RWD, False = Ter27 AWD
     koopman_bundle: KoopmanTVBundle = None  # None → default inert bundle
 
@@ -122,8 +127,9 @@ class PowertrainManagerState(NamedTuple):
     impedance: ImpedanceState      # virtual impedance filter
     powertrain: PowertrainState    # electrothermal state
     # Derived persistent values
-    ax_filtered: jax.Array         # scalar: low-pass filtered longitudinal accel [m/s²]
-    ay_filtered: jax.Array         # scalar: low-pass filtered lateral accel [m/s²]
+    ax_filtered:  jax.Array         # scalar: low-pass filtered longitudinal accel [m/s²]
+    ay_filtered:  jax.Array         # scalar: low-pass filtered lateral accel [m/s²]
+    regen_energy: RegenEnergyState  # Batch 9: cumulative regen / consumption accounting
 
     @staticmethod
     def default(config: PowertrainConfig = PowertrainConfig()) -> 'PowertrainManagerState':
@@ -135,6 +141,7 @@ class PowertrainManagerState(NamedTuple):
             powertrain=PowertrainState.default(),
             ax_filtered=jnp.array(0.0),
             ay_filtered=jnp.array(0.0),
+            regen_energy=RegenEnergyState.zero(),
         )
 
 
@@ -195,6 +202,13 @@ class PowertrainDiagnostics(NamedTuple):
     slip_barrier_active: jax.Array    # scalar [0, 1]  — gate was open
     slip_viol_max:       jax.Array    # scalar [Nm] max slip-constraint residual
     kappa_star_fused:    jax.Array    # (4,)  κ* per wheel from Koopman
+ 
+    # Batch 9: dynamic regen blend
+    alpha_regen:         jax.Array    # scalar ∈ [0,1]  regen fraction of braking demand
+    F_brake_hydraulic:   jax.Array    # scalar [N]  hydraulic brake command to actuator
+    P_regen_achieved:    jax.Array    # scalar [W]  actual regen power this step
+    P_regen_budget:      jax.Array    # scalar [W]  battery-side regen power limit
+    regen_efficiency:    jax.Array    # scalar      cumulative E_regen / E_consumed
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -527,16 +541,30 @@ def powertrain_step(
     )
 
     # ═══════════════════════════════════════════════════════════════════════
+    # STEP 8b: Dynamic Regen Blend (Batch 9)
+    # ═══════════════════════════════════════════════════════════════════════
+    # Compute optimal α* from battery state (SoC, T_cell) and scale regen
+    # torques accordingly.  Hydraulic brake fills the residual deficit.
+    # T_alloc_regen replaces T_alloc into the CBF — the CBF sees the
+    # battery-feasible torques, not raw KKT outputs.
+    T_alloc_regen, regen_diag = compute_regen_blend(
+        T_alloc, T_min, Fx_driver, omega_wheel, pt, bp, config.regen,
+    )
+    regen_energy_new = update_regen_energy(
+        manager_state.regen_energy, regen_diag, T_alloc_regen, omega_wheel, dt,
+    )
+ 
+    # ═══════════════════════════════════════════════════════════════════════
     # STEP 9: CBF Safety Filter
     # ═══════════════════════════════════════════════════════════════════════
     Fy_total = jnp.sum(Fy)
     T_safe = cbf_safety_filter(
-        T_alloc, manager_state.tv.T_prev,
+        T_alloc_regen, manager_state.tv.T_prev,
         vx, vy, wz, Fz, Fy_total, mu_est, omega_wheel,
         T_min, T_max, gp_sigma, geo, config.cbf,
         is_rwd=config.is_rwd,
     )
-    cbf_intervention = jnp.linalg.norm(T_safe - T_alloc)
+    cbf_intervention = jnp.linalg.norm(T_safe - T_alloc_regen)
     cbf_active = (cbf_intervention > 1.0).astype(jnp.float32)
 
     # ═══════════════════════════════════════════════════════════════════════
@@ -627,7 +655,14 @@ def powertrain_step(
         slip_barrier_active = slip_inputs.active,
         slip_viol_max       = jnp.max(A_slip_mgr @ T_alloc - b_slip_mgr),
         kappa_star_fused    = slip_inputs.kappa_star,
+        # Batch 9
+        alpha_regen         = regen_diag.alpha_regen,
+        F_brake_hydraulic   = regen_diag.F_brake_hydraulic,
+        P_regen_achieved    = regen_diag.P_regen_achieved,
+        P_regen_budget      = regen_diag.P_regen_budget,
+        regen_efficiency    = regen_efficiency(regen_energy_new),
     )
+
 
     new_state = PowertrainManagerState(
         tv=TVState(
@@ -642,6 +677,7 @@ def powertrain_step(
         powertrain=pt_new,
         ax_filtered=ax_filt,
         ay_filtered=ay_filt,
+        regen_energy=regen_energy_new,
     )
 
     return diagnostics, new_state
