@@ -1,5 +1,3 @@
-(project_gp_env) alexr@ALEXRP:~/FS_Driver_Setup_Optimizer$ PYTHONPATH=. python sanity_checks.py
-
 ████████████████████████████████████████████████████████████
  PROJECT-GP DIGITAL TWIN: FULL SYSTEM VERIFICATION
 ████████████████████████████████████████████████████████████
@@ -9,73 +7,77 @@ TEST 1: NEURAL RESIDUAL CONVERGENCE
 ============================================================
 Training H_net and R_net for 2000 epochs (synthetic chassis flex)...
 [Neural Physics] Generating Synthetic Chassis Flex Data...
-[Neural Physics] P5 SE(3) architecture — 29 bilateral-invariant features.
-[Neural Physics] P10 setup fix — 28-param setup vector.
-[Neural Physics] GP-vX2 — setup-dependent target_H (FiLM active).
+[Neural Physics] GP-vX3 — PassiveHNet (ICNN + gauge), Phase 2 AL retired.
+[Neural Physics] Training target: H_density = target_H / susp_sq  [J/m²]
    [P10 check] setup_data shape: (5000, 28) ✓
-   [Target H] mean=14.401 J  | V_spring_dev=10.054 J  | V_arb=0.549 J  | V_torsion=3.798 J
-   [Neural Physics] H target scale: 14.3849 J  | R target scale: 76.8194
+   [Target H]       mean=14.401 J  | V_spring_dev=10.054 J  | V_arb=0.549 J  | V_torsion=3.798 J
+   [susp_sq]        mean=1.6881e-03 m²
+   [Target density] mean=8210.3 J/m²  | std=4977.8 J/m²
+   [Neural Physics] H density scale: 4977.79 J/m²  | R target scale: 76.8194
 
-[Neural Physics] Training H_net (Energy Landscape Residual)...
+[Neural Physics] Training H_net (Energy Density Residual)...
   [Config] Epochs: 2500 | AdamW | weight_decay: 1e-4
-  [P5 SE(3)] 29 bilateral-symmetric features
-  [GP-vX2] setup-dependent target: V_spring_dev + V_arb + V_torsion
-  Phase 1 (ep 1→2500): PURE MSE.
-  Phase 2 (ep 2501→2500): AL-constrained MSE | PhantomRate [α=3.0] | passivity via Augmented Lagrangian (ρ_init=1e-03)
-  Epoch  200 | Loss: 1.894711 | lr: 9.84e-04 | Phase 1 (MSE)
-  Epoch  400 | Loss: 0.969969 | lr: 9.39e-04 | Phase 1 (MSE)
-  Epoch  600 | Loss: 0.230648 | lr: 8.66e-04 | Phase 1 (MSE)
-  Epoch  800 | Loss: 0.072593 | lr: 7.70e-04 | Phase 1 (MSE)
-  Epoch 1000 | Loss: 0.032980 | lr: 6.58e-04 | Phase 1 (MSE)
-  Epoch 1200 | Loss: 0.019054 | lr: 5.36e-04 | Phase 1 (MSE)
-  Epoch 1400 | Loss: 0.012905 | lr: 4.12e-04 | Phase 1 (MSE)
-  Epoch 1600 | Loss: 0.009789 | lr: 2.94e-04 | Phase 1 (MSE)
-  Epoch 1800 | Loss: 0.008199 | lr: 1.89e-04 | Phase 1 (MSE)
-  Epoch 2000 | Loss: 0.007338 | lr: 1.05e-04 | Phase 1 (MSE)
-  Epoch 2200 | Loss: 0.006921 | lr: 4.48e-05 | Phase 1 (MSE)
-  Epoch 2400 | Loss: 0.006760 | lr: 1.39e-05 | Phase 1 (MSE)
+  [GP-vX3] PassiveHNet: ICNN + gauge. Passivity structural.
+  [GP-vX3] Target: H_density = target_H / susp_sq  [J/m²]
+  Epoch   200 | Loss: 3.693336 | lr: 9.84e-04
+  Epoch   400 | Loss: 3.613415 | lr: 9.39e-04
+  Epoch   600 | Loss: 3.315012 | lr: 8.66e-04
+  Epoch   800 | Loss: 2.686453 | lr: 7.70e-04
+  Epoch  1000 | Loss: 2.087494 | lr: 6.58e-04
+  Epoch  1200 | Loss: 1.833440 | lr: 5.36e-04
+  Epoch  1400 | Loss: 1.744488 | lr: 4.12e-04
+  Epoch  1600 | Loss: 1.701212 | lr: 2.94e-04
+  Epoch  1800 | Loss: 1.675744 | lr: 1.89e-04
+  Epoch  2000 | Loss: 1.661092 | lr: 1.05e-04
+  Epoch  2200 | Loss: 1.653876 | lr: 4.48e-05
+  Epoch  2400 | Loss: 1.651202 | lr: 1.39e-05
+
+[Neural Physics] Verifying structural passivity properties (P1–P4)...
+  P1 H≥0:         min=+5.00e+04  ✓
+  P2 H(eq,0)=0:   max|err|=0.00e+00  ✓
+  P3 ∇pH(·,0)=0:  max‖∇‖=0.00e+00  ✓
+  P4 p·∇pH≥0:     min=+0.00e+00  ✓
 
 [Neural Physics] Training R_net (Dissipation Matrix Residual)...
-  Epoch  200 | MSE Loss: 0.367977 | lr: 9.84e-04
-  Epoch  400 | MSE Loss: 0.363171 | lr: 9.39e-04
-  Epoch  600 | MSE Loss: 0.355361 | lr: 8.66e-04
-  Epoch  800 | MSE Loss: 0.125761 | lr: 7.70e-04
-  Epoch 1000 | MSE Loss: 0.111590 | lr: 6.58e-04
+  Epoch   200 | MSE Loss: 0.367977 | lr: 9.84e-04
+  Epoch   400 | MSE Loss: 0.363171 | lr: 9.39e-04
+  Epoch   600 | MSE Loss: 0.355361 | lr: 8.66e-04
+  Epoch   800 | MSE Loss: 0.125761 | lr: 7.70e-04
+  Epoch  1000 | MSE Loss: 0.111590 | lr: 6.58e-04
   [R Phase 2] Epoch 1001: fresh Adam, LR 5e-4.
-  Epoch 1200 | MSE Loss: 0.108756 | lr: 4.81e-04 | R Phase 2
-  Epoch 1400 | MSE Loss: 0.105661 | lr: 4.26e-04 | R Phase 2
-  Epoch 1600 | MSE Loss: 0.102210 | lr: 3.45e-04 | R Phase 2
-  Epoch 1800 | MSE Loss: 0.098543 | lr: 2.51e-04 | R Phase 2
-  Epoch 2000 | MSE Loss: 0.095323 | lr: 1.62e-04 | R Phase 2
-  Epoch 2200 | MSE Loss: 0.092905 | lr: 9.30e-05 | R Phase 2
-  Epoch 2400 | MSE Loss: 0.091270 | lr: 5.49e-05 | R Phase 2
-[VehicleDynamics] H_net train scale (diagnostic): 14.3849 J  [NOT applied to architecture]
+  Epoch  1200 | MSE Loss: 0.108756 | lr: 4.81e-04 | R Phase 2
+  Epoch  1400 | MSE Loss: 0.105661 | lr: 4.26e-04 | R Phase 2
+  Epoch  1600 | MSE Loss: 0.102210 | lr: 3.45e-04 | R Phase 2
+  Epoch  1800 | MSE Loss: 0.098543 | lr: 2.51e-04 | R Phase 2
+  Epoch  2000 | MSE Loss: 0.095323 | lr: 1.62e-04 | R Phase 2
+  Epoch  2200 | MSE Loss: 0.092905 | lr: 9.30e-05 | R Phase 2
+  Epoch  2400 | MSE Loss: 0.091270 | lr: 5.49e-05 | R Phase 2
+[VehicleDynamics] H_net train scale (diagnostic): 4977.7896 J  [NOT applied to architecture]
 [VehicleDynamics] Loaded h_net.bytes
 [VehicleDynamics] Loaded r_net.bytes
 
-[Neural Physics] Passive energy injection: ✗ WARN  (268.9 mJ — injection) — passivity not fully converged with synthetic data.
-[Neural Physics] FiLM sensitivity: std(H | varied_setup) = 1.5933 J  (threshold: 0.7192 J)  ✓ PASS — FiLM active
+[Neural Physics] Passive energy injection: ✗ WARN  (-929.8 mJ — phantom braking)
+[Neural Physics] FiLM sensitivity: std(H_density | varied_setup) = 65.46 J/m²  (threshold: 497.78 J/m²)  ✗ WARN — FiLM underutilized
 
 [Neural Physics] Pre-training complete!
-Scale factors:  h_scale=14.3849 J  |  r_scale=76.8194
+Scale factors:  h_scale=4977.79 J/m²  |  r_scale=76.8194
 [Neural Physics] Weights saved → /home/alexr/FS_Driver_Setup_Optimizer/models/h_net.bytes
-[Neural Physics] Scale saved   → /home/alexr/FS_Driver_Setup_Optimizer/models/h_net_scale.txt  (14.3849 J)
-[Neural Physics] LAST_TRAIN_MSE=0.006725  LAST_PHRATE=nan
+[Neural Physics] LAST_TRAIN_MSE=1.650625
 [PASS] Weights saved → /home/alexr/FS_Driver_Setup_Optimizer/models/h_net.bytes
-[PASS] Scale saved   → /home/alexr/FS_Driver_Setup_Optimizer/models/h_net_scale.txt  (14.38 J)
+[PASS] Scale saved   → /home/alexr/FS_Driver_Setup_Optimizer/models/h_net_scale.txt  (4977.79 J)
 [PASS] Test 2 will load passivity-trained H_net from disk.
 
 ============================================================
 TEST 2: 46-DOF SYMPLECTIC FORWARD PASS
 ============================================================
 Instantiating DifferentiableMultiBodyVehicle...
-[VehicleDynamics] H_net train scale (diagnostic): 14.3849 J  [NOT applied to architecture]
+[VehicleDynamics] H_net train scale (diagnostic): 4977.7896 J  [NOT applied to architecture]
 [VehicleDynamics] Loaded h_net.bytes
 [VehicleDynamics] Loaded r_net.bytes
 
   ── Passive energy budget check (u=[0,0]) ──
-  > Passive ΔKE: 1035.7 mJ  (budget: 150 mJ)
-[WARN] Energy budget EXCEEDED by 7× — passivity not yet converged.
+  > Passive ΔKE: 898.4 mJ  (budget: 150 mJ)
+[WARN] Energy budget EXCEEDED by 6× — passivity not yet converged.
 
   ── Active forward pass (u=[0.2, 1000]) ──
 Executing single simulate_step (dt=0.01s)...
@@ -83,40 +85,6 @@ Executing single simulate_step (dt=0.01s)...
   > Yaw rate built to: -0.599 rad/s
   > Transient Slip Angle FL: 0.0561 rad
 [PASS] Forward pass is mathematically stable and outputs are finite.
-
-============================================================
-TEST 3: WMPC CIRCULAR TRACK OPTIMIZATION
-============================================================
-Solving MPC for constant curvature (R=20m). Expected physical limit ~16.6 m/s (PASS envelope: 13.0–17.5 m/s)...
-[VehicleDynamics] H_net train scale (diagnostic): 14.3849 J  [NOT applied to architecture]
-[VehicleDynamics] Loaded h_net.bytes
-[VehicleDynamics] Loaded r_net.bytes
-   [DEBUG] 200-step rollout clean. Final vx=17.535 m/s — physics is stable.
-[VehicleDynamics] H_net train scale (diagnostic): 14.3849 J  [NOT applied to architecture]
-[VehicleDynamics] Loaded h_net.bytes
-[VehicleDynamics] Loaded r_net.bytes
-[Diff-WMPC] Built canonical 28-param setup (k_f=35030, arb_f=200)
-[Diff-WMPC] Physics P-ctrl warm start (N=64, Kp=6000 N/(m/s)).
-[Diff-WMPC] AL iter 1/5 — ρ=10.0, λ_max=0.000
-[Diff-WMPC] Optimising 3-level Db4 basis over N=64 via L-BFGS-B…
-[Diff-WMPC] Constraint max violation: 0.2677 (0=feasible). Updated λ_max=2.677
-[Diff-WMPC] AL iter 2/5 — ρ=40.0, λ_max=2.677
-[Diff-WMPC] Optimising 3-level Db4 basis over N=64 via L-BFGS-B…
-[Diff-WMPC] Constraint max violation: 0.1356 (0=feasible). Updated λ_max=8.101
-[Diff-WMPC] AL iter 3/5 — ρ=150.0, λ_max=8.101
-[Diff-WMPC] Optimising 3-level Db4 basis over N=64 via L-BFGS-B…
-[Diff-WMPC] Constraint max violation: 0.1384 (0=feasible). Updated λ_max=24.305
-[Diff-WMPC] AL iter 4/5 — ρ=500.0, λ_max=24.305
-[Diff-WMPC] Optimising 3-level Db4 basis over N=64 via L-BFGS-B…
-[Diff-WMPC] Constraint max violation: 0.1384 (0=feasible). Updated λ_max=93.520
-[Diff-WMPC] AL iter 5/5 — ρ=500.0, λ_max=93.520
-[Diff-WMPC] Optimising 3-level Db4 basis over N=64 via L-BFGS-B…
-[Diff-WMPC] Constraint max violation: 0.1384 (0=feasible). Updated λ_max=162.735
-[Diff-WMPC] L-BFGS-B converged: CONVERGENCE: RELATIVE REDUCTION OF F <= FACTR*EPSMCH (nit=1, nfev=20)
-[Diff-WMPC] Friction circle: 98.4% inside μ=1.4 (max G_combined=1.067)
-  > Solver achieved mean speed: 13.79 m/s
-  > Solver achieved Lat G: 0.98 G
-[PASS] Solver correctly discovered the exact physical limit of the tires.
 
 ============================================================
 TEST 4: FRICTION CIRCLE (COMBINED SLIP COUPLING)
@@ -142,72 +110,13 @@ TEST 7: AERODYNAMIC V^2 SCALING
 ============================================================
 TEST 8: SPOOL DIFFERENTIAL YAW MOMENT
 ============================================================
-[VehicleDynamics] H_net train scale (diagnostic): 14.3849 J  [NOT applied to architecture]
+[VehicleDynamics] H_net train scale (diagnostic): 4977.7896 J  [NOT applied to architecture]
 [VehicleDynamics] Loaded h_net.bytes
 [VehicleDynamics] Loaded r_net.bytes
   > Inner (RL) Force: -483.4 N | Slip: 0.494
   > Outer (RR) Force: 547.4 N | Slip: 0.500
   > Generated Diff Yaw Moment: 618.4 N.m
 [PASS] Locked differential successfully generating track-realistic asymmetric yaw moment.
-
-============================================================
-TEST 9: OPTIMIZER BOUNDARY DIVERSITY
-============================================================
-Running brief MORL simulation to verify parameter bounding...
-/home/alexr/FS_Driver_Setup_Optimizer/sanity_checks.py:384: UserWarning: [MORL] dim=8 requested but canonical dim=28. Upgrading to 28.
-  opt = MORL_SB_TRPO_Optimizer(ensemble_size=10, dim=8)
-[VehicleDynamics] H_net train scale (diagnostic): 14.3849 J  [NOT applied to architecture]
-[VehicleDynamics] Loaded h_net.bytes
-[VehicleDynamics] Loaded r_net.bytes
-
-[MORL-SB-TRPO] Initialising 28-dim Pareto Policy Ensemble…
-[SB-TRPO] Compiling 46-DOF physics gradients via XLA…
-[SB-TRPO] dim=28 | KL_threshold=0.00935 | Chebyshev N=10
-   [DIAG] Soft grip: 1.6161 G | Hard grip: 1.1117 G
-   Grip gradient norm: 0.719628
-   [OK] Gradient flow confirmed.
-
-[Phase 0] ARD-BO cold-start on 28-dim space (20 init + 80 EI)…
-   [BO] Phase 0a (20 evals): best = 1.4407 G
-   [BO] Phase 0b iter  5/80: best = 1.5087 G | mean ls_0: 1.181 ls_2: 2.000
-   [BO] Phase 0b iter 10/80: best = 1.5087 G | mean ls_0: 2.000 ls_2: 1.231
-   [BO] Phase 0b iter 15/80: best = 1.5087 G | mean ls_0: 1.809 ls_2: 1.827
-   [BO] Phase 0b iter 20/80: best = 1.5443 G | mean ls_0: 1.808 ls_2: 1.931
-   [BO] Phase 0b iter 25/80: best = 1.5642 G | mean ls_0: 1.844 ls_2: 2.000
-   [BO] Phase 0b iter 30/80: best = 1.5674 G | mean ls_0: 1.588 ls_2: 2.000
-   [BO] Phase 0b iter 35/80: best = 1.5795 G | mean ls_0: 1.361 ls_2: 2.000
-   [BO] Phase 0b iter 40/80: best = 1.5795 G | mean ls_0: 1.206 ls_2: 2.000
-   [BO] Phase 0b iter 45/80: best = 1.5795 G | mean ls_0: 1.245 ls_2: 1.922
-   [BO] Phase 0b iter 50/80: best = 1.6421 G | mean ls_0: 1.179 ls_2: 1.889
-   [BO] Phase 0b iter 55/80: best = 1.6421 G | mean ls_0: 1.035 ls_2: 1.462
-   [BO] Phase 0b iter 60/80: best = 1.6421 G | mean ls_0: 0.998 ls_2: 1.359
-   [BO] Phase 0b iter 65/80: best = 1.6421 G | mean ls_0: 1.052 ls_2: 1.410
-   [BO] Phase 0b iter 70/80: best = 1.6421 G | mean ls_0: 1.046 ls_2: 1.369
-   [BO] Phase 0b iter 75/80: best = 1.6421 G | mean ls_0: 0.998 ls_2: 1.378
-   [BO] Phase 0b iter 80/80: best = 1.6421 G | mean ls_0: 0.980 ls_2: 1.353
-   [BO] 5 diverse basins found. Top grips: ['1.6421G', '1.6364G', '1.6107G', '1.5988G', '1.5978G']
-[Phase 0] Seeded 5 BO basins into ensemble.
-[Phase 0] Pre-populating archive from BO basins…
-[Phase 0] Archive seeded with 5 valid BO solutions (archive size: 5)
-[SB-TRPO] Running feasibility pre-check…
-   [DIAG] Chebyshev omegas: 4/10 members in high-grip region [0.7,1.0]
-   [DIAG] Stability cap: 5.0 rad/s
-   [DIAG] dim=28 KL_threshold=0.00935
-[SB-TRPO] i=   0 | Safe: 10/10 | Valid: 10/10 | Grip: 1.6421 G | log_std: -1.000 | Trust: off
-[SB-TRPO] i=   1 | Safe: 10/10 | Valid: 10/10 | Grip: 1.6422 G | log_std: -1.000 | Trust: off
-
-[MORL-SB-TRPO] Pareto front: 5 setups | Best grip: 1.6422 G | Stability range: 0.68–0.88 rad/s
-
-[MORL] Setup sensitivity analysis (top-10 |dGrip/dparam| at Pareto front):
-  Setup   Grip   Stab       k_f       k_r     arb_f     arb_r   c_low_f   c_low_r  c_high_f  c_high_r
-  ─────────────────────────────────────────────────────────────────────────────────────────────────────
-      1  1.642   0.88  +0.20  -0.37  +0.03  -0.04  +0.00  +0.00  +0.00  +0.00
-      2  1.642   0.88  +0.20  -0.37  +0.03  -0.04  +0.00  +0.00  +0.00  +0.00
-      3  1.636   0.68  +0.11  -0.34  +0.02  -0.03  +0.00  +0.00  +0.00  +0.00
-      4  1.642   0.88  +0.20  -0.37  +0.03  -0.04  +0.00  +0.00  +0.00  +0.00
-      5  1.636   0.68  +0.11  -0.34  +0.02  -0.03  +0.00  +0.00  +0.00  +0.00
-[PASS] Optimizer search domain healthy. Lower bound fraction: 0% (Target <50%)
-[PASS] Stability cap working: max Stability_Overshoot = 0.88 ≤ 5.0
 
 ============================================================
 TEST 10: MOTOR TORQUE ENVELOPE (FIELD-WEAKENING CONTINUITY)
@@ -220,10 +129,10 @@ TEST 10: MOTOR TORQUE ENVELOPE (FIELD-WEAKENING CONTINUITY)
 ============================================================
 TEST 11: SOCP TORQUE ALLOCATOR (FRICTION FEASIBILITY)
 ============================================================
-[PASS] All torques within motor limits (T=[0.0, 0.0, 0.0, 0.0] Nm)
-[PASS] Friction circles feasible (max utilization: 0.000)
+[PASS] All torques within motor limits (T=[-199.1, -199.1, -227.6, -227.6] Nm)
+[PASS] Friction circles feasible (max utilization: 1.000)
 [PASS] Straight-line yaw moment ≈ 0 (actual: 0.0 Nm)
-[WARN] SOCP solve time: 213.2ms (exceeds 50ms budget)
+[PASS] KKT allocator solve time: 0.267ms (budget: <1ms)
 
 ============================================================
 TEST 12: CBF SAFETY FILTER (SIDESLIP INVARIANCE)
@@ -258,34 +167,37 @@ TEST 15: VIRTUAL IMPEDANCE (PIO SUPPRESSION)
 TEST 16: FULL POWERTRAIN PIPELINE (JIT + TIMING)
 ============================================================
   Compiling full pipeline (first call)...
-  Compile time: 0.67s
+  Compile time: 0.74s
   Running 50 warm steps for timing...
-[WARN] Per-step time: 13.303ms (exceeds 5.0ms budget — expected on CPU, OK if <1ms on target SBC)
-[PASS] Output torques finite: [3.3, 2.1, 3.3, 2.0] Nm
-[PASS] Thermal dynamics active: ΔT_motor = +0.2759°C after 50 steps
-[PASS] SoC decreasing under load: 94.9816% (Δ = -0.018379%)
-  Diagnostics: 31 fields available for telemetry/dashboard
+[WARN] Per-step time: 13.016ms (exceeds 5.0ms budget — expected on CPU, OK if <1ms on target SBC)
+[PASS] Output torques finite: [-44.5, 55.3, -41.8, 57.1] Nm
+[PASS] Thermal dynamics active: ΔT_motor = +0.4586°C after 50 steps
+[PASS] SoC decreasing under load: 94.9770% (Δ = -0.022957%)
+  Diagnostics: 34 fields available for telemetry/dashboard
 
 ============================================================
-TEST 17: RLS SLIP-SLOPE OBSERVER
+TEST 17: KOOPMAN SLIP OBSERVER
 ============================================================
-  κ* true:  0.1170
-  κ* RLS:   0.2156  (error = 0.0986)
-  slope @κ=0.22: 591.6 N/unit_κ (expected < 0 above peak)
-  [FAIL-A] RLS did not converge (error=0.0986 >= 0.030)
-  [FAIL-A2] Slope sign wrong: expected negative above κ*, got 591.6
-  [PASS-B] High RLS SNR → w_rls=1.000 > 0.80 (RLS dominates)
-  [PASS-B2] Low RLS SNR → w_rls=0.001 < 0.20 (DESC dominates)
-  [PASS-C] rls_tc_step: shapes OK, no NaN, κ*∈[0.02,0.25]
-           κ*_fused = ['0.1004', '0.1004', '0.1001', '0.1001']
-           w_rls    = [0.967, 0.933]
-  [INFO-D] 1000 steps in 445.1 ms (0.4451 ms/step avg)
-  [PASS-D] Runtime well within 5 ms step budget
+  κ* true:      0.1170
+  κ* Koopman:   0.1137  (error = 0.0033)
+  slope @κ=0.22: -890.6 N/unit_κ (expected < 0 above peak)
+  σ(κ*) =       0.0004  (CBF uncertainty input)
+  [PASS-A] Koopman converged to κ* within 0.015 (error=0.0033)
+  [PASS-A2] Slope sign correct: negative above κ* (-890.6)
+
+============================================================
+TEST 17b: KOOPMAN E-ABS SLIP CONTAINMENT (BATCH 8)
+============================================================
+[PASS] Lockup torque (−400 Nm) correctly identified as slip-infeasible
+[FAIL] Polish did not restore feasibility (max viol = 0.1629)
+[WARN] Polished torque lost braking intent — polish too aggressive?
+[PASS] Gradient through slip barrier is finite: [-99.9967, -99.9967, -99.9967, -99.9967]
+[PASS] Disabled barrier: lockup torque trivially feasible (rhs=1e6)
+[PASS] make_slip_barrier_inputs factory: b_slip finite, b[0]=0.2308
 
 ✅ END-TO-END VALIDATION COMPLETE.
 
 (project_gp_env) alexr@ALEXRP:~/FS_Driver_Setup_Optimizer$ 
-
 
 (project_gp_env) alexr@ALEXRP:~/FS_Driver_Setup_Optimizer$ pkill -9 -f gradient_server.py
 python scripts/gradient_server.py --port 8766
