@@ -48,6 +48,31 @@ const SP = {
 };
 
 // ═══════════════════════════════════════════════════════════════════════════
+// EXACT TER27 - VELIS HARDPOINTS (Converted to Three.js [X=Long, Y=Vert, Z=Lat])
+// ═══════════════════════════════════════════════════════════════════════════
+const TER27_HP = {
+  front: {
+    lca_f: new THREE.Vector3(0.160, 0.110, 0.160),
+    lca_r: new THREE.Vector3(-0.160, 0.130, 0.160),
+    uca_f: new THREE.Vector3(0.120, 0.267, 0.245),
+    uca_r: new THREE.Vector3(-0.120, 0.258, 0.245),
+    lca_o: new THREE.Vector3(0.002, 0.122, 0.583),
+    uca_o: new THREE.Vector3(-0.011, 0.280, 0.555),
+    tie_i: new THREE.Vector3(0.050, 0.144, 0.144),
+    tie_o: new THREE.Vector3(0.070, 0.150, 0.571),
+  },
+  rear: {
+    lca_f: new THREE.Vector3(0.150, 0.119, 0.195),
+    lca_r: new THREE.Vector3(-0.150, 0.110, 0.195),
+    uca_f: new THREE.Vector3(0.150, 0.245, 0.195),
+    uca_r: new THREE.Vector3(-0.150, 0.272, 0.195),
+    lca_o: new THREE.Vector3(0.0, 0.112, 0.585),
+    uca_o: new THREE.Vector3(0.0, 0.290, 0.537),
+    tie_i: new THREE.Vector3(-0.080, 0.180, 0.195),
+    tie_o: new THREE.Vector3(-0.095, 0.230, 0.530),
+  }
+};
+// ═══════════════════════════════════════════════════════════════════════════
 // MANEUVER GENERATORS
 // ═══════════════════════════════════════════════════════════════════════════
 function genData(type, dur = 8, n = 480) {
@@ -140,28 +165,66 @@ function buildChassis(body, M) {
 function buildFW(body, M) { const { fwSpan: sp, fwChord: ch } = V, wx = V.fwX, wy = V.fwY; const mg = wingGeo(ch, 0.020, sp); mg.rotateY(Math.PI); const mm = new THREE.Mesh(mg, M.wingCF); mm.position.set(wx, wy, 0); mm.rotation.z = 0.08; mm.castShadow = true; body.add(mm); const fg = wingGeo(ch*0.35, 0.013, sp*0.93); fg.rotateY(Math.PI); const fm = new THREE.Mesh(fg, M.wingCF); fm.position.set(wx-ch*0.44, wy+0.032, 0); fm.rotation.z = 0.20; fm.castShadow = true; body.add(fm); for (const s of [-1, 1]) { const m = new THREE.Mesh(new THREE.BoxGeometry(ch*1.3, 0.075, 0.004), M.wingEP); m.position.set(wx-ch*0.2, wy+0.015, s*sp*0.505); body.add(m); } for (const s of [-1, 1]) body.add(tube(v3(wx-ch*0.15, wy+0.04, s*sp*0.15), v3(V.noseTip-0.22, V.tubFloor+0.10, s*0.04), 0.005, M.body)); }
 function buildRW(body, M) { const { rwSpan: sp, rwChord: ch } = V, wx = V.rwX, wy = V.rwMainY; const mg = wingGeo(ch, 0.024, sp); mg.rotateY(Math.PI); body.add((() => { const m = new THREE.Mesh(mg, M.wingCF); m.position.set(wx, wy, 0); m.rotation.z = 0.14; m.castShadow = true; return m; })()); const fg = wingGeo(ch*0.30, 0.015, sp*0.96); fg.rotateY(Math.PI); body.add((() => { const m = new THREE.Mesh(fg, M.wingCF); m.position.set(wx-ch*0.30, wy+0.055, 0); m.rotation.z = 0.30; m.castShadow = true; return m; })()); for (const s of [-1, 1]) { const epH = V.rwEpTop-V.rwEpBot; const m = new THREE.Mesh(new THREE.BoxGeometry(ch*1.5, epH, 0.005), M.wingEP); m.position.set(wx-ch*0.05, (V.rwEpBot+V.rwEpTop)/2, s*sp*0.505); m.castShadow = true; body.add(m); } for (const s of [-1, 1]) body.add(tube(v3(wx+ch*0.35, V.rwEpBot+0.02, s*sp*0.5), v3(V.rsfRear+0.08, V.tubFloor+V.rsfH*0.3, s*V.rsfHW*0.8), 0.007, M.steel)); }
 
-function buildCorner(sc, body, M, name, xA, yS, tW, isF) {
-  const yP = yS*tW/2, sg = new THREE.Group(); sg.position.set(xA, 0, yP); sc.add(sg);
-  const wg = new THREE.Group(); wg.position.y = V.wR; sg.add(wg);
+function buildCorner(sc, body, M, name, isF, yS) {
+  const hp = isF ? TER27_HP.front : TER27_HP.rear;
+  
+  // Wheel Group Center
+  const wc = new THREE.Vector3(0, V.wR, yS * 0.615); 
+  const sg = new THREE.Group(); 
+  sg.position.set(0, 0, 0); // Absolute positioning based on HP now
+  sc.add(sg);
+
+  // Wheel meshes (Tire & Rim)
+  const wg = new THREE.Group(); wg.position.copy(wc); sg.add(wg);
   wg.add(new THREE.Mesh(new THREE.CylinderGeometry(V.wR*0.58, V.wR*0.58, V.tW*0.22, 20).rotateX(Math.PI/2), M.rim));
-  for (let i = 0; i < 5; i++) { const a = (i/5)*Math.PI*2; const sp = new THREE.Mesh(new THREE.BoxGeometry(0.028, V.wR*0.42, V.tW*0.18), M.rim); sp.position.set(Math.cos(a)*V.wR*0.28, Math.sin(a)*V.wR*0.28, 0); sp.rotation.z = a; wg.add(sp); }
-  const tireM = new THREE.Mesh(new THREE.TorusGeometry(V.wR, V.tW*0.38, 14, 32), M.tire); tireM.castShadow = true; wg.add(tireM);
-  const uprOff = -yS*V.tW*0.34, ug = new THREE.Group(); ug.position.set(0, V.wR, uprOff); ug.add(new THREE.Mesh(new THREE.BoxGeometry(0.032, V.uprH, 0.040), M.stLt)); sg.add(ug);
-  const chassisHW = isF ? V.tubBotHW : V.rsfHW, iZ = yS*chassisHW*0.92;
-  const bodyLowY = 0.10-V.hCG, bodyHiY = 0.32-V.hCG;
-  const bulkX = isF ? V.tubFront : V.tubRear, spread = 0.10;
-  const lInLocal = [v3(bulkX+spread, bodyLowY, iZ), v3(bulkX-spread, bodyLowY, iZ)];
-  const uInLocal = [v3(bulkX+spread*0.85, bodyHiY, iZ*0.95), v3(bulkX-spread*0.85, bodyHiY, iZ*0.95)];
-  const toWorld = bl => v3(bl.x, bl.y+V.hCG, bl.z);
-  const lIn = lInLocal.map(toWorld), uIn = uInLocal.map(toWorld);
-  const outerZ = yP+uprOff, lO0 = v3(xA, V.wR-V.uprH*0.35, outerZ), uO0 = v3(xA, V.wR+V.uprH*0.33, outerZ);
-  const lA = lIn.map((ip, i) => { const m = dynTube(ip, lO0, 0.007, M.steel); sc.add(m); return { m, ip: ip.clone(), local: lInLocal[i].clone() }; });
-  const uA = uIn.map((ip, i) => { const m = dynTube(ip, uO0, 0.006, M.stLt); sc.add(m); return { m, ip: ip.clone(), local: uInLocal[i].clone() }; });
-  for (const bl of [...lInLocal, ...uInLocal]) { const br = new THREE.Mesh(new THREE.BoxGeometry(0.035, 0.028, 0.028), M.steel); br.position.copy(bl); br.castShadow = true; body.add(br); }
-  const pB0 = lO0.clone().lerp(uO0, 0.25), bcLocalY = (bodyLowY+bodyHiY)/2+0.04;
-  const bcLocal = v3(bulkX, bcLocalY, iZ*0.85), bc0 = v3(bulkX, bcLocalY+V.hCG, iZ*0.85);
-  const pM = dynTube(pB0, bc0, 0.005, M.push); sc.add(pM);
-  return { name, xA, yS, tW, isF, yP, sg, wg, ug, lA, uA, lO0: lO0.clone(), uO0: uO0.clone(), pM, pB0: pB0.clone(), bc0: bc0.clone(), bcLocal: bcLocal.clone(), ws: 0 };
+  const tireM = new THREE.Mesh(new THREE.TorusGeometry(V.wR, V.tW*0.38, 14, 32), M.tire); 
+  tireM.castShadow = true; wg.add(tireM);
+
+  // Upright Group
+  const ug = new THREE.Group(); 
+  const uprCenter = hp.lca_o.clone().lerp(hp.uca_o, 0.5);
+  uprCenter.z *= yS; // mirror for right side
+  ug.position.copy(uprCenter);
+  ug.add(new THREE.Mesh(new THREE.BoxGeometry(0.032, V.uprH, 0.040), M.stLt)); 
+  sg.add(ug);
+
+  // Chassis Inboard Points (mirrored by yS)
+  const lInLocal = [
+    new THREE.Vector3(hp.lca_f.x, hp.lca_f.y, hp.lca_f.z * yS),
+    new THREE.Vector3(hp.lca_r.x, hp.lca_r.y, hp.lca_r.z * yS)
+  ];
+  const uInLocal = [
+    new THREE.Vector3(hp.uca_f.x, hp.uca_f.y, hp.uca_f.z * yS),
+    new THREE.Vector3(hp.uca_r.x, hp.uca_r.y, hp.uca_r.z * yS)
+  ];
+
+  // Upright Outboard Points
+  const lO0 = new THREE.Vector3(hp.lca_o.x, hp.lca_o.y, hp.lca_o.z * yS);
+  const uO0 = new THREE.Vector3(hp.uca_o.x, hp.uca_o.y, hp.uca_o.z * yS);
+
+  // Tie Rod Points
+  const trIn = new THREE.Vector3(hp.tie_i.x, hp.tie_i.y, hp.tie_i.z * yS);
+  const trOut = new THREE.Vector3(hp.tie_o.x, hp.tie_o.y, hp.tie_o.z * yS);
+
+  // Generate Tubes (A-Arms)
+  const lA = lInLocal.map((ip) => { 
+    const m = dynTube(ip, lO0, 0.007, M.steel); sc.add(m); 
+    return { m, ip: ip.clone(), local: ip.clone() }; 
+  });
+  const uA = uInLocal.map((ip) => { 
+    const m = dynTube(ip, uO0, 0.006, M.stLt); sc.add(m); 
+    return { m, ip: ip.clone(), local: ip.clone() }; 
+  });
+
+  // Tie Rod Tube
+  const tieRod = dynTube(trIn, trOut, 0.005, M.accent); sc.add(tieRod);
+
+  // Pushrod (connecting to LCA for front, UCA for rear as per your CSV)
+  const pB0 = isF ? lO0.clone().lerp(lInLocal[0], 0.25) : uO0.clone().lerp(uInLocal[0], 0.25);
+  const bcLocal = new THREE.Vector3(isF ? 0.0 : -V.wb, V.tubTop + 0.05, 0.15 * yS); // Approx rocker location
+  const pM = dynTube(pB0, bcLocal, 0.005, M.push); sc.add(pM);
+
+  return { name, isF, yS, sg, wg, ug, lA, uA, tieRod, trIn, trOut, lO0, uO0, pM, pB0, bc0: bcLocal, bcLocal, ws: 0 };
 }
 
 function buildCoilover(body, M, c) {
@@ -415,7 +478,12 @@ export default function SuspensionModule({ data }) {
     const M = buildMats(); buildLights(sc); const groundRefs = buildGround(sc, M.ground); let distAccum = 0;
     const bg = new THREE.Group(); bg.position.set(0, V.hCG, 0); sc.add(bg);
     buildChassis(bg, M); buildFW(bg, M); buildRW(bg, M);
-    const corners = { fl: buildCorner(sc, bg, M, "fl", V.lf, 1, V.tF, true), fr: buildCorner(sc, bg, M, "fr", V.lf, -1, V.tF, true), rl: buildCorner(sc, bg, M, "rl", -V.lr, 1, V.tR, false), rr: buildCorner(sc, bg, M, "rr", -V.lr, -1, V.tR, false) };
+    const corners = { 
+      fl: buildCorner(sc, bg, M, "fl", true, 1), 
+      fr: buildCorner(sc, bg, M, "fr", true, -1), 
+      rl: buildCorner(sc, bg, M, "rl", false, 1), 
+      rr: buildCorner(sc, bg, M, "rr", false, -1) 
+    };
     const coils = {}; for (const [k, c] of Object.entries(corners)) coils[k] = buildCoilover(bg, M, c);
     let cT = Math.PI*0.22, cP = Math.PI*0.19, cR = 3.3; const cTg = v3(0, 0.15, 0);
     let drg = false, pn = false, lm = { x: 0, y: 0 };
