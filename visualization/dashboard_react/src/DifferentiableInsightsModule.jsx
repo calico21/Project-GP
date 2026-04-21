@@ -27,8 +27,7 @@ ResponsiveContainer, ReferenceLine, ReferenceArea, Cell, Legend,
 import { C, GL, GS, TT } from "./theme.js";
 import { KPI, Sec, GC, Pill } from "./components.jsx";
 
-import { useEffect } from "react";
-import { useGradientServer } from "./hooks/useGradientServer.js";
+
 // ═══════════════════════════════════════════════════════════════════════════
 // SEEDED RNG
 // ═══════════════════════════════════════════════════════════════════════════
