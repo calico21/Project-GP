@@ -53,10 +53,7 @@ from models.vehicle_dynamics import (
 
 def _install_vehicle_params(car_id: str):
     """Swap vehicle_params module dict to selected car."""
-    import data.configs.vehicle_params as vp_module
     cfg = get_car_config(car_id)
-    vp_module.vehicle_params.clear()
-    vp_module.vehicle_params.update(cfg['vehicle_params'])
     print(f"[Config] Vehicle params → {car_id.upper()} "
           f"({cfg['vehicle_params']['total_mass']} kg, "
           f"{cfg['vehicle_params'].get('drivetrain_mode', 'rwd')})")
@@ -130,25 +127,30 @@ def main():
 
     # ── Import optimizer AFTER bounds are installed ───────────────────────
     from optimization.evolutionary import MORL_SB_TRPO_Optimizer
-
+    
     # ── Run ───────────────────────────────────────────────────────────────
     optimizer = MORL_SB_TRPO_Optimizer(ensemble_size=args.ensemble)
     t0 = time.time()
 
-    print(f"\n[Phase 1/2] Bayesian Optimization cold-start "
-          f"({freeze.n_free}D effective search)...")
-    optimizer.run_bo_phase()
-
-    if not args.bo_only:
-        n_steps = 50 if args.quick else optimizer.N_GRADIENT_STEPS
-        print(f"\n[Phase 2/2] MORL gradient optimization ({n_steps} steps)...")
-        optimizer.run_gradient_phase(n_steps=n_steps)
+    # Determine step count (0 steps means it will only run the BO phase)
+    n_steps = 0 if args.bo_only else (50 if args.quick else 400)
+    
+    print(f"\n[Running MORL-SB-TRPO] BO Cold-Start + {n_steps} Gradient Steps...")
+    
+    # The updated run() method handles both phases and returns the pareto arrays directly
+    p_setups, p_grips, p_stabs, p_gen = optimizer.run(iterations=n_steps)
 
     elapsed = time.time() - t0
     print(f"\n[Done] Total time: {elapsed:.1f}s")
 
     # ── Save results ──────────────────────────────────────────────────────
-    pareto = optimizer.get_pareto_front()
+    # Convert the returned raw arrays into a pandas DataFrame
+    pareto_data = {name: p_setups[:, i] for i, name in enumerate(SETUP_NAMES)}
+    pareto_data['grip'] = p_grips
+    pareto_data['stability'] = p_stabs
+    pareto_data['generation'] = p_gen
+    pareto = pd.DataFrame(pareto_data)
+
     tag = f"{args.car}_{phase_label}"
 
     pareto_path = os.path.join(args.output_dir, f'{tag}_pareto_front.csv')

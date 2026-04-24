@@ -59,3 +59,11 @@ def get_design_bounds(car_id: str = 'ter26') -> Tuple[jnp.ndarray, jnp.ndarray]:
     else:
         from config.vehicles.ter27 import get_design_bounds as _bounds
     return _bounds()
+
+def format_optimizer_output(setup: jnp.ndarray, car_id: str) -> str:
+    """Formats a 28D setup vector into a readable text report."""
+    from models.vehicle_dynamics import SETUP_NAMES
+    lines = [f"═════ OPTIMIZED GEOMETRY REPORT ({car_id.upper()}) ═════"]
+    for name, val in zip(SETUP_NAMES, setup):
+        lines.append(f"{name:<20}: {float(val):>+8.4f}")
+    return "\n".join(lines)

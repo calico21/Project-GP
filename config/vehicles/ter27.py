@@ -279,3 +279,11 @@ vehicle_params_ter27['hardpoints_r'] = {
     'rocker_piv':  [ 0.000, 0.280, 0.325],
     'spring_in':   [ 0.150, 0.280, 0.155],
 }
+
+def get_design_bounds():
+    """Returns the lower and upper bounds for the Ter27 setup space."""
+    import jax.numpy as jnp
+    from models.vehicle_dynamics import SETUP_LB, SETUP_UB
+    
+    # Return the bounds as JAX arrays for the optimizer
+    return jnp.array(SETUP_LB), jnp.array(SETUP_UB)

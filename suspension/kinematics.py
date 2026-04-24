@@ -710,14 +710,21 @@ class SuspensionKinematics:
         camber_0 = camber_at(0.0)
         ps = camber_target_rad - camber_0
 
-        for _ in range(10):
+        # INCREASED ITERATIONS to 50 for extreme geometries
+        for _ in range(50):
             f  = camber_at(ps) - camber_target_rad
             df = float(jax.grad(
                 lambda p: self.solve_at_heave(jnp.array(0.0), jnp.array(0.0), p).camber_rad
             )(jnp.array(ps)))
+            
             if abs(df) < 1e-12:
                 break
-            ps -= f / df
+                
+            # RELAXATION FACTOR: Instead of hard-clipping, we take a 50% step.
+            # This prevents violent divergence while still allowing large movements if needed.
+            step = f / df
+            ps -= 0.5 * step  
+            
             if abs(f) < 1e-8:
                 break
         return ps
