@@ -206,6 +206,17 @@ def train(
 ):
     print("[ActiveSetClassifier] Loading training data...")
     data = np.load(data_path)
+
+    if 'geometry' in data:
+        geo_train = data['geometry']
+        from scripts.generate_qp_training_data import LF, LR, TF2, TR2, R_W
+        geo_now   = np.array([LF, LR, TF2, TR2, R_W])
+        if not np.allclose(geo_train, geo_now, atol=1e-3):
+            raise ValueError(
+                f"Geometry mismatch! Trained on {geo_train}, "
+                f"current is {geo_now}. Retrain the classifier."
+            )
+
     theta_norm  = data["theta_norm"]    # (N, 15)
     active_sets = data["active_sets"]   # (N, 12)
     N = theta_norm.shape[0]
@@ -479,6 +490,17 @@ def train_v2(
     """
     print("[ActiveSetClassifierV2] Loading training data...")
     data        = np.load(data_path)
+    
+    if 'geometry' in data:
+        geo_train = data['geometry']
+        from scripts.generate_qp_training_data import LF, LR, TF2, TR2, R_W
+        geo_now   = np.array([LF, LR, TF2, TR2, R_W])
+        if not np.allclose(geo_train, geo_now, atol=1e-3):
+            raise ValueError(
+                f"Geometry mismatch! Trained on {geo_train}, "
+                f"current is {geo_now}. Retrain the classifier."
+            )
+
     theta_norm  = data["theta_norm"]       # (N, 19)
     active_sets = data["active_sets"]      # (N, 20)
     N           = theta_norm.shape[0]

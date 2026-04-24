@@ -40,15 +40,16 @@ import os
 import math
 import time
 from functools import partial
-from typing import List, Tuple, Optional
-
+from typing import List, Tuple, Optional, NamedTuple
 import numpy as np
+import scipy
 import pandas as pd
 import optax
 import jax
 import jax.numpy as jnp
 
 from models.vehicle_dynamics import (
+    DifferentiableMultiBodyVehicle,  # <--- ADD THIS HERE
     SuspensionSetup, SETUP_NAMES, SETUP_DIM, SETUP_LB, SETUP_UB, DEFAULT_SETUP,
 )
 from optimization.objectives import (
@@ -58,6 +59,20 @@ from optimization.objectives import (
 )
 from config.vehicles.ter26 import vehicle_params as VP
 from config.tire_coeffs import tire_coeffs as TC
+
+# --- BATCH 10.5 IMPORTS ---
+from models.vehicle_dynamics import (
+    observe_sensors, step_imu_bias, DomainRandomization,
+    sample_domain_randomization,
+)
+from powertrain.state_estimator import (
+    UKFState, UKFParams, ukf_step,
+    extract_estimated_state, pack_measurement_from_reading,
+    make_ukf_state,
+)
+from powertrain.powertrain_wiring_v2 import (
+    pack_hub_motor_command, HubMotorCommand,
+)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # §1  Constants
@@ -125,6 +140,135 @@ def _apply_rnpg_ensemble(
 
     return jax.vmap(apply_single)(mu_grads, J_all)
 
+class FullLoopCarry(NamedTuple):
+    """Scan carry for full-fidelity lap simulation."""
+    x:             jax.Array       # (46,) vehicle state
+    manager_state: object          # PowertrainManagerState
+    ukf:           UKFState        # UKF state
+    imu_bias:      jax.Array       # (6,) IMU bias
+    key:           jax.Array       # PRNG key
+    cum_time:      jax.Array       # scalar accumulated time
+
+
+def make_full_loop_step(
+    vehicle: DifferentiableMultiBodyVehicle,
+    config,     # PowertrainConfig
+    geo,        # TVGeometry
+    mp,         # MotorParams
+    bp,         # BatteryParams
+    ukf_params: UKFParams,
+    dt: float = 0.005,
+    use_domain_randomization: bool = True,
+):
+    from powertrain.powertrain_manager import powertrain_step, make_manager_state
+
+    @jax.jit
+    def _step(carry: FullLoopCarry, inputs):
+        throttle, brake, delta, curvature, mu_est = inputs
+
+        k1, k2, k3 = jax.random.split(carry.key, 3)
+
+        # ── Step 1: Sensor model ────────────────────────────────────────
+        u_dummy = jnp.array([delta, 0., 0., 0., 0., 0.])
+        sensor = observe_sensors(carry.x, u_dummy, k1, carry.imu_bias)
+        imu_bias_new = step_imu_bias(carry.imu_bias, k2, dt)
+
+        # ── Step 2: UKF ─────────────────────────────────────────────────
+        z_meas = pack_measurement_from_reading(sensor)
+        ukf_new = ukf_step(carry.ukf, z_meas, delta, jnp.array(dt), ukf_params)
+        est = extract_estimated_state(ukf_new)
+
+        # ── Step 3: Powertrain ──────────────────────────────────────────
+        omega_wheel = carry.x[24:28]
+        Fy = jnp.zeros(4)
+        gp_sigma = jnp.array(0.05)
+        launch_button = jnp.array(0.0)
+        ax_est = jnp.array(0.0)
+
+        diagnostics, ms_new = powertrain_step(
+            throttle, brake, delta,
+            est.vx, est.vy, est.wz, ax_est,
+            omega_wheel, est.Fz, Fy, mu_est, curvature,
+            gp_sigma, launch_button, jnp.array(dt),
+            carry.manager_state, config, geo, mp, bp,
+        )
+
+        # ── Step 4: Pack u-vector ───────────────────────────────────────
+        F_brake_hyd = diagnostics.regen_diag.F_brake_hydraulic if hasattr(
+            diagnostics, 'regen_diag') else jnp.array(0.0)
+
+        u_vehicle = jnp.array([
+            delta,
+            diagnostics.T_wheel[0],
+            diagnostics.T_wheel[1],
+            diagnostics.T_wheel[2],
+            diagnostics.T_wheel[3],
+            F_brake_hyd,
+        ])
+
+        # ── Step 5: Vehicle dynamics ────────────────────────────────────
+        setup_vec = vehicle._current_setup  # set before scan
+        x_new = vehicle.simulate_step(carry.x, u_vehicle, setup_vec, dt)
+
+        carry_new = FullLoopCarry(
+            x=x_new,
+            manager_state=ms_new,
+            ukf=ukf_new,
+            imu_bias=imu_bias_new,
+            key=k3,
+            cum_time=carry.cum_time + dt,
+        )
+
+        # Emit for diagnostics: vx, ay, lap progress
+        outputs = jnp.array([
+            est.vx,
+            est.vx * est.wz,  # lateral G
+            carry.cum_time,
+        ])
+
+        return carry_new, outputs
+
+    return _step
+
+
+def evaluate_setup_full_fidelity(
+    setup_vec: jax.Array,         # (28,)
+    vehicle: DifferentiableMultiBodyVehicle,
+    driving_inputs: jax.Array,    # (N_steps, 5) [throttle, brake, delta, curv, mu]
+    config, geo, mp, bp,
+    ukf_params: UKFParams,
+    key: jax.Array,
+    dt: float = 0.005,
+) -> Tuple[jax.Array, jax.Array]:
+    from powertrain.powertrain_manager import make_manager_state, PowertrainConfig
+
+    # Initialize all states
+    x0 = jnp.zeros(46)
+    x0 = x0.at[14].set(10.0)   # initial vx
+    x0 = x0.at[28:38].set(jnp.full(10, 85.0))
+
+    vehicle._current_setup = setup_vec
+    ms0 = make_manager_state()
+    ukf0 = make_ukf_state(vx_init=10.0, params=ukf_params)
+    bias0 = jnp.zeros(6)
+
+    carry0 = FullLoopCarry(
+        x=x0, manager_state=ms0, ukf=ukf0,
+        imu_bias=bias0, key=key, cum_time=jnp.array(0.0),
+    )
+
+    step_fn = make_full_loop_step(vehicle, config, geo, mp, bp, ukf_params, dt)
+    carry_final, outputs = jax.lax.scan(step_fn, carry0, driving_inputs)
+
+    vx_history = outputs[:, 0]
+    ay_history = outputs[:, 1]
+
+    effective_time = carry_final.cum_time
+    ay_peak = jnp.max(jnp.abs(ay_history))
+    ay_final = jnp.abs(ay_history[-1])
+    stability = ay_peak / jnp.maximum(ay_final, 0.01) - 1.0
+
+    return effective_time, stability
 
 # ─────────────────────────────────────────────────────────────────────────────
 # §2  Bayesian Optimization Cold-Start (ARD GP on 28-dim space)
@@ -320,12 +464,15 @@ class MORL_SB_TRPO_Optimizer:
         ub = jnp.array(self._ub)
         return lb + (ub - lb) * setup_norm
 
-    @partial(jax.jit, static_argnums=(0,))
-    def evaluate_setup_jax(self, setup_norm):
+    @partial(jax.jit, static_argnums=(0, 2))
+    def evaluate_setup_jax(self, setup_norm, phase='bo'):
+        """
+        Hybrid evaluation: fast model for BO screening, full model for Adam.
+        """
         from models.vehicle_dynamics import compute_equilibrium_suspension
         setup_phys = self._norm_to_physical(setup_norm)
-
-        # Setup-dependent equilibrium IC — differentiable w.r.t. setup_norm
+        
+        # Setup-dependent equilibrium IC
         z_eq   = compute_equilibrium_suspension(setup_phys, VP)
         x_init = (jnp.zeros(46)
                     .at[14].set(15.0)
@@ -333,11 +480,35 @@ class MORL_SB_TRPO_Optimizer:
                     .at[28:38].set(jnp.array([85., 85., 85., 85., 80.,
                                                85., 85., 85., 85., 80.])))
 
-        grip, _ = compute_skidpad_objective(self._vehicle.simulate_step, setup_phys, x_init)
-        stab    = compute_step_steer_objective(self._vehicle.simulate_step, setup_phys, x_init)
-        lte     = compute_endurance_lte_objective(self._vehicle.simulate_step, setup_phys, x_init) # <-- ADD THIS
-        safety  = jax.nn.sigmoid((grip - SAFETY_THRESHOLD) * 10.0)
-        return grip, stab, safety, lte  # <-- ADD lte TO THE RETURN
+        if phase == 'bo':
+            # Phase 1: Fast Simplified Evaluation
+            grip, _ = compute_skidpad_objective(self._vehicle.simulate_step, setup_phys, x_init)
+            stab    = compute_step_steer_objective(self._vehicle.simulate_step, setup_phys, x_init)
+            lte     = compute_endurance_lte_objective(self._vehicle.simulate_step, setup_phys, x_init) 
+            safety  = jax.nn.sigmoid((grip - SAFETY_THRESHOLD) * 10.0)
+            return grip, stab, safety, lte
+        
+        else:
+            # Phase 2: Full Fidelity (Adam Refinement)
+            N_steps = int(5.0 / 0.005)
+            driving_inputs = jnp.zeros((N_steps, 5))
+            driving_inputs = driving_inputs.at[:, 0].set(1.0) # Full throttle
+            driving_inputs = driving_inputs.at[:, 4].set(1.4) # mu_est = 1.4
+            
+            from powertrain.powertrain_manager import PowertrainConfig
+            from powertrain.state_estimator import UKFParams
+            config = PowertrainConfig()
+            ukf_params = UKFParams()
+            key = jax.random.PRNGKey(42)
+            
+            grip_proxy, stab_proxy = evaluate_setup_full_fidelity(
+                setup_phys, self._vehicle, driving_inputs,
+                config, config.geo, config.motor, config.battery,
+                ukf_params, key, dt=0.005
+            )
+            
+            safety  = jax.nn.sigmoid((grip_proxy - SAFETY_THRESHOLD) * 10.0)
+            return grip_proxy, stab_proxy, safety, 0.0
 
     # ─────────────────────────────────────────────────────────────────────────
     # §3.2  Non-dominated Pareto index selection
@@ -625,7 +796,7 @@ class MORL_SB_TRPO_Optimizer:
             def member_loss(params_k, omega_k):
                 mu_k, ls_k = params_k['mu'], params_k['log_std']
                 setup_norm  = jax.nn.sigmoid(mu_k)
-                grip, stab, safety, lte = self.evaluate_setup_jax(setup_norm)
+                grip, stab, safety, lte = self.evaluate_setup_jax(setup_norm, phase='adam')
 
                 lambda_lte = 0.15  # Tunable weight for endurance
                 # Add "+ lambda_lte * lte" to your existing math:

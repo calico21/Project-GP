@@ -40,12 +40,42 @@ N_CONSTRAINTS_V2 = 20
 THETA_DIM_V1     = 15
 THETA_DIM_V2     = 19
 
-# Geometry — must match TVGeometry defaults
-LF   = 0.8525
-LR   = 0.6975
-TF2  = 0.600    # half track front
-TR2  = 0.590    # half track rear
-R_W  = 0.2032
+def _load_geometry():
+    """
+    Load vehicle geometry from the canonical config.
+    """
+    try:
+        from config.vehicles.ter27 import vehicle_params_ter27 as VP
+        lf  = VP.get('lf',           0.8525)
+        lr  = VP.get('lr',           0.6975)
+        tf2 = VP.get('track_front',  1.200) / 2.0
+        tr2 = VP.get('track_rear',   1.180) / 2.0
+        r_w = VP.get('wheel_radius', 0.2032)
+        print(f"[DataGen] Geometry loaded from ter27.py: "
+              f"lf={lf:.4f} lr={lr:.4f} tf2={tf2:.4f} tr2={tr2:.4f} r_w={r_w:.4f}")
+        return lf, lr, tf2, tr2, r_w
+    except ImportError:
+        pass
+
+    try:
+        from config.vehicles.ter26 import vehicle_params as VP
+        lf  = VP.get('lf',           0.8525)
+        lr  = VP.get('lr',           0.6975)
+        tf2 = VP.get('track_front',  1.200) / 2.0
+        tr2 = VP.get('track_rear',   1.180) / 2.0
+        r_w = VP.get('wheel_radius', 0.2032)
+        print(f"[DataGen] Geometry loaded from ter26.py (fallback): "
+              f"lf={lf:.4f} lr={lr:.4f} tf2={tf2:.4f} tr2={tr2:.4f} r_w={r_w:.4f}")
+        return lf, lr, tf2, tr2, r_w
+    except ImportError:
+        pass
+
+    # Absolute fallback — same values as original hardcoded constants
+    print("[DataGen] WARNING: No vehicle config found, using hardcoded defaults")
+    return 0.8525, 0.6975, 0.600, 0.590, 0.2032
+
+# Module-level geometry — loaded ONCE at import time
+LF, LR, TF2, TR2, R_W = _load_geometry()
 
 
 def normalise_theta_v1(theta_raw: jax.Array) -> jax.Array:
@@ -299,7 +329,8 @@ def generate_v1(n_samples=100_000, out_path="models/qp_training_data.npz", seed=
     Path(out_path).parent.mkdir(parents=True, exist_ok=True)
     np.savez(out_path,
              theta_raw=theta_raws, theta_norm=theta_norms,
-             active_sets=active_sets, T_opt=T_opts)
+             active_sets=active_sets, T_opt=T_opts,
+             geometry=np.array([LF, LR, TF2, TR2, R_W], dtype=np.float32))
     print(f"[DataGen V1] Saved {n_samples:,} samples → {out_path}")
     print(f"  Activation rates: {active_sets.mean(axis=0).round(3)}")
 
@@ -355,7 +386,8 @@ def generate_v2(n_samples=500_000, out_path="models/qp_training_data_v2.npz", se
     Path(out_path).parent.mkdir(parents=True, exist_ok=True)
     np.savez(out_path,
              theta_raw=theta_raws, theta_norm=theta_norms,
-             active_sets=active_sets, T_opt=T_opts)
+             active_sets=active_sets, T_opt=T_opts,
+             geometry=np.array([LF, LR, TF2, TR2, R_W], dtype=np.float32))
     print(f"[DataGen V2] Saved {n_samples:,} samples → {out_path}")
     print(f"  V1 constraint activation rates: {active_sets[:, :12].mean(axis=0).round(3)}")
     print(f"  V2 slip constraint activation rates: {active_sets[:, 12:].mean(axis=0).round(3)}")

@@ -716,6 +716,48 @@ def make_powertrain_manager(vp: dict = None) -> tuple[PowertrainConfig, Powertra
     state = PowertrainManagerState.default(config)
     return config, state
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# Batch 10.5 — UKF Wrapper (powertrain_step_v2)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def powertrain_step_v2(
+    throttle_raw: jax.Array, brake_raw: jax.Array, delta: jax.Array,
+    sensor_reading,  # Noisy inputs from vehicle_dynamics.observe_sensors
+    ukf_state, imu_bias: jax.Array,
+    mu_est: jax.Array, gp_sigma: jax.Array, curvature: jax.Array,
+    manager_state: PowertrainManagerState, dt: jax.Array,
+    ukf_params, config: PowertrainConfig = PowertrainConfig(),
+    launch_button: jax.Array = jnp.array(0.0)
+):
+    from powertrain.powertrain_wiring_v2 import pack_hub_motor_command, PowertrainOutputV2
+    from powertrain.state_estimator import ukf_step, extract_estimated_state, pack_measurement_from_reading
+    
+    # 1. Run the Unscented Kalman Filter (UKF) to filter the noisy sensors
+    z_meas = pack_measurement_from_reading(sensor_reading)
+    ukf_new = ukf_step(ukf_state, z_meas, delta, dt, ukf_params)
+    est = extract_estimated_state(ukf_new)
+    
+    # 2. Call the original powertrain_step, but feed it the CLEAN, ESTIMATED 
+    #    states instead of the raw, noisy sensors.
+    diagnostics, new_state = powertrain_step(
+        throttle_raw=throttle_raw, brake_raw=brake_raw, delta=delta,
+        vx=est.vx, vy=est.vy, wz=est.wz,
+        Fz=est.Fz, Fy=est.Fy, omega_wheel=est.omega_wheel, alpha_t=est.alpha_t,
+        T_tire=jnp.full(4, 85.0), # Assuming constant thermal tire state
+        mu_est=mu_est, gp_sigma=gp_sigma, curvature=curvature,
+        manager_state=manager_state, dt=dt, config=config,
+        launch_button=launch_button
+    )
+    
+    # 3. Pack the output for the new 4WD Hub Motor physics engine
+    command = pack_hub_motor_command(diagnostics.T_wheel, delta, diagnostics.F_brake_hydraulic)
+    
+    return PowertrainOutputV2(
+        command=command,
+        diagnostics=diagnostics,
+        ukf_state=ukf_new,
+        imu_bias=imu_bias
+    )
 
 # ─────────────────────────────────────────────────────────────────────────────
 # §9  Standalone Smoke Test

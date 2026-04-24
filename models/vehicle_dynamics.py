@@ -120,7 +120,7 @@ SETUP_NAMES = [
     'anti_squat',                         # 19     anti-squat fraction [-]
     'anti_dive_f', 'anti_dive_r',         # 20–21  anti-dive fraction [-]
     'anti_lift',                          # 22     anti-lift fraction [-]
-    'diff_lock_ratio',                    # 23     diff lock ratio [-]
+    'yaw_target_gain',                    # 23     TV yaw moment gain [-]
     'brake_bias_f',                       # 24     front brake bias [-]
     'h_cg',                               # 25     CG height [m]
     'bump_steer_f', 'bump_steer_r',       # 26–27  bump steer [rad/m]
@@ -141,7 +141,7 @@ DEFAULT_SETUP = jnp.array([
       0.30,           # anti_squat
       0.40,  0.10,    # anti_dive_f, anti_dive_r
       0.20,           # anti_lift
-      0.30,           # diff_lock_ratio
+      0.80,           # yaw_target_gain
       0.60,           # brake_bias_f
       0.285,          # h_cg
       0.00,  0.00,    # bump_steer_f, bump_steer_r
@@ -199,7 +199,7 @@ class SuspensionSetup(NamedTuple):
     anti_dive_f: jax.Array      # 20
     anti_dive_r: jax.Array      # 21
     anti_lift: jax.Array        # 22
-    diff_lock_ratio: jax.Array  # 23
+    yaw_target_gain: jax.Array  # 23
     brake_bias_f: jax.Array     # 24
     h_cg: jax.Array             # 25
     bump_steer_f: jax.Array     # 26
@@ -263,14 +263,14 @@ class PhysicsNormalizer:
     setup_mean = jnp.array([
         40000., 40000., 800.,  600.,  1800., 1800., 1200., 1200.,
         0.10,   0.10,   1.5,   1.5,   0.025, 0.022, -2.0,  -1.5,
-       -0.10,  -0.15,  5.0,   0.30,   0.40,  0.10,  0.20,  0.30,
+       -0.10,  -0.15,  5.0,   0.30,   0.40,  0.10,  0.20,  0.80,
         0.60,   0.285,  0.00,  0.00,
     ], dtype=jnp.float32)
 
     setup_scale = jnp.array([
         20000., 20000., 400.,  300.,  800.,  800.,  600.,  600.,
         0.05,   0.05,   0.5,   0.5,   0.015, 0.012, 1.5,   1.5,
-        0.5,    0.5,    3.0,   0.15,  0.20,  0.08,  0.10,  0.20,
+        0.5,    0.5,    3.0,   0.15,  0.20,  0.08,  0.10,  0.30,
         0.10,   0.040,  0.03,  0.03,
     ], dtype=jnp.float32)
 
@@ -768,7 +768,7 @@ class DifferentiableMultiBodyVehicle:
     # §5.1  Powertrain
     # ─────────────────────────────────────────────────────────────────────────
 
-    def compute_drive_force(self, throttle: jax.Array, vx: jax.Array) -> jax.Array:
+    def _DEPRECATED_compute_drive_force(self, throttle: jax.Array, vx: jax.Array) -> jax.Array:
         T_peak = self.vp.get('motor_peak_torque', 21.0)
         ratio  = self.vp.get('drivetrain_ratio', 4.5)
         eta    = self.vp.get('drivetrain_efficiency', 0.92)
@@ -777,7 +777,7 @@ class DifferentiableMultiBodyVehicle:
         F_power  = jax.nn.softplus(v_max - vx) / v_max * F_max_tq
         return jnp.minimum(F_max_tq, F_power)
 
-    def compute_brake_forces(self, brake_force, Fz_f, Fz_r, vx, brake_bias_f):
+    def _DEPRECATED_compute_brake_forces(self, brake_force, Fz_f, Fz_r, vx, brake_bias_f):
         mu_pad    = self.vp.get('brake_mu', 0.40)
         F_brake_f = -brake_force * brake_bias_f         * mu_pad
         F_brake_r = -brake_force * (1.0 - brake_bias_f) * mu_pad
@@ -787,7 +787,7 @@ class DifferentiableMultiBodyVehicle:
     # §5.2  Differential
     # ─────────────────────────────────────────────────────────────────────────
 
-    def compute_differential_forces(
+    def _DEPRECATED_compute_differential_forces(
         self, T_drive_wheel, vx, wz,
         Fz_rl, Fz_rr, alpha_t_rl, alpha_t_rr,
         gamma_rl, gamma_rr, T_ribs_r, T_gas_r, diff_lock,
@@ -1031,39 +1031,73 @@ class DifferentiableMultiBodyVehicle:
         Mz_castor_fl = compute_castor_trail(s.castor_f, Fz_fl, self.R_wheel)
         Mz_castor_fr = compute_castor_trail(s.castor_f, Fz_fr, self.R_wheel)
 
-        T_drive    = self.compute_drive_force(jnp.clip(u[1] / 2000.0, 0.0, 1.0), vx) * self.R_wheel
-        F_brake_f, F_brake_r = self.compute_brake_forces(
-            jnp.maximum(-u[1], 0.0), Fz_fl + Fz_fr, Fz_rl + Fz_rr, vx, s.brake_bias_f)
-        Fx_brake_f = F_brake_f
+        # ═══════════════════════════════════════════════════════════════════
+        # §5.1  Hub Motor Torques (4WD — no mechanical differential)
+        # ═══════════════════════════════════════════════════════════════════
+        # u = [δ, T_fl, T_fr, T_rl, T_rr, F_brake_hyd]
+        T_hub_fl = u[1]   # [Nm] at wheel (post-reduction)
+        T_hub_fr = u[2]
+        T_hub_rl = u[3]
+        T_hub_rr = u[4]
+        F_brake_hyd = u[5]  # [N] hydraulic brake force (from regen_blend)
+ 
+        # Brake distribution: use setup brake_bias_f for hydraulic split
+        F_brake_f = -jnp.abs(F_brake_hyd) * s.brake_bias_f * 0.5
+        F_brake_r = -jnp.abs(F_brake_hyd) * (1.0 - s.brake_bias_f) * 0.5
+        Fx_brake_f = F_brake_f   # per-axle total (split evenly L/R below)
         Fx_brake_r = F_brake_r
-
-        eta        = self.vp.get('drivetrain_efficiency', 0.92)
-        T_fw       = T_drive * 0.25 * eta
-        vx_s       = jnp.maximum(jnp.abs(vx), 0.5)
-        v_fl_g     = jnp.maximum(jnp.abs(vx - wz * tf2), 0.5)
-        v_fr_g     = jnp.maximum(jnp.abs(vx + wz * tf2), 0.5)
-        omega_fl_d = v_fl_g / self.R_wheel + T_fw / (10.0 * self.R_wheel)
-        omega_fr_d = v_fr_g / self.R_wheel + T_fw / (10.0 * self.R_wheel)
-        kappa_ref_fl = 0.5 * jnp.tanh((omega_fl_d * self.R_wheel - v_fl_g) / (vx_s * 0.5))
-        kappa_ref_fr = 0.5 * jnp.tanh((omega_fr_d * self.R_wheel - v_fr_g) / (vx_s * 0.5))
+ 
+        # ── Front wheels: hub motor + hydraulic brake ────────────────────
+        eta = self.vp.get('drivetrain_efficiency', 0.95)
+        vx_s = jnp.maximum(jnp.abs(vx), 0.5)
+ 
+        # Per-wheel longitudinal velocity at contact patch
+        v_fl_g = jnp.maximum(jnp.abs(vx - wz * tf2), 0.5)
+        v_fr_g = jnp.maximum(jnp.abs(vx + wz * tf2), 0.5)
+        v_rl_g = jnp.maximum(jnp.abs(vx - wz * tr2), 0.5)
+        v_rr_g = jnp.maximum(jnp.abs(vx + wz * tr2), 0.5)
+ 
+        # Wheel angular velocities from applied torques
+        # ω = v/R + T/(J_eff · R)  where J_eff accounts for rotor inertia
+        J_eff = self.vp.get('wheel_inertia', 1.2)  # kg·m²
+        omega_fl = v_fl_g / self.R_wheel + T_hub_fl * eta / (J_eff * self.R_wheel + 1e-6)
+        omega_fr = v_fr_g / self.R_wheel + T_hub_fr * eta / (J_eff * self.R_wheel + 1e-6)
+        omega_rl = v_rl_g / self.R_wheel + T_hub_rl * eta / (J_eff * self.R_wheel + 1e-6)
+        omega_rr = v_rr_g / self.R_wheel + T_hub_rr * eta / (J_eff * self.R_wheel + 1e-6)
+ 
+        # Kinematic slip ratios (smooth tanh approximation)
+        kappa_ref_fl = 0.5 * jnp.tanh((omega_fl * self.R_wheel - v_fl_g) / (vx_s * 0.5))
+        kappa_ref_fr = 0.5 * jnp.tanh((omega_fr * self.R_wheel - v_fr_g) / (vx_s * 0.5))
+        kappa_ref_rl = 0.5 * jnp.tanh((omega_rl * self.R_wheel - v_rl_g) / (vx_s * 0.5))
+        kappa_ref_rr = 0.5 * jnp.tanh((omega_rr * self.R_wheel - v_rr_g) / (vx_s * 0.5))
+ 
+        # Transient slip dynamics (first-order lag)
         d_kappa_fl = (kappa_ref_fl - kappa_t_fl) / tau
         d_kappa_fr = (kappa_ref_fr - kappa_t_fr) / tau
-
-        Fx_rl, Fx_rr, Fy_rl, Fy_rr, kappa_t_rl_new, kappa_t_rr_new = \
-            self.compute_differential_forces(
-                T_drive, vx, wz,
-                Fz_rl, Fz_rr, alpha_t_rl, alpha_t_rr,
-                gamma_rl, gamma_rr, T_ribs_r, T_gas_r, s.diff_lock_ratio)
-
-        d_kappa_rl = (kappa_t_rl_new - kappa_t_rl) / tau
-        d_kappa_rr = (kappa_t_rr_new - kappa_t_rr) / tau
+        d_kappa_rl = (kappa_ref_rl - kappa_t_rl) / tau
+        d_kappa_rr = (kappa_ref_rr - kappa_t_rr) / tau
+ 
+        # Tire forces — all 4 corners independently
+        Fx_fl, Fy_fl = self.tire.compute_force(
+            alpha_t_fl, kappa_t_fl, Fz_fl, gamma_fl, T_ribs_f, T_gas_f, vx, wz=wz)
+        Fx_fr, Fy_fr = self.tire.compute_force(
+            alpha_t_fr, kappa_t_fr, Fz_fr, gamma_fr, T_ribs_f, T_gas_f, vx, wz=wz)
+        Fx_rl, Fy_rl = self.tire.compute_force(
+            alpha_t_rl, kappa_t_rl, Fz_rl, gamma_rl, T_ribs_r, T_gas_r, vx, wz=wz)
+        Fx_rr, Fy_rr = self.tire.compute_force(
+            alpha_t_rr, kappa_t_rr, Fz_rr, gamma_rr, T_ribs_r, T_gas_r, vx, wz=wz)
+ 
+        Mz_rl = self.tire.compute_aligning_torque(
+            alpha_t_rl, kappa_t_rl, Fz_rl, gamma_rl, Fy_rl, Fx_rl)
+        Mz_rr = self.tire.compute_aligning_torque(
+            alpha_t_rr, kappa_t_rr, Fz_rr, gamma_rr, Fy_rr, Fx_rr)
 
         Fy_f     = Fy_fl + Fy_fr
         Fy_r     = Fy_rl + Fy_rr
-        Fx_f     = Fx_fl + Fx_fr + Fx_brake_f
-        Fx_r     = Fx_rl + Fx_rr + Fx_brake_r
+        Fx_f     = Fx_fl + Fx_fr + F_brake_f      # both hydraulic brakes on front axle
+        Fx_r     = Fx_rl + Fx_rr + F_brake_r      # both hydraulic brakes on rear axle
         Mz_total = Mz_fl + Mz_fr + Mz_castor_fl + Mz_castor_fr
-        M_diff   = (Fx_rr - Fx_rl) * tr2
+        M_diff   = 0.0   # No mechanical differential — all yaw moment from TV
 
         F_ext = jnp.zeros(28)
         F_ext = F_ext.at[14].set(Fx_f + Fx_r - self.m_s * self.g * jnp.sin(theta_pitch))
@@ -1085,10 +1119,10 @@ class DifferentiableMultiBodyVehicle:
         F_ext = F_ext.at[21].set(-F_susp_fr + Fz_fr - self.m_us_f * self.g)
         F_ext = F_ext.at[22].set(-F_susp_rl + Fz_rl - self.m_us_r * self.g)
         F_ext = F_ext.at[23].set(-F_susp_rr + Fz_rr - self.m_us_r * self.g)
-        F_ext = F_ext.at[24].set(-Fx_fl * self.R_wheel + T_fw)
-        F_ext = F_ext.at[25].set(-Fx_fr * self.R_wheel + T_fw)
-        F_ext = F_ext.at[26].set(-Fx_rl * self.R_wheel + T_drive * 0.5)
-        F_ext = F_ext.at[27].set(-Fx_rr * self.R_wheel + T_drive * 0.5)
+        F_ext = F_ext.at[24].set(-Fx_fl * self.R_wheel + T_hub_fl * eta)
+        F_ext = F_ext.at[25].set(-Fx_fr * self.R_wheel + T_hub_fr * eta)
+        F_ext = F_ext.at[26].set(-Fx_rl * self.R_wheel + T_hub_rl * eta)
+        F_ext = F_ext.at[27].set(-Fx_rr * self.R_wheel + T_hub_rr * eta)
 
         dq_dt = PH_accel[0:14]
         dv_dt = (PH_accel[14:28] + F_ext[14:28]) / self.M_diag
@@ -1336,6 +1370,163 @@ def compute_equilibrium_suspension(setup_vec: jax.Array, vp: dict) -> jax.Array:
     z_r_eq = F_susp_r_eq / (k_r * mr_r ** 2 + 1e-6)
     return jnp.array([z_f_eq, z_f_eq, z_r_eq, z_r_eq])
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# NEW METHOD 1: observe_sensors()
+# ═══════════════════════════════════════════════════════════════════════════════
+ 
+import jax
+import jax.numpy as jnp
+from typing import NamedTuple
+ 
+ 
+class SensorReading(NamedTuple):
+    """Noisy sensor outputs — feeds the UKF state estimator."""
+    ax_imu:       jax.Array   # [m/s²] longitudinal accel + noise + bias
+    ay_imu:       jax.Array   # [m/s²] lateral accel + noise + bias
+    az_imu:       jax.Array   # [m/s²] vertical accel + noise + bias
+    wx_gyro:      jax.Array   # [rad/s] roll rate + noise + bias
+    wy_gyro:      jax.Array   # [rad/s] pitch rate + noise + bias
+    wz_gyro:      jax.Array   # [rad/s] yaw rate + noise + bias
+    omega_fl:     jax.Array   # [rad/s] wheel speed FL + quantization
+    omega_fr:     jax.Array   # [rad/s] wheel speed FR + quantization
+    omega_rl:     jax.Array   # [rad/s] wheel speed RL + quantization
+    omega_rr:     jax.Array   # [rad/s] wheel speed RR + quantization
+    delta_steer:  jax.Array   # [rad]   steering angle + noise
+    vx_gps:       jax.Array   # [m/s]   GPS longitudinal speed (low rate, high noise)
+ 
+ 
+# Sensor noise parameters (FS-realistic for MEMS IMU + wheel encoders)
+_IMU_ACC_NOISE_STD   = 0.15    # m/s²  (MPU-6050 class)
+_IMU_ACC_BIAS_STD    = 0.05    # m/s²  slowly drifting bias
+_IMU_GYRO_NOISE_STD  = 0.005   # rad/s
+_IMU_GYRO_BIAS_STD   = 0.001   # rad/s
+_WHEEL_SPEED_NOISE   = 0.3     # rad/s  (encoder quantization + bearing)
+_STEER_ANGLE_NOISE   = 0.002   # rad    (potentiometer)
+_GPS_SPEED_NOISE     = 0.5     # m/s    (10 Hz GPS)
+ 
+ 
+def observe_sensors(
+    x: jax.Array,
+    u: jax.Array,
+    key: jax.Array,
+    imu_bias: jax.Array = None,  # (6,) persistent IMU bias [ax,ay,az,wx,wy,wz]
+) -> SensorReading:
+    """
+    Generate noisy sensor readings from perfect simulation state.
+ 
+    Args:
+        x: (46,) full state vector
+        u: (6,)  input vector [δ, T_fl, T_fr, T_rl, T_rr, F_brake_hyd]
+        key: JAX PRNG key
+        imu_bias: (6,) persistent bias terms (should be held across steps)
+ 
+    Returns:
+        SensorReading with all noisy channels
+    """
+    if imu_bias is None:
+        imu_bias = jnp.zeros(6)
+ 
+    keys = jax.random.split(key, 12)
+ 
+    # True states
+    vx = x[14];  vy = x[15];  vz = x[16]
+    wx = x[17];  wy = x[18];  wz = x[19]
+ 
+    # Approximate true accelerations (from state derivatives)
+    # In practice these come from the previous step's derivative
+    ax_true = vx * 0.0   # placeholder — caller should pass dx/dt
+    ay_true = vx * wz     # centripetal
+    az_true = 9.81         # gravity (body frame, approx)
+ 
+    # IMU accelerometer: truth + white noise + bias
+    ax_imu = ax_true + imu_bias[0] + _IMU_ACC_NOISE_STD * jax.random.normal(keys[0])
+    ay_imu = ay_true + imu_bias[1] + _IMU_ACC_NOISE_STD * jax.random.normal(keys[1])
+    az_imu = az_true + imu_bias[2] + _IMU_ACC_NOISE_STD * jax.random.normal(keys[2])
+ 
+    # IMU gyroscope: truth + white noise + bias
+    wx_gyro = wx + imu_bias[3] + _IMU_GYRO_NOISE_STD * jax.random.normal(keys[3])
+    wy_gyro = wy + imu_bias[4] + _IMU_GYRO_NOISE_STD * jax.random.normal(keys[4])
+    wz_gyro = wz + imu_bias[5] + _IMU_GYRO_NOISE_STD * jax.random.normal(keys[5])
+ 
+    # Wheel speed encoders: truth + quantization noise
+    omega_fl = x[24] + _WHEEL_SPEED_NOISE * jax.random.normal(keys[6])
+    omega_fr = x[25] + _WHEEL_SPEED_NOISE * jax.random.normal(keys[7])
+    omega_rl = x[26] + _WHEEL_SPEED_NOISE * jax.random.normal(keys[8])
+    omega_rr = x[27] + _WHEEL_SPEED_NOISE * jax.random.normal(keys[9])
+ 
+    # Steering angle sensor
+    delta_steer = u[0] + _STEER_ANGLE_NOISE * jax.random.normal(keys[10])
+ 
+    # GPS speed (low-rate, high noise — simulated at physics rate but in
+    # practice this would be decimated to 10 Hz)
+    vx_gps = vx + _GPS_SPEED_NOISE * jax.random.normal(keys[11])
+ 
+    return SensorReading(
+        ax_imu=ax_imu, ay_imu=ay_imu, az_imu=az_imu,
+        wx_gyro=wx_gyro, wy_gyro=wy_gyro, wz_gyro=wz_gyro,
+        omega_fl=omega_fl, omega_fr=omega_fr,
+        omega_rl=omega_rl, omega_rr=omega_rr,
+        delta_steer=delta_steer, vx_gps=vx_gps,
+    )
+ 
+ 
+def step_imu_bias(
+    bias: jax.Array,
+    key: jax.Array,
+    dt: float = 0.005,
+) -> jax.Array:
+    """
+    Random-walk IMU bias update. Bias drifts slowly per step.
+ 
+    Args:
+        bias: (6,) current bias [ax,ay,az,wx,wy,wz]
+        key: PRNG key
+        dt: timestep
+ 
+    Returns:
+        (6,) updated bias
+    """
+    acc_drift = 0.001   # m/s² per sqrt(s)
+    gyro_drift = 0.0002  # rad/s per sqrt(s)
+    drift_std = jnp.array([
+        acc_drift, acc_drift, acc_drift,
+        gyro_drift, gyro_drift, gyro_drift,
+    ]) * jnp.sqrt(dt)
+    return bias + drift_std * jax.random.normal(key, shape=(6,))
+ 
+ 
+# ═══════════════════════════════════════════════════════════════════════════════
+# NEW METHOD 2: Domain Randomization for simulate_step
+# ═══════════════════════════════════════════════════════════════════════════════
+ 
+class DomainRandomization(NamedTuple):
+    """Per-step domain randomization parameters."""
+    mu_scale:     jax.Array   # friction coefficient multiplier (nominal=1.0)
+    track_noise:  jax.Array   # (4,) per-corner road surface roughness [m]
+    mass_delta:   jax.Array   # mass perturbation [kg] (driver weight uncertainty)
+    aero_scale:   jax.Array   # aero coefficient multiplier (nominal=1.0)
+ 
+ 
+def sample_domain_randomization(
+    key: jax.Array,
+    mu_std: float = 0.08,
+    track_std: float = 0.0005,   # 0.5mm road roughness
+    mass_std: float = 3.0,       # ±3 kg driver weight
+    aero_std: float = 0.05,
+) -> DomainRandomization:
+    """
+    Sample domain randomization parameters from physically motivated priors.
+ 
+    Designed to prevent the Batch 11 optimizer from overfitting to a
+    perfectly smooth track with perfect friction.
+    """
+    k1, k2, k3, k4 = jax.random.split(key, 4)
+    return DomainRandomization(
+        mu_scale=1.0 + mu_std * jax.random.normal(k1),
+        track_noise=track_std * jax.random.normal(k2, shape=(4,)),
+        mass_delta=mass_std * jax.random.normal(k3),
+        aero_scale=1.0 + aero_std * jax.random.normal(k4),
+    )
 
 # ─────────────────────────────────────────────────────────────────────────────
 # §7  Backward-compat aliases
