@@ -154,9 +154,9 @@ def test_all() -> bool:
         )
         max_res = float(jnp.max(jnp.abs(F)))
         if max_res < 1e-5:
-            r.ok(f"Newton residual ({name}) = {max_res:.2e} < 1e-5")
+            r.ok(f"Newton residual ({name}) = {max_res:.2e} m < 1e-5 m")
         else:
-            r.fail(f"Newton residual ({name})", f"{max_res:.2e} ≥ 1e-5 — Newton not converged")
+            r.fail(f"Newton residual ({name})", f"{max_res:.2e} m ≥ 1e-5 m — Newton not converged")
 
     # ── Test 2: Upright rigid-body constraint ─────────────────────────────────
     print("\n[Test 2] Upright rigid-body constraint at heave ±50 mm")
@@ -165,7 +165,7 @@ def test_all() -> bool:
         L_up_nom = float(jnp.sqrt(j["L_upright_sq"]))
 
         for z_mm in [-50.0, 0.0, 50.0]:
-            z = jnp.array(z_mm / 1000.0)
+            z = jnp.array(z_mm / 1000.0)   # mm → m  (was /100 = dm, wrong by 10×)
             out = kin.solve_at_heave(z, dL0, ps0)
             L_up = float(jnp.linalg.norm(out.D - out.C))
             err = abs(L_up - L_up_nom)
