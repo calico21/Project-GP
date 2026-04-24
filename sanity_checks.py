@@ -311,68 +311,57 @@ def test_aero_increases_with_speed():
 
 
 def test_differential_yaw_moment():
-    # ═══════════════════════════════════════════════════════════════════════
-    # FIX 3 — sanity_checks.py  (TEST 8)
-    #
-    # ROOT CAUSE: compute_differential_forces signature expanded to 12 args:
-    #   (self, T_drive_wheel, vx, wz,
-    #    Fz_rl, Fz_rr, alpha_t_rl, alpha_t_rr,
-    #    gamma_rl, gamma_rr,          ← gamma_rr was MISSING in the call
-    #    T_ribs_r, T_gas_r, diff_lock ← T_gas_r and diff_lock were MISSING)
-    #
-    # The old call passed only 10 positional args, so the mapping was:
-    #   gamma_rl  = 0.0          ← correct
-    #   gamma_rr  = T_r          ← WRONG (jnp.array([90,90,90]) → float expected)
-    #   T_ribs_r  = 90.0         ← WRONG (scalar → array expected)
-    #   T_gas_r   = <MISSING>
-    #   diff_lock = <MISSING>
-    # → TypeError: missing 2 required positional arguments: 'T_gas_r' and 'diff_lock'
-    #
-    # FIX: Add gamma_rr=0.0 and diff_lock=1.0 (spool = fully locked).
-    # ═══════════════════════════════════════════════════════════════════════
     print("\n" + "=" * 60)
-    print("TEST 8: SPOOL DIFFERENTIAL YAW MOMENT")
+    print("TEST 8: HUB MOTOR TORQUE VECTORING YAW MOMENT")
     print("=" * 60)
-    veh = DifferentiableMultiBodyVehicle(VP_DICT, TP_DICT)
+    # The mechanical differential is gone. Yaw moment is now generated
+    # purely by asymmetric hub torques via u = [δ, T_fl, T_fr, T_rl, T_rr, F_brake_hyd].
+    # This test verifies that commanding more torque to the outer wheels
+    # (right side on a left turn) produces a measurable yaw acceleration
+    # in the correct direction.
 
-    T_drive = 2000.0
-    vx      = 15.0
-    wz      = 0.5
-    Fz_rl   = 600.0
-    Fz_rr   = 1000.0
-    a_rl    = 0.05
-    a_rr    = 0.05
-    T_r     = jnp.array([90., 90., 90.])
+    from models.vehicle_dynamics import DifferentiableMultiBodyVehicle
+    from config.vehicles.ter26 import vehicle_params as VP
+    from config.tire_coeffs import tire_coeffs as TC
 
-    # ── BEFORE (broken) ───────────────────────────────────────────────────
-    # Fx_rl, Fx_rr, _, _, k_rl, k_rr = veh.compute_differential_forces(
-    #     T_drive, vx, wz, Fz_rl, Fz_rr, a_rl, a_rr, 0.0, T_r, 90.0)
-    #                                                  ^^^  ^^^  ^^^^
-    #                              gamma_rl=0.0 (ok)  |    |    missing T_gas_r
-    #                              gamma_rr = T_r ← WRONG  missing diff_lock
-    #
-    # ── AFTER (fixed) ────────────────────────────────────────────────────
-    Fx_rl, Fx_rr, _, _, k_rl, k_rr = veh.compute_differential_forces(
-        T_drive, vx, wz,
-        Fz_rl, Fz_rr,
-        a_rl, a_rr,
-        0.0,          # gamma_rl  (rad)
-        0.0,          # gamma_rr  (rad)  ← was missing
-        T_r,          # T_ribs_r  (3-node surface temps)
-        90.0,         # T_gas_r   (°C)   ← was missing
-        1.0,          # diff_lock (0=open, 1=fully locked spool) ← was missing
-    )
+    veh = DifferentiableMultiBodyVehicle(VP, TC)
 
-    M_diff = (Fx_rr - Fx_rl) * (veh.track_w / 2.0)
-    print(f"  > Inner (RL) Force: {float(Fx_rl):.1f} N | Slip: {float(k_rl):.3f}")
-    print(f"  > Outer (RR) Force: {float(Fx_rr):.1f} N | Slip: {float(k_rr):.3f}")
-    print(f"  > Generated Diff Yaw Moment: {float(M_diff):.1f} N.m")
+    # Initial state: 15 m/s straight-line, warm tires
+    x0 = jnp.zeros(46)
+    x0 = x0.at[14].set(15.0)          # vx = 15 m/s
+    x0 = x0.at[28:38].set(jnp.full(10, 88.0))  # warm tires
 
-    if abs(float(M_diff)) > 1.0:
-        print("[PASS] Locked differential successfully generating "
-              "track-realistic asymmetric yaw moment.")
+    setup = veh._default_setup_vec
+    dt = 0.005
+
+    # ── Baseline: symmetric torque (no yaw moment) ───────────────────────
+    u_sym = jnp.array([0.0, 200.0, 200.0, 200.0, 200.0, 0.0])
+    x_sym = veh.simulate_step(x0, u_sym, setup, dt=dt)
+    wz_sym = float(x_sym[19])
+
+    # ── Asymmetric: right wheels get +100 Nm more → left-hand yaw ────────
+    # u = [δ, T_fl, T_fr, T_rl, T_rr, F_brake_hyd]
+    u_asym = jnp.array([0.0, 150.0, 250.0, 150.0, 250.0, 0.0])
+    x_asym = veh.simulate_step(x0, u_asym, setup, dt=dt)
+    wz_asym = float(x_asym[19])
+
+    delta_wz = wz_asym - wz_sym
+    has_nan = bool(jnp.any(jnp.isnan(x_asym)))
+
+    print(f"  Symmetric  wz after 1 step: {wz_sym:.5f} rad/s")
+    print(f"  Asymmetric wz after 1 step: {wz_asym:.5f} rad/s")
+    print(f"  Δwz from torque vectoring:  {delta_wz:+.5f} rad/s")
+    print(f"  NaN in state: {has_nan}")
+
+    # Right wheels getting more torque → Fx_rr > Fx_rl → positive Mz → wz increases
+    if not has_nan and delta_wz > 1e-4:
+        print("[PASS] Hub motor torque vectoring generates correct-sign yaw moment.")
+    elif not has_nan and abs(delta_wz) > 1e-6:
+        print(f"[FAIL] Yaw moment has wrong sign (delta_wz={delta_wz:+.6f}). "
+              f"Check Fx_rr - Fx_rl sign in F_ext[19].")
     else:
-        print("[FAIL] Differential produced zero yaw moment.")
+        print(f"[FAIL] No yaw response to asymmetric hub torques "
+              f"(delta_wz={delta_wz:.2e}). TV path may be broken.")
 
 def test_spring_rate_not_pinned():
     print("\n" + "=" * 60)

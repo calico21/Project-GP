@@ -171,8 +171,8 @@ def compute_compliance_steer_coefficient(
     out_0 = kin.solve_at_heave(z, dL0, ps0)
     toe_0 = float(out_0.toe_rad)
 
-    # Approximate tie rod force from Fy
-    F_tierod = 0.5 * jnp.abs(Fy_test)   # simplified
+    # Approximate tie rod force from aligning torque moment arm
+    F_tierod = -0.15 * Fy_test
     dL_tr = F_tierod / bushing_params.K_tie_rod   # tie rod length change
 
     # Re-solve with perturbed tie rod length

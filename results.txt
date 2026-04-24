@@ -265,6 +265,85 @@ TEST 18: DYNAMIC REGEN BLEND (BATCH 9)
 
 
 (project_gp_env) alexr@ALEXRP:~/FS_Driver_Setup_Optimizer$ 
+(project_gp_env) alexr@ALEXRP:~/FS_Driver_Setup_Optimizer$ python -m tests.test_batch_10_5
+[JAX Config] XLA cache : /home/alexr/FS_Driver_Setup_Optimizer/.jax_cache
+[JAX Config] Device    : gpu
+[JAX Config] Devices   : [CudaDevice(id=0)]
+
+════════════════════════════════════════════════════════════
+  BATCH 10.5 SANITY CHECK SUITE
+════════════════════════════════════════════════════════════
+
+============================================================
+TEST 20: UKF CONVERGENCE (ZERO NOISE)
+============================================================
+  vx estimated: 15.000 (true: 15.0), err: 0.0002
+  wz estimated: 0.4998 (true: 0.5), err: 0.0002
+  Fz estimated: [ 376.4 1036.2  527.8 1198.8]
+  P trace: 142.99
+[PASS] UKF converges to truth with perfect sensors
+
+============================================================
+TEST 21: UKF WITH REALISTIC NOISE
+============================================================
+  vx estimated: 15.001 (true: 15.0), err: 0.001
+  P eigenvalues: min=1.77e-05, max=3.87e+01
+  All eigenvalues positive: True
+[PASS] UKF tracks truth with noise, covariance stable
+
+============================================================
+TEST 24: ANTI-GEOMETRY BRAKE BIAS SWEEP
+============================================================
+  Bias range: [0.05, 0.95]
+  Worst pitch gain: 1.703 deg/G at bias=0.05
+  Pitch gains finite: True
+  Penalty value: 11.7935
+  ∂penalty/∂ic_f_z: -23.083954
+[PASS] Anti-geometry sweep is smooth and differentiable
+
+============================================================
+TEST 22: YAW_TARGET_GAIN IN SUSPENSIONSTEP
+============================================================
+  SETUP_NAMES[23] = 'yaw_target_gain' ✓
+  SuspensionSetup._fields[23] = 'yaw_target_gain' ✓
+  DEFAULT_SETUP[23] = 0.80 ✓
+  from_vector/to_vector roundtrip ✓
+[PASS] yaw_target_gain correctly integrated
+
+============================================================
+TEST 19: HUB MOTOR INPUT VECTOR (4WD)
+============================================================
+[VehicleDynamics] H_net train scale (diagnostic): 4977.7896 J  [NOT applied to architecture]
+[VehicleDynamics] Loaded h_net.bytes
+[VehicleDynamics] Loaded r_net.bytes
+  vx after 10 steps: 5.440 m/s (initial: 5.0)
+  NaN in state: False
+[PASS] Hub motors produce positive acceleration, no NaN
+
+============================================================
+TEST 23: ANALYTICAL COMPLIANCE STEER
+============================================================
+[SuspensionKinematics/left] Initialised. KPI=-10.00°, Caster=5.00°, trail=17.8 mm, L_upright=160.4 mm, L_tr=426.7 mm, L_rod=421.4 mm  (pushrod)
+  Compliance steer (front): -0.1523 deg/kN
+[PASS] Compliance steer in realistic range
+
+============================================================
+TEST 25: DOMAIN RANDOMIZATION SAMPLING
+============================================================
+  mu_scale:    1.1504 (nominal: 1.0)
+  track_noise: [-0.0007   0.00072  0.00031  0.0001 ]
+  mass_delta:  1.17 kg
+  aero_scale:  1.0338
+[PASS] Domain randomization produces physically reasonable samples
+
+════════════════════════════════════════════════════════════
+  SUMMARY
+────────────────────────────────────────────────────────────
+  PASSED:  7/7
+  FAILED:  0/7
+  SKIPPED: 0/7
+════════════════════════════════════════════════════════════
+(project_gp_env) alexr@ALEXRP:~/FS_Driver_Setup_Optimizer$ 
 
 (project_gp_env) alexr@ALEXRP:~/FS_Driver_Setup_Optimizer$ pkill -9 -f gradient_server.py
 python scripts/gradient_server.py --port 8766

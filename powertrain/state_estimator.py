@@ -90,7 +90,7 @@ class UKFParams(NamedTuple):
     r_vx_gps:   float = 0.5      # m/s GPS speed
 
     # UKF scaling parameters (Wan-van der Merwe defaults)
-    alpha_ukf:  float = 1e-3     # spread of sigma points
+    alpha_ukf:  float = 1.0      # MUST be 1.0 for float32 numerical stability
     beta_ukf:   float = 2.0      # prior: Gaussian
     kappa_ukf:  float = 0.0      # secondary scaling
 
@@ -163,8 +163,9 @@ def _generate_sigma_points(
     n = x.shape[0]
     scale = jnp.sqrt(n + lam)
 
-    # Cholesky with jitter for numerical stability
-    L = jnp.linalg.cholesky(P + 1e-8 * jnp.eye(n))
+    # Symmetrize P and add jitter for numerical stability
+    P_sym = 0.5 * (P + P.T)
+    L = jnp.linalg.cholesky(P_sym + 1e-6 * jnp.eye(n))
     S = scale * L
 
     # sigma_points[0] = x (mean)
@@ -406,47 +407,36 @@ def ukf_update(
     params: UKFParams,
     n_state: int = N_STATE,
 ) -> UKFState:
-    """
-    UKF measurement update step.
-
-    Args:
-        ukf: predicted UKF state (from ukf_predict)
-        z_meas: (N_MEAS,) actual sensor measurements
-        u_delta: steering angle (for measurement model)
-        params: UKF parameters
-    """
     W_m, W_c, lam = _compute_sigma_weights(n_state, params)
     R = _build_R(params)
 
-    # Re-generate sigma points from predicted state
     sigmas = _generate_sigma_points(ukf.x, ukf.P, lam)
 
-    # Propagate sigma points through measurement model
     z_sigmas = jax.vmap(
         lambda s: _measurement_model(s, u_delta, params)
-    )(sigmas)   # (2n+1, N_MEAS)
+    )(sigmas)
 
-    # Predicted measurement mean
     z_pred = jnp.sum(W_m[:, None] * z_sigmas, axis=0)
 
-    # Innovation covariance S and cross-covariance T
     dz = z_sigmas - z_pred[None, :]
     dx = sigmas - ukf.x[None, :]
 
-    S = jnp.sum(W_c[:, None, None] * (dz[:, :, None] * dz[:, None, :]), axis=0) + R
-    T = jnp.sum(W_c[:, None, None] * (dx[:, :, None] * dz[:, None, :]), axis=0)
+    S_raw = jnp.sum(W_c[:, None, None] * (dz[:, :, None] * dz[:, None, :]), axis=0) + R
+    T     = jnp.sum(W_c[:, None, None] * (dx[:, :, None] * dz[:, None, :]), axis=0)
 
-    # Kalman gain
-    K = jnp.linalg.solve(S.T, T.T).T   # K = T @ S^{-1}
+    S_stable = 0.5 * (S_raw + S_raw.T) + 1e-6 * jnp.eye(S_raw.shape[0])
 
-    # State update
-    innovation = z_meas - z_pred
-    x_new = ukf.x + K @ innovation
+    K = jnp.linalg.solve(S_stable.T, T.T).T   # (n_state, n_meas)
 
-    # Covariance update (Joseph form for numerical stability)
-    I_KH = jnp.eye(n_state) - K @ jnp.linalg.solve(ukf.P, T).T
-    P_new = I_KH @ ukf.P @ I_KH.T + K @ R @ K.T
-    P_new = 0.5 * (P_new + P_new.T)   # symmetrize
+    x_new = ukf.x + K @ (z_meas - z_pred)
+
+    # ── Covariance update: standard UKF form  P -= K S K^T  ────────────
+    # Avoids the second matrix inversion in the Joseph form (P^{-1} T),
+    # which compounds float32 error over O(500) steps and drives P non-PSD.
+    P_new = ukf.P - K @ S_stable @ K.T
+
+    # Symmetrize + small diagonal floor to prevent float32 drift escaping
+    P_new = 0.5 * (P_new + P_new.T) + 1e-7 * jnp.eye(n_state)
 
     return UKFState(x=x_new, P=P_new, t=ukf.t)
 

@@ -753,6 +753,9 @@ class DifferentiableMultiBodyVehicle:
         self.H_params    = self.H_net.init(rng_h, jnp.zeros(14), jnp.zeros(14), DEFAULT_SETUP)
         self.R_params    = self.R_net.init(rng_r, jnp.zeros(14), jnp.zeros(14))
         self.Aero_params = self.aero_map.init(rng_a, 0.0, 0.0, 0.0, 0.0, 0.0)
+        
+        # Batch 10.5 default setup export
+        self._default_setup_vec = jnp.array(DEFAULT_SETUP, dtype=jnp.float32)
 
         for attr, fname in [('H_params',    'h_net.bytes'),
                              ('R_params',    'r_net.bytes'),
@@ -1135,7 +1138,7 @@ class DifferentiableMultiBodyVehicle:
             x[28:38],
             jnp.array([Fz_fl, Fz_fr, Fz_rl, Fz_rr]),
             jnp.array([jnp.abs(kappa_ref_fl), jnp.abs(kappa_ref_fr),
-                       jnp.abs(kappa_t_rl_new), jnp.abs(kappa_t_rr_new)]),
+                       jnp.abs(kappa_ref_rl), jnp.abs(kappa_ref_rr)]),
             jnp.abs(vx),
         ) if hasattr(self.tire, 'compute_thermal_derivatives') else jnp.zeros(10))
 
