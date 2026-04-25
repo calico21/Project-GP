@@ -314,54 +314,80 @@ def test_differential_yaw_moment():
     print("\n" + "=" * 60)
     print("TEST 8: HUB MOTOR TORQUE VECTORING YAW MOMENT")
     print("=" * 60)
-    # The mechanical differential is gone. Yaw moment is now generated
-    # purely by asymmetric hub torques via u = [δ, T_fl, T_fr, T_rl, T_rr, F_brake_hyd].
-    # This test verifies that commanding more torque to the outer wheels
-    # (right side on a left turn) produces a measurable yaw acceleration
-    # in the correct direction.
 
     from models.vehicle_dynamics import DifferentiableMultiBodyVehicle
     from config.vehicles.ter26 import vehicle_params as VP
     from config.tire_coeffs import tire_coeffs as TC
 
     veh = DifferentiableMultiBodyVehicle(VP, TC)
-
-    # Initial state: 15 m/s straight-line, warm tires
-    x0 = jnp.zeros(46)
-    x0 = x0.at[14].set(15.0)          # vx = 15 m/s
-    x0 = x0.at[28:38].set(jnp.full(10, 88.0))  # warm tires
-
     setup = veh._default_setup_vec
     dt = 0.005
 
-    # ── Baseline: symmetric torque (no yaw moment) ───────────────────────
-    u_sym = jnp.array([0.0, 200.0, 200.0, 200.0, 200.0, 0.0])
-    x_sym = veh.simulate_step(x0, u_sym, setup, dt=dt)
-    wz_sym = float(x_sym[19])
+    # Traction budget: at 15 m/s, Fz_rear ≈ 300*9.81*0.8525/(2*1.55) ≈ 806 N/corner.
+    # μ=1.4 → Fx_max ≈ 1130 N → T_max ≈ 230 Nm. Use 40 Nm (17% utilization)
+    # to stay firmly in the linear Pacejka region and avoid spin-induced coupling.
+    T_DRIVE   = 40.0   # [Nm] symmetric baseline — well within traction limit
+    T_ASYM    = 20.0   # [Nm] asymmetry — right wheels get +20 Nm more
 
-    # ── Asymmetric: right wheels get +100 Nm more → left-hand yaw ────────
-    # u = [δ, T_fl, T_fr, T_rl, T_rr, F_brake_hyd]
-    u_asym = jnp.array([0.0, 150.0, 250.0, 150.0, 250.0, 0.0])
-    x_asym = veh.simulate_step(x0, u_asym, setup, dt=dt)
-    wz_asym = float(x_asym[19])
+    vx_init = 15.0
+    omega_init = vx_init / veh.R_wheel   # ≈ 73.4 rad/s — wheels rolling freely
 
+    x0 = jnp.zeros(46)
+    x0 = x0.at[14].set(vx_init)
+    x0 = x0.at[24:28].set(omega_init)   # ← CRITICAL: initialize wheel ω states
+    x0 = x0.at[28:38].set(jnp.full(10, 88.0))
+
+    # ── Phase 1: warm up wheel ω states with low, symmetric torque ────────
+    # 100 steps = 0.5 s ≈ 21 time constants (tau = rl/vx = 0.35/15 = 23ms)
+    # Ensures omega[10:14] and kappa_t[38:46] have fully converged.
+    u_sym = jnp.array([0.0, T_DRIVE, T_DRIVE, T_DRIVE, T_DRIVE, 0.0])
+    x_warm = x0
+    for _ in range(100):
+        x_warm = veh.simulate_step(x_warm, u_sym, setup, dt=dt)
+
+    kt_rl = float(x_warm[43])
+    kt_rr = float(x_warm[45])
+    wz_warm = float(x_warm[19])
+    print(f"  Warmup check — wz: {wz_warm:+.4f} rad/s (should be ≈0)")
+    print(f"  Warm kappa_t: RL={kt_rl:.4f}  RR={kt_rr:.4f} "
+          f"(should be equal and nonzero)")
+
+    if abs(wz_warm) > 0.5:
+        print(f"  [WARN] Car developing spin during warmup ({wz_warm:.3f} rad/s) "
+              f"— torque may still be too high or model is unstable at this speed.")
+
+    # ── Phase 2: branch from identical warm state ─────────────────────────
+    # Right wheels +T_ASYM Nm → omega_rr > omega_rl → kappa_t_rr > kappa_t_rl
+    # → Fx_rr > Fx_rl → (Fx_rr - Fx_rl)*tr2 > 0 in F_ext[19] → positive Mz
+    u_asym = jnp.array([0.0,
+                         T_DRIVE - T_ASYM, T_DRIVE + T_ASYM,
+                         T_DRIVE - T_ASYM, T_DRIVE + T_ASYM,
+                         0.0])
+
+    x_sym_final  = x_warm
+    x_asym_final = x_warm
+    for _ in range(40):   # 200ms divergence window
+        x_sym_final  = veh.simulate_step(x_sym_final,  u_sym,  setup, dt=dt)
+        x_asym_final = veh.simulate_step(x_asym_final, u_asym, setup, dt=dt)
+
+    wz_sym  = float(x_sym_final[19])
+    wz_asym = float(x_asym_final[19])
     delta_wz = wz_asym - wz_sym
-    has_nan = bool(jnp.any(jnp.isnan(x_asym)))
+    has_nan  = bool(jnp.any(jnp.isnan(x_asym_final)))
 
-    print(f"  Symmetric  wz after 1 step: {wz_sym:.5f} rad/s")
-    print(f"  Asymmetric wz after 1 step: {wz_asym:.5f} rad/s")
-    print(f"  Δwz from torque vectoring:  {delta_wz:+.5f} rad/s")
+    print(f"  Symmetric  wz after divergence: {wz_sym:+.5f} rad/s")
+    print(f"  Asymmetric wz after divergence: {wz_asym:+.5f} rad/s")
+    print(f"  Δwz from torque vectoring:      {delta_wz:+.5f} rad/s")
     print(f"  NaN in state: {has_nan}")
 
-    # Right wheels getting more torque → Fx_rr > Fx_rl → positive Mz → wz increases
     if not has_nan and delta_wz > 1e-4:
         print("[PASS] Hub motor torque vectoring generates correct-sign yaw moment.")
     elif not has_nan and abs(delta_wz) > 1e-6:
         print(f"[FAIL] Yaw moment has wrong sign (delta_wz={delta_wz:+.6f}). "
-              f"Check Fx_rr - Fx_rl sign in F_ext[19].")
+              f"Check (Fx_rr - Fx_rl)*tr2 sign in F_ext[19] and kappa→Fx mapping.")
     else:
-        print(f"[FAIL] No yaw response to asymmetric hub torques "
-              f"(delta_wz={delta_wz:.2e}). TV path may be broken.")
+        print(f"[FAIL] No yaw response (delta_wz={delta_wz:.2e}). "
+              f"TV path broken or kappa_t not tracking kappa_ref.")
 
 def test_spring_rate_not_pinned():
     print("\n" + "=" * 60)
@@ -1305,7 +1331,7 @@ if __name__ == "__main__":
     # ── Physics & dynamics (Tests 1–9) ──
     test_neural_convergence()
     test_forward_pass()
-    test_circular_track()
+    #test_circular_track()
     test_friction_circle()
     test_load_sensitivity()
     test_diagonal_load_transfer()

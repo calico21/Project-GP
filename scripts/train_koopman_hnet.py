@@ -82,10 +82,36 @@ def _norm_E(E: np.ndarray, cfg: KoopmanTVConfig) -> np.ndarray:
 
 
 def fit_edmd_matrices(phi_apply, E_norm, Mz_norm, E_next_norm, m):
+    # 1. Generate features
     Z      = np.array(jax.vmap(phi_apply)(jnp.array(E_norm)))
     Z_next = np.array(jax.vmap(phi_apply)(jnp.array(E_next_norm)))
     X      = np.concatenate([Z, Mz_norm[:, None]], axis=1)
-    Theta, _, _, _ = np.linalg.lstsq(X, Z_next, rcond=None)
+    
+    # 2. Crucial: Purge any NaN/Inf data points that might have 
+    # slipped through the XLA compiled physics engine.
+    valid_mask = np.isfinite(X).all(axis=1) & np.isfinite(Z_next).all(axis=1)
+    X = X[valid_mask]
+    Z_next = Z_next[valid_mask]
+
+    # 3. Dynamic Regularization (scales with data size)
+    n_samples, n_features = X.shape
+    lambda_reg = 1e-4 * n_samples  # Stronger penalty for larger matrices
+    
+    X_T = X.T
+    A = X_T @ X + lambda_reg * np.eye(n_features)
+    B = X_T @ Z_next
+    
+    # 4. Use a robust pseudo-inverse fallback instead of strict Cholesky
+    try:
+        # Try the fast, symmetric solver first
+        import scipy.linalg
+        Theta = scipy.linalg.solve(A, B, assume_a='pos')
+    except (np.linalg.LinAlgError, ValueError):
+        # If the matrix is still technically singular (or nearly), 
+        # fall back to the SVD-based pinv which NEVER crashes.
+        print("  [WARN] Matrix singular in EDMD, falling back to regularized PINV.")
+        Theta = np.linalg.pinv(A) @ B
+        
     return Theta[:m].T, Theta[m]   # K, b
 
 

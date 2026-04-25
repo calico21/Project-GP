@@ -753,7 +753,7 @@ class DifferentiableMultiBodyVehicle:
         self.H_params    = self.H_net.init(rng_h, jnp.zeros(14), jnp.zeros(14), DEFAULT_SETUP)
         self.R_params    = self.R_net.init(rng_r, jnp.zeros(14), jnp.zeros(14))
         self.Aero_params = self.aero_map.init(rng_a, 0.0, 0.0, 0.0, 0.0, 0.0)
-        
+
         # Batch 10.5 default setup export
         self._default_setup_vec = jnp.array(DEFAULT_SETUP, dtype=jnp.float32)
 
@@ -988,9 +988,9 @@ class DifferentiableMultiBodyVehicle:
         h_rc_r = self._h_rc0_r + self._dh_rc_dz_r * (z_rl + z_rr) * 0.5
 
         gamma_fl = jnp.deg2rad(s.camber_f + self._camber_dz_f * z_fl + self.vp.get('camber_gain_f', -0.80) * jnp.rad2deg(phi_roll) * 0.5)
-        gamma_fr = jnp.deg2rad(s.camber_f + self._camber_dz_f * z_fr - self.vp.get('camber_gain_f', -0.80) * jnp.rad2deg(phi_roll) * 0.5)
+        gamma_fr = jnp.deg2rad(-s.camber_f + self._camber_dz_f * z_fr - self.vp.get('camber_gain_f', -0.80) * jnp.rad2deg(phi_roll) * 0.5)
         gamma_rl = jnp.deg2rad(s.camber_r + self._camber_dz_r * z_rl + self.vp.get('camber_gain_r', -0.65) * jnp.rad2deg(phi_roll) * 0.5)
-        gamma_rr = jnp.deg2rad(s.camber_r + self._camber_dz_r * z_rr - self.vp.get('camber_gain_r', -0.65) * jnp.rad2deg(phi_roll) * 0.5)
+        gamma_rr = jnp.deg2rad(-s.camber_r + self._camber_dz_r * z_rr - self.vp.get('camber_gain_r', -0.65) * jnp.rad2deg(phi_roll) * 0.5)
 
         delta_cmd   = u[0]
         delta_bs_fl = compute_bump_steer(z_fl, s.bump_steer_f, self._bs2_f)
@@ -1037,44 +1037,37 @@ class DifferentiableMultiBodyVehicle:
         # ═══════════════════════════════════════════════════════════════════
         # §5.1  Hub Motor Torques (4WD — no mechanical differential)
         # ═══════════════════════════════════════════════════════════════════
-        # u = [δ, T_fl, T_fr, T_rl, T_rr, F_brake_hyd]
-        T_hub_fl = u[1]   # [Nm] at wheel (post-reduction)
-        T_hub_fr = u[2]
-        T_hub_rl = u[3]
-        T_hub_rr = u[4]
-        F_brake_hyd = u[5]  # [N] hydraulic brake force (from regen_blend)
- 
-        # Brake distribution: use setup brake_bias_f for hydraulic split
+        # ── Hub Motor Torques ───────────────────────────────────────────────────
+        T_hub_fl = u[1]; T_hub_fr = u[2]; T_hub_rl = u[3]; T_hub_rr = u[4]
+        F_brake_hyd = u[5]
+
         F_brake_f = -jnp.abs(F_brake_hyd) * s.brake_bias_f * 0.5
         F_brake_r = -jnp.abs(F_brake_hyd) * (1.0 - s.brake_bias_f) * 0.5
-        Fx_brake_f = F_brake_f   # per-axle total (split evenly L/R below)
-        Fx_brake_r = F_brake_r
- 
-        # ── Front wheels: hub motor + hydraulic brake ────────────────────
+
         eta = self.vp.get('drivetrain_efficiency', 0.95)
         vx_s = jnp.maximum(jnp.abs(vx), 0.5)
- 
-        # Per-wheel longitudinal velocity at contact patch
+
         v_fl_g = jnp.maximum(jnp.abs(vx - wz * tf2), 0.5)
         v_fr_g = jnp.maximum(jnp.abs(vx + wz * tf2), 0.5)
         v_rl_g = jnp.maximum(jnp.abs(vx - wz * tr2), 0.5)
         v_rr_g = jnp.maximum(jnp.abs(vx + wz * tr2), 0.5)
- 
-        # Wheel angular velocities from applied torques
-        # ω = v/R + T/(J_eff · R)  where J_eff accounts for rotor inertia
-        J_eff = self.vp.get('wheel_inertia', 1.2)  # kg·m²
-        omega_fl = v_fl_g / self.R_wheel + T_hub_fl * eta / (J_eff * self.R_wheel + 1e-6)
-        omega_fr = v_fr_g / self.R_wheel + T_hub_fr * eta / (J_eff * self.R_wheel + 1e-6)
-        omega_rl = v_rl_g / self.R_wheel + T_hub_rl * eta / (J_eff * self.R_wheel + 1e-6)
-        omega_rr = v_rr_g / self.R_wheel + T_hub_rr * eta / (J_eff * self.R_wheel + 1e-6)
- 
-        # Kinematic slip ratios (smooth tanh approximation)
-        kappa_ref_fl = 0.5 * jnp.tanh((omega_fl * self.R_wheel - v_fl_g) / (vx_s * 0.5))
-        kappa_ref_fr = 0.5 * jnp.tanh((omega_fr * self.R_wheel - v_fr_g) / (vx_s * 0.5))
-        kappa_ref_rl = 0.5 * jnp.tanh((omega_rl * self.R_wheel - v_rl_g) / (vx_s * 0.5))
-        kappa_ref_rr = 0.5 * jnp.tanh((omega_rr * self.R_wheel - v_rr_g) / (vx_s * 0.5))
- 
-        # Transient slip dynamics (first-order lag)
+
+        # ── CRITICAL FIX: use wheel angular velocity STATES for kappa ────────
+        # v[10:14] are the wheel ω DOFs integrated by F_ext[24:27].
+        # The previous code overwrote omega_fl/fr/rl/rr with a dimensionally-wrong
+        # algebraic formula (T/(J*R) has units N/(kg·m²), not rad/s), which
+        # saturated kappa_ref to ±0.5 for any nonzero torque, making all
+        # asymmetric torque commands invisible to the tire model.
+        omega_wheel_fl = v[10]
+        omega_wheel_fr = v[11]
+        omega_wheel_rl = v[12]
+        omega_wheel_rr = v[13]
+
+        kappa_ref_fl = (omega_wheel_fl * self.R_wheel) / (v_fl_g + 1e-6) - 1.0
+        kappa_ref_fr = (omega_wheel_fr * self.R_wheel) / (v_fr_g + 1e-6) - 1.0
+        kappa_ref_rl = (omega_wheel_rl * self.R_wheel) / (v_rl_g + 1e-6) - 1.0
+        kappa_ref_rr = (omega_wheel_rr * self.R_wheel) / (v_rr_g + 1e-6) - 1.0
+
         d_kappa_fl = (kappa_ref_fl - kappa_t_fl) / tau
         d_kappa_fr = (kappa_ref_fr - kappa_t_fr) / tau
         d_kappa_rl = (kappa_ref_rl - kappa_t_rl) / tau
@@ -1099,7 +1092,7 @@ class DifferentiableMultiBodyVehicle:
         Fy_r     = Fy_rl + Fy_rr
         Fx_f     = Fx_fl + Fx_fr + F_brake_f      # both hydraulic brakes on front axle
         Fx_r     = Fx_rl + Fx_rr + F_brake_r      # both hydraulic brakes on rear axle
-        Mz_total = Mz_fl + Mz_fr + Mz_castor_fl + Mz_castor_fr
+        Mz_total = Mz_fl + Mz_fr + Mz_rl + Mz_rr + Mz_castor_fl + Mz_castor_fr
         M_diff   = 0.0   # No mechanical differential — all yaw moment from TV
 
         F_ext = jnp.zeros(28)
@@ -1108,15 +1101,17 @@ class DifferentiableMultiBodyVehicle:
         F_ext = F_ext.at[16].set(F_susp_fl + F_susp_fr + F_susp_rl + F_susp_rr
                                   - self.m_s * self.g * jnp.cos(phi_roll) * jnp.cos(theta_pitch)
                                   + Fz_aero_f + Fz_aero_r)
+        # CORRECT: Left upward force (+y) gives positive roll (+Mx)
+        # Ensure this exact sign convention
         F_ext = F_ext.at[17].set(-Fy_f * h_rc_f - Fy_r * h_rc_r
-                                  + (F_susp_fr - F_susp_fl) * tf2
-                                  + (F_susp_rr - F_susp_rl) * tr2 + Mx_aero)
+                                + (F_susp_fl - F_susp_fr) * tf2
+                                + (F_susp_rl - F_susp_rr) * tr2 + Mx_aero)
         F_ext = F_ext.at[18].set((Fx_f + Fx_r) * s.h_cg
                                   - (F_susp_fl + F_susp_fr) * self.lf
                                   + (F_susp_rl + F_susp_rr) * self.lr + My_aero)
         F_ext = F_ext.at[19].set(Fy_f * self.lf - Fy_r * self.lr
-                                  + (Fx_fr - Fx_fl) * tf2
-                                  + (Fx_rr - Fx_rl) * tr2
+                                  + (Fx_fl - Fx_fr) * tf2
+                                  + (Fx_rl - Fx_rr) * tr2
                                   + Mz_total + M_diff)
         F_ext = F_ext.at[20].set(-F_susp_fl + Fz_fl - self.m_us_f * self.g)
         F_ext = F_ext.at[21].set(-F_susp_fr + Fz_fr - self.m_us_f * self.g)
