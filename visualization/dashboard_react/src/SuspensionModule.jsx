@@ -170,6 +170,7 @@ const PARAM_GROUPS = [
 // Sub-tab configuration
 const TABS = [
   { key: "schematic", label: "Kinematic Schematic" },
+  { key: "model3d", label: "3D Hardpoints" },
   { key: "kinematics", label: "Kinematic Sweeps" },
   { key: "dynamics", label: "Dynamics & Forces" },
   { key: "antigeom", label: "Anti-Geometry" },
@@ -597,17 +598,28 @@ function KinematicSchematicSVG({ axle, heave, roll, liveForces }) {
             strokeDasharray="4 4" 
             opacity="0.6" 
           />
-          {/* Thin Tire Bounding Outline */}
+          {/* Realistic tire section width so it reads like a Formula Student tyre */}
           <rect
-            x={wc.x - (50 * scale) / 2}
+            x={wc.x - (165 * scale) / 2}
             y={wc.y - (VG.wR * scale)}
-            width={50 * scale}
+            width={165 * scale}
             height={VG.wR * 2 * scale}
-            rx="4"
-            fill="transparent"
+            rx="14"
+            fill="rgba(226,232,240,0.05)"
             stroke={C.dm || "#4a5568"}
-            strokeWidth="1.5"
-            opacity="0.5"
+            strokeWidth="1.8"
+            opacity="0.8"
+          />
+          <rect
+            x={wc.x - (165 * scale) / 2 + 10}
+            y={wc.y - (VG.wR * scale) + 10}
+            width={165 * scale - 20}
+            height={VG.wR * 2 * scale - 20}
+            rx="10"
+            fill="none"
+            stroke="rgba(148,163,184,0.35)"
+            strokeWidth="1"
+            opacity="0.8"
           />
         </g>
         <circle cx={wc.x} cy={wc.y} r="3" fill={C.dm || "#4a5568"} />
@@ -785,6 +797,298 @@ function KinematicSchematicSVG({ axle, heave, roll, liveForces }) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// 3D HELPERS — isometric projection from exact hardpoints
+// ═══════════════════════════════════════════════════════════════════════════
+
+function lerp(a, b, t) {
+  return a + (b - a) * t;
+}
+
+function sampleDynamics(data, tSec) {
+  if (!data?.length) return null;
+  const duration = data[data.length - 1]?.t ?? 8;
+  const t = ((tSec % duration) + duration) % duration;
+
+  let hi = 0;
+  while (hi < data.length && data[hi].t < t) hi += 1;
+  if (hi <= 0) return data[0];
+  if (hi >= data.length) return data[data.length - 1];
+
+  const a = data[hi - 1];
+  const b = data[hi];
+  const span = Math.max(1e-6, b.t - a.t);
+  const u = (t - a.t) / span;
+  const out = { ...a };
+  Object.keys(b).forEach((key) => {
+    const av = a[key];
+    const bv = b[key];
+    out[key] = typeof av === 'number' && typeof bv === 'number' ? lerp(av, bv, u) : av;
+  });
+  return out;
+}
+
+function isoProject(pt, origin, scale) {
+  const x = pt.x ?? 0;
+  const y = pt.y ?? 0;
+  const z = pt.z ?? 0;
+  const ax = 0.8660254037844386; // cos(30°)
+  const ay = 0.5; // sin(30°)
+  return {
+    x: origin.x + (x - y) * ax * scale,
+    y: origin.y - z * scale + (x + y) * ay * 0.42 * scale,
+    z,
+  };
+}
+
+function sideLabelPoint(pt, sign = 1) {
+  return { ...pt, y: (pt.y ?? 0) * sign };
+}
+
+function renderIsoAxes(origin, scale) {
+  const x0 = isoProject({ x: 0, y: 0, z: 0 }, origin, scale);
+  const x1 = isoProject({ x: 120, y: 0, z: 0 }, origin, scale);
+  const y1 = isoProject({ x: 0, y: 120, z: 0 }, origin, scale);
+  const z1 = isoProject({ x: 0, y: 0, z: 120 }, origin, scale);
+  return { x0, x1, y1, z1 };
+}
+
+function ThreeDModelTab() {
+  const [axle, setAxle] = useState('front');
+  const [showMirrored, setShowMirrored] = useState(true);
+  const [animate, setAnimate] = useState(true);
+  const hp = HP[axle];
+  const isF = axle === 'front';
+  const basePoints = useMemo(() => Object.entries(hp), [hp]);
+
+  const svgW = 1400;
+  const svgH = 760;
+  const origin = { x: 360, y: 520 };
+  const scale = 1.18;
+
+  const pointStyles = {
+    lca: { stroke: C.cy, fill: C.cy },
+    uca: { stroke: C.gn, fill: C.gn },
+    tie: { stroke: C.am, fill: C.am },
+    push: { stroke: C.red, fill: C.red },
+    rock: { stroke: '#a78bfa', fill: '#a78bfa' },
+    wheel: { stroke: '#e2e8f0', fill: 'rgba(226,232,240,0.08)' },
+    cp: { stroke: '#f59e0b', fill: '#f59e0b' },
+  };
+
+  const groups = [
+    ['lca_f', 'lca_o', 'lca'],
+    ['uca_f', 'uca_o', 'uca'],
+    ['tie_i', 'tie_o', 'tie'],
+    ['pushrod', 'rockerRod', 'push'],
+    ['rockerPivot', 'rockerRod', 'rock'],
+    ['rockerPivot', 'rockerShock', 'rock'],
+    ['rockerShock', 'chShock', 'rock'],
+  ];
+
+  const renderSide = (sign, offsetX = 0, label = sign > 0 ? 'LEFT' : 'RIGHT') => {
+    const project = (pt) => isoProject(sideLabelPoint(pt, sign), { x: origin.x + offsetX, y: origin.y }, scale);
+    const wheelCenter = project(hp.wc);
+    const cp = project(hp.cp);
+    const points = Object.fromEntries(basePoints.map(([k, pt]) => [k, project(pt)]));
+    const tireW = (isF ? 170 : 180) * scale;
+    const tireH = VG.wR * 2 * scale * 0.92;
+    return (
+      <g key={`${label}-${sign}`}>
+        {groups.map(([a, b, kind]) => (
+          <g key={`${kind}-${a}-${b}`}>
+            <line
+              x1={points[a].x}
+              y1={points[a].y}
+              x2={points[b].x}
+              y2={points[b].y}
+              stroke={pointStyles[kind].stroke}
+              strokeWidth={kind === 'rock' ? 4 : 3}
+              strokeLinecap="round"
+              opacity={kind === 'rock' ? 0.9 : 0.95}
+            />
+          </g>
+        ))}
+
+        <ellipse
+          cx={wheelCenter.x}
+          cy={wheelCenter.y}
+          rx={tireW / 2}
+          ry={tireH / 2}
+          fill={pointStyles.wheel.fill}
+          stroke={pointStyles.wheel.stroke}
+          strokeWidth="2"
+          opacity="0.95"
+        />
+        <ellipse
+          cx={wheelCenter.x}
+          cy={wheelCenter.y}
+          rx={tireW / 2 - 8}
+          ry={tireH / 2 - 8}
+          fill="none"
+          stroke={C.b1}
+          strokeWidth="1"
+          opacity="0.75"
+        />
+        <line
+          x1={wheelCenter.x - tireW / 2 + 8}
+          y1={wheelCenter.y}
+          x2={wheelCenter.x + tireW / 2 - 8}
+          y2={wheelCenter.y}
+          stroke={C.dm}
+          strokeWidth="1"
+          strokeDasharray="5 5"
+          opacity="0.55"
+        />
+        <circle cx={wheelCenter.x} cy={wheelCenter.y} r="5.5" fill={C.bg || '#0a0a0f'} stroke={C.w} strokeWidth="1.25" />
+        <circle cx={cp.x} cy={cp.y} r="4.5" fill={pointStyles.cp.fill} opacity="0.9" />
+
+        {Object.entries(hp).map(([k, pt]) => {
+          const p = points[k];
+          const color = k.startsWith('lca') ? C.cy : k.startsWith('uca') ? C.gn : k.startsWith('tie') ? C.am : k.startsWith('push') ? C.red : k.startsWith('rocker') ? '#a78bfa' : C.dm;
+          return (
+            <g key={k}>
+              <circle cx={p.x} cy={p.y} r={k === 'wc' ? 0 : 4} fill={color} stroke={C.bg || '#0a0a0f'} strokeWidth="1" />
+              {animate && (
+                <text x={p.x + 8} y={p.y - 6} fill={color} fontSize="10" fontFamily="monospace" fontWeight="700">
+                  {k.toUpperCase()}
+                </text>
+              )}
+            </g>
+          );
+        })}
+
+        <line x1={cp.x} y1={cp.y} x2={points.lca_o.x} y2={points.lca_o.y} stroke={pointStyles.cp.stroke} strokeWidth="1.25" strokeDasharray="5 4" opacity="0.55" />
+        <line x1={cp.x} y1={cp.y} x2={points.tie_o.x} y2={points.tie_o.y} stroke={pointStyles.cp.stroke} strokeWidth="1" strokeDasharray="4 4" opacity="0.35" />
+
+        {animate && (
+          <>
+            <text x={origin.x + offsetX - 235} y={48} fill={C.w} fontSize="15" fontFamily="monospace" fontWeight="700">
+              {axle.toUpperCase()} AXLE — {label} SIDE
+            </text>
+            <text x={origin.x + offsetX - 235} y={66} fill={C.dm} fontSize="9" fontFamily="monospace">
+              Exact hardpoints from your current model; mirrored right side is derived from the same coordinates.
+            </text>
+          </>
+        )}
+      </g>
+    );
+  };
+
+  const axes = renderIsoAxes(origin, scale);
+
+  return (
+    <div style={{ display: 'grid', gridTemplateColumns: '1fr 320px', gap: 10 }}>
+      <div style={{ ...GL, padding: 10, minHeight: 740, overflow: 'hidden' }}>
+        <div style={{ display: 'flex', gap: 6, marginBottom: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+          {['front', 'rear'].map((a) => (
+            <button
+              key={a}
+              onClick={() => setAxle(a)}
+              style={{
+                background: axle === a ? `${SUS}18` : 'transparent',
+                border: `1px solid ${axle === a ? `${SUS}55` : C.b1}`,
+                color: axle === a ? SUS : C.dm,
+                fontSize: 8,
+                fontWeight: 700,
+                padding: '4px 12px',
+                borderRadius: 4,
+                cursor: 'pointer',
+                fontFamily: C.dt,
+                textTransform: 'uppercase',
+              }}
+            >
+              {a}
+            </button>
+          ))}
+          <button
+            onClick={() => setShowMirrored(v => !v)}
+            style={{
+              background: showMirrored ? `${C.gn}16` : 'transparent',
+              border: `1px solid ${showMirrored ? `${C.gn}55` : C.b1}`,
+              color: showMirrored ? C.gn : C.dm,
+              fontSize: 8,
+              fontWeight: 700,
+              padding: '4px 12px',
+              borderRadius: 4,
+              cursor: 'pointer',
+              fontFamily: C.dt,
+            }}
+          >
+            MIRROR RIGHT SIDE
+          </button>
+          <button
+            onClick={() => setAnimate(v => !v)}
+            style={{
+              background: animate ? `${C.am}16` : 'transparent',
+              border: `1px solid ${animate ? `${C.am}55` : C.b1}`,
+              color: animate ? C.am : C.dm,
+              fontSize: 8,
+              fontWeight: 700,
+              padding: '4px 12px',
+              borderRadius: 4,
+              cursor: 'pointer',
+              fontFamily: C.dt,
+            }}
+          >
+            {animate ? 'DETAIL OVERLAY ON' : 'DETAIL OVERLAY OFF'}
+          </button>
+          <div style={{ flex: 1 }} />
+          <div style={{ fontSize: 8, fontFamily: C.dt, color: C.dm }}>
+            {animate ? 'Labels and annotations shown' : 'Labels and annotations hidden'}
+          </div>
+        </div>
+
+        <svg viewBox={`0 0 ${svgW} ${svgH}`} style={{ width: '100%', height: '100%', display: 'block' }}>
+          <defs>
+            <filter id="softGlow" x="-20%" y="-20%" width="140%" height="140%">
+              <feGaussianBlur stdDeviation="3" result="blur" />
+              <feMerge>
+                <feMergeNode in="blur" />
+                <feMergeNode in="SourceGraphic" />
+              </feMerge>
+            </filter>
+          </defs>
+
+          <rect x="0" y="0" width={svgW} height={svgH} fill="transparent" />
+          <line x1={40} y1={axes.x0.y} x2={svgW - 40} y2={axes.x0.y} stroke={C.b1} strokeDasharray="4 6" opacity="0.25" />
+          <line x1={axes.x0.x} y1={30} x2={axes.x0.x} y2={svgH - 40} stroke={C.b1} strokeDasharray="4 6" opacity="0.2" />
+          <g filter="url(#softGlow)">
+            <line x1={axes.x0.x} y1={axes.x0.y} x2={axes.x1.x} y2={axes.x1.y} stroke={C.cy} strokeWidth="3" />
+            <line x1={axes.x0.x} y1={axes.x0.y} x2={axes.y1.x} y2={axes.y1.y} stroke={C.gn} strokeWidth="3" />
+            <line x1={axes.x0.x} y1={axes.x0.y} x2={axes.z1.x} y2={axes.z1.y} stroke={C.am} strokeWidth="3" />
+          </g>
+          <text x={axes.x1.x + 10} y={axes.x1.y + 4} fill={C.cy} fontSize="10" fontFamily="monospace" fontWeight="700">X</text>
+          <text x={axes.y1.x + 10} y={axes.y1.y + 4} fill={C.gn} fontSize="10" fontFamily="monospace" fontWeight="700">Y</text>
+          <text x={axes.z1.x + 10} y={axes.z1.y + 4} fill={C.am} fontSize="10" fontFamily="monospace" fontWeight="700">Z</text>
+          <text x={22} y={22} fill={C.dm} fontSize="8" fontFamily="monospace">Isometric projection</text>
+
+          {renderSide(1, 0, 'LEFT')}
+          {showMirrored && renderSide(-1, 170, 'RIGHT')}
+        </svg>
+      </div>
+
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+        <div style={{ ...GL, padding: '10px 12px' }}>
+          <div style={{ fontSize: 8, fontWeight: 700, letterSpacing: 1.5, color: C.dm, fontFamily: C.dt, marginBottom: 8 }}>
+            EXACT HARDPOINTS
+          </div>
+          <div style={{ display: 'grid', gap: 6 }}>
+            {basePoints.map(([key, pt]) => (
+              <div key={key} style={{ display: 'grid', gridTemplateColumns: '1fr auto', gap: 8, fontSize: 8, fontFamily: C.dt }}>
+                <span style={{ color: C.br }}>{pt.label || key}</span>
+                <span style={{ color: C.dm }}>{pt.x?.toFixed(1)}, {pt.y?.toFixed(1)}, {pt.z?.toFixed(1)}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        <HardpointTable axle={axle} />
+      </div>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // HARDPOINT TABLE — Bloomberg-style data panel
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -826,15 +1130,24 @@ function HardpointTable({ axle }) {
 
 function SchematicTab({ dynamics, frame }) {
   const [axle, setAxle] = useState("front");
-  const [animIdx, setAnimIdx] = useState(0);
+  const [paused, setPaused] = useState(false);
+  const [animT, setAnimT] = useState(0);
+  const duration = useMemo(() => dynamics[dynamics.length - 1]?.t || 8, [dynamics]);
 
   useEffect(() => {
-    if (!dynamics.length) return;
-    const iv = setInterval(() => setAnimIdx(i => (i + 1) % dynamics.length), 33);
-    return () => clearInterval(iv);
-  }, [dynamics]);
+    if (paused || !dynamics.length) return;
+    const start = performance.now();
+    let raf = 0;
+    const tick = (now) => {
+      const elapsed = (now - start) / 1000;
+      setAnimT((elapsed % duration + duration) % duration);
+      raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [paused, duration, dynamics.length]);
 
-  const d = frame || dynamics[animIdx] || {};
+  const d = frame || sampleDynamics(dynamics, animT) || dynamics[0] || {};
   const heave = axle === "front" ? ((d.zFL || 0) + (d.zFR || 0)) / 2 : ((d.zRL || 0) + (d.zRR || 0)) / 2;
   const Fz = axle === "front" ? ((d.Fz_FL || 735) + (d.Fz_FR || 735)) / 2 : ((d.Fz_RL || 735) + (d.Fz_RR || 735)) / 2;
   const Fy = (d.ay || 0) * VG.mass / 4 * 9.81;
@@ -850,8 +1163,8 @@ function SchematicTab({ dynamics, frame }) {
   return (
     <div>
       {/* Axle selector + live KPI strip */}
-      <div style={{ display: "flex", gap: 6, marginBottom: 8, alignItems: "center" }}>
-        {["front", "rear"].map(a => (
+      <div style={{ display: "flex", gap: 6, marginBottom: 8, alignItems: "center", flexWrap: "wrap" }}>
+        {['front', 'rear'].map(a => (
           <button key={a} onClick={() => setAxle(a)} style={{
             background: axle === a ? `${SUS}18` : "transparent",
             border: `1px solid ${axle === a ? `${SUS}55` : C.b1}`,
@@ -860,8 +1173,15 @@ function SchematicTab({ dynamics, frame }) {
             padding: "4px 14px", borderRadius: 4, cursor: "pointer", fontFamily: C.dt,
           }}>{a.toUpperCase()}</button>
         ))}
+        <button onClick={() => setPaused(v => !v)} style={{
+          background: paused ? `${C.am}16` : 'transparent',
+          border: `1px solid ${paused ? `${C.am}55` : C.b1}`,
+          color: paused ? C.am : C.dm,
+          fontSize: 9, fontWeight: 700, letterSpacing: 1.1,
+          padding: "4px 12px", borderRadius: 4, cursor: "pointer", fontFamily: C.dt,
+        }}>{paused ? 'RESUME' : 'PAUSE'}</button>
         <div style={{ flex: 1 }} />
-        <div style={{ display: "flex", gap: 12 }}>
+        <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
           {[
             { l: "IC Height", v: `${ic.z.toFixed(0)}mm`, c: "#ff6090" },
             { l: "RC Height", v: `${rcZ.toFixed(0)}mm`, c: "#ff6090" },
@@ -935,10 +1255,6 @@ function SchematicTab({ dynamics, frame }) {
   );
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
-// KINEMATICS TAB — Sweep charts (camber, toe, RC, MR vs heave)
-// ═══════════════════════════════════════════════════════════════════════════
-
 function KinematicsTab() {
   const frontSweep = useMemo(() => generateKinSweep("front"), []);
   const rearSweep = useMemo(() => generateKinSweep("rear"), []);
@@ -954,15 +1270,15 @@ function KinematicsTab() {
     <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
       {/* Camber vs Heave */}
       <CH title="CAMBER vs HEAVE">
-        <ResponsiveContainer width="100%" height={200}>
+        <ResponsiveContainer width="100%" height={200} debounce={80}>
           <LineChart margin={{ top: 4, right: 10, bottom: 4, left: 4 }}>
             <CartesianGrid stroke={C.b1} strokeDasharray="2 4" />
             <XAxis dataKey="z_mm" type="number" domain={[-50, 50]} {...ax()} label={{ value: "Heave [mm]", fontSize: 7, fill: C.dm, position: "bottom" }} />
             <YAxis {...ax()} label={{ value: "Camber [°]", fontSize: 7, fill: C.dm, angle: -90, position: "insideLeft" }} />
             <Tooltip {...tt()} />
             <ReferenceLine x={0} stroke={C.b2} strokeDasharray="3 3" />
-            <Line data={frontSweep} dataKey="camber" stroke={C.cy} dot={false} strokeWidth={2} name="Front" />
-            <Line data={rearSweep} dataKey="camber" stroke={C.am} dot={false} strokeWidth={2} name="Rear" />
+            <Line isAnimationActive={false} data={frontSweep} dataKey="camber" stroke={C.cy} dot={false} strokeWidth={2} name="Front" />
+            <Line isAnimationActive={false} data={rearSweep} dataKey="camber" stroke={C.am} dot={false} strokeWidth={2} name="Rear" />
             <Legend wrapperStyle={{ fontSize: 8, fontFamily: C.dt }} />
           </LineChart>
         </ResponsiveContainer>
@@ -970,7 +1286,7 @@ function KinematicsTab() {
 
       {/* Toe (Bump Steer) vs Heave */}
       <CH title="TOE / BUMP STEER vs HEAVE">
-        <ResponsiveContainer width="100%" height={200}>
+        <ResponsiveContainer width="100%" height={200} debounce={80}>
           <LineChart margin={{ top: 4, right: 10, bottom: 4, left: 4 }}>
             <CartesianGrid stroke={C.b1} strokeDasharray="2 4" />
             <XAxis dataKey="z_mm" type="number" domain={[-50, 50]} {...ax()} />
@@ -978,8 +1294,8 @@ function KinematicsTab() {
             <Tooltip {...tt()} />
             <ReferenceLine x={0} stroke={C.b2} strokeDasharray="3 3" />
             <ReferenceLine y={0} stroke={C.b2} strokeDasharray="3 3" />
-            <Line data={frontSweep} dataKey="toe" stroke={C.cy} dot={false} strokeWidth={2} name="Front" />
-            <Line data={rearSweep} dataKey="toe" stroke={C.am} dot={false} strokeWidth={2} name="Rear" />
+            <Line isAnimationActive={false} data={frontSweep} dataKey="toe" stroke={C.cy} dot={false} strokeWidth={2} name="Front" />
+            <Line isAnimationActive={false} data={rearSweep} dataKey="toe" stroke={C.am} dot={false} strokeWidth={2} name="Rear" />
             <Legend wrapperStyle={{ fontSize: 8, fontFamily: C.dt }} />
           </LineChart>
         </ResponsiveContainer>
@@ -987,15 +1303,15 @@ function KinematicsTab() {
 
       {/* Roll Centre Height vs Heave */}
       <CH title="ROLL CENTRE HEIGHT vs HEAVE">
-        <ResponsiveContainer width="100%" height={200}>
+        <ResponsiveContainer width="100%" height={200} debounce={80}>
           <LineChart margin={{ top: 4, right: 10, bottom: 4, left: 4 }}>
             <CartesianGrid stroke={C.b1} strokeDasharray="2 4" />
             <XAxis dataKey="z_mm" type="number" domain={[-50, 50]} {...ax()} />
             <YAxis {...ax()} />
             <Tooltip {...tt()} />
             <ReferenceLine x={0} stroke={C.b2} strokeDasharray="3 3" />
-            <Line data={frontSweep} dataKey="rcH" stroke={C.cy} dot={false} strokeWidth={2} name="Front RC" />
-            <Line data={rearSweep} dataKey="rcH" stroke={C.am} dot={false} strokeWidth={2} name="Rear RC" />
+            <Line isAnimationActive={false} data={frontSweep} dataKey="rcH" stroke={C.cy} dot={false} strokeWidth={2} name="Front RC" />
+            <Line isAnimationActive={false} data={rearSweep} dataKey="rcH" stroke={C.am} dot={false} strokeWidth={2} name="Rear RC" />
             <Legend wrapperStyle={{ fontSize: 8, fontFamily: C.dt }} />
           </LineChart>
         </ResponsiveContainer>
@@ -1003,15 +1319,15 @@ function KinematicsTab() {
 
       {/* Motion Ratio vs Heave */}
       <CH title="MOTION RATIO vs HEAVE">
-        <ResponsiveContainer width="100%" height={200}>
+        <ResponsiveContainer width="100%" height={200} debounce={80}>
           <LineChart margin={{ top: 4, right: 10, bottom: 4, left: 4 }}>
             <CartesianGrid stroke={C.b1} strokeDasharray="2 4" />
             <XAxis dataKey="z_mm" type="number" domain={[-50, 50]} {...ax()} />
             <YAxis domain={["auto", "auto"]} {...ax()} />
             <Tooltip {...tt()} />
             <ReferenceLine x={0} stroke={C.b2} strokeDasharray="3 3" />
-            <Line data={frontSweep} dataKey="mr" stroke={C.cy} dot={false} strokeWidth={2} name="Front MR" />
-            <Line data={rearSweep} dataKey="mr" stroke={C.am} dot={false} strokeWidth={2} name="Rear MR" />
+            <Line isAnimationActive={false} data={frontSweep} dataKey="mr" stroke={C.cy} dot={false} strokeWidth={2} name="Front MR" />
+            <Line isAnimationActive={false} data={rearSweep} dataKey="mr" stroke={C.am} dot={false} strokeWidth={2} name="Rear MR" />
             <Legend wrapperStyle={{ fontSize: 8, fontFamily: C.dt }} />
           </LineChart>
         </ResponsiveContainer>
@@ -1019,15 +1335,15 @@ function KinematicsTab() {
 
       {/* Caster & KPI */}
       <CH title="CASTER & KPI vs HEAVE (FRONT)">
-        <ResponsiveContainer width="100%" height={200}>
+        <ResponsiveContainer width="100%" height={200} debounce={80}>
           <LineChart data={frontSweep} margin={{ top: 4, right: 10, bottom: 4, left: 4 }}>
             <CartesianGrid stroke={C.b1} strokeDasharray="2 4" />
             <XAxis dataKey="z_mm" {...ax()} />
             <YAxis {...ax()} />
             <Tooltip {...tt()} />
             <ReferenceLine x={0} stroke={C.b2} strokeDasharray="3 3" />
-            <Line dataKey="caster" stroke={C.gn} dot={false} strokeWidth={2} name="Castor [°]" />
-            <Line dataKey="kpi" stroke="#a78bfa" dot={false} strokeWidth={2} name="KPI [°]" />
+            <Line isAnimationActive={false} dataKey="caster" stroke={C.gn} dot={false} strokeWidth={2} name="Castor [°]" />
+            <Line isAnimationActive={false} dataKey="kpi" stroke="#a78bfa" dot={false} strokeWidth={2} name="KPI [°]" />
             <Legend wrapperStyle={{ fontSize: 8, fontFamily: C.dt }} />
           </LineChart>
         </ResponsiveContainer>
@@ -1035,16 +1351,16 @@ function KinematicsTab() {
 
       {/* Track Change & Scrub */}
       <CH title="TRACK CHANGE & SCRUB RADIUS vs HEAVE">
-        <ResponsiveContainer width="100%" height={200}>
+        <ResponsiveContainer width="100%" height={200} debounce={80}>
           <LineChart margin={{ top: 4, right: 10, bottom: 4, left: 4 }}>
             <CartesianGrid stroke={C.b1} strokeDasharray="2 4" />
             <XAxis dataKey="z_mm" type="number" domain={[-50, 50]} {...ax()} />
             <YAxis {...ax()} />
             <Tooltip {...tt()} />
             <ReferenceLine x={0} stroke={C.b2} strokeDasharray="3 3" />
-            <Line data={frontSweep} dataKey="trackChange" stroke={C.cy} dot={false} strokeWidth={2} name="Front ΔTrack" />
-            <Line data={rearSweep} dataKey="trackChange" stroke={C.am} dot={false} strokeWidth={2} name="Rear ΔTrack" />
-            <Line data={frontSweep} dataKey="scrub" stroke={C.gn} dot={false} strokeWidth={1.5} strokeDasharray="4 2" name="Front Scrub" />
+            <Line isAnimationActive={false} data={frontSweep} dataKey="trackChange" stroke={C.cy} dot={false} strokeWidth={2} name="Front ΔTrack" />
+            <Line isAnimationActive={false} data={rearSweep} dataKey="trackChange" stroke={C.am} dot={false} strokeWidth={2} name="Rear ΔTrack" />
+            <Line isAnimationActive={false} data={frontSweep} dataKey="scrub" stroke={C.gn} dot={false} strokeWidth={1.5} strokeDasharray="4 2" name="Front Scrub" />
             <Legend wrapperStyle={{ fontSize: 8, fontFamily: C.dt }} />
           </LineChart>
         </ResponsiveContainer>
@@ -1069,96 +1385,96 @@ function DynamicsTab({ dynamics }) {
   return (
     <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
       <CH title="VERTICAL LOAD Fz — PER CORNER">
-        <ResponsiveContainer width="100%" height={200}>
+        <ResponsiveContainer width="100%" height={200} debounce={80}>
           <LineChart data={ds} margin={{ top: 4, right: 10, bottom: 4, left: 4 }}>
             <CartesianGrid stroke={C.b1} strokeDasharray="2 4" />
             <XAxis dataKey="t" {...ax()} />
             <YAxis {...ax()} />
             <Tooltip {...tt()} />
-            <Line dataKey="Fz_FL" stroke={CL.fl} dot={false} strokeWidth={1.5} name="FL" />
-            <Line dataKey="Fz_FR" stroke={CL.fr} dot={false} strokeWidth={1.5} name="FR" />
-            <Line dataKey="Fz_RL" stroke={CL.rl} dot={false} strokeWidth={1.5} name="RL" />
-            <Line dataKey="Fz_RR" stroke={CL.rr} dot={false} strokeWidth={1.5} name="RR" />
+            <Line isAnimationActive={false} dataKey="Fz_FL" stroke={CL.fl} dot={false} strokeWidth={1.5} name="FL" />
+            <Line isAnimationActive={false} dataKey="Fz_FR" stroke={CL.fr} dot={false} strokeWidth={1.5} name="FR" />
+            <Line isAnimationActive={false} dataKey="Fz_RL" stroke={CL.rl} dot={false} strokeWidth={1.5} name="RL" />
+            <Line isAnimationActive={false} dataKey="Fz_RR" stroke={CL.rr} dot={false} strokeWidth={1.5} name="RR" />
             <Legend wrapperStyle={{ fontSize: 8, fontFamily: C.dt }} />
           </LineChart>
         </ResponsiveContainer>
       </CH>
 
       <CH title="WHEEL TRAVEL — PER CORNER [mm]">
-        <ResponsiveContainer width="100%" height={200}>
+        <ResponsiveContainer width="100%" height={200} debounce={80}>
           <LineChart data={ds} margin={{ top: 4, right: 10, bottom: 4, left: 4 }}>
             <CartesianGrid stroke={C.b1} strokeDasharray="2 4" />
             <XAxis dataKey="t" {...ax()} />
             <YAxis {...ax()} />
             <Tooltip {...tt()} />
             <ReferenceLine y={0} stroke={C.b2} />
-            <Line dataKey="zFL" stroke={CL.fl} dot={false} strokeWidth={1.5} name="FL" />
-            <Line dataKey="zFR" stroke={CL.fr} dot={false} strokeWidth={1.5} name="FR" />
-            <Line dataKey="zRL" stroke={CL.rl} dot={false} strokeWidth={1.5} name="RL" />
-            <Line dataKey="zRR" stroke={CL.rr} dot={false} strokeWidth={1.5} name="RR" />
+            <Line isAnimationActive={false} dataKey="zFL" stroke={CL.fl} dot={false} strokeWidth={1.5} name="FL" />
+            <Line isAnimationActive={false} dataKey="zFR" stroke={CL.fr} dot={false} strokeWidth={1.5} name="FR" />
+            <Line isAnimationActive={false} dataKey="zRL" stroke={CL.rl} dot={false} strokeWidth={1.5} name="RL" />
+            <Line isAnimationActive={false} dataKey="zRR" stroke={CL.rr} dot={false} strokeWidth={1.5} name="RR" />
             <Legend wrapperStyle={{ fontSize: 8, fontFamily: C.dt }} />
           </LineChart>
         </ResponsiveContainer>
       </CH>
 
       <CH title="DAMPER FORCE — PER CORNER [N]">
-        <ResponsiveContainer width="100%" height={200}>
+        <ResponsiveContainer width="100%" height={200} debounce={80}>
           <LineChart data={ds} margin={{ top: 4, right: 10, bottom: 4, left: 4 }}>
             <CartesianGrid stroke={C.b1} strokeDasharray="2 4" />
             <XAxis dataKey="t" {...ax()} />
             <YAxis {...ax()} />
             <Tooltip {...tt()} />
             <ReferenceLine y={0} stroke={C.b2} />
-            <Line dataKey="Fd_FL" stroke={CL.fl} dot={false} strokeWidth={1.5} name="FL" />
-            <Line dataKey="Fd_FR" stroke={CL.fr} dot={false} strokeWidth={1.5} name="FR" />
-            <Line dataKey="Fd_RL" stroke={CL.rl} dot={false} strokeWidth={1.5} name="RL" />
-            <Line dataKey="Fd_RR" stroke={CL.rr} dot={false} strokeWidth={1.5} name="RR" />
+            <Line isAnimationActive={false} dataKey="Fd_FL" stroke={CL.fl} dot={false} strokeWidth={1.5} name="FL" />
+            <Line isAnimationActive={false} dataKey="Fd_FR" stroke={CL.fr} dot={false} strokeWidth={1.5} name="FR" />
+            <Line isAnimationActive={false} dataKey="Fd_RL" stroke={CL.rl} dot={false} strokeWidth={1.5} name="RL" />
+            <Line isAnimationActive={false} dataKey="Fd_RR" stroke={CL.rr} dot={false} strokeWidth={1.5} name="RR" />
             <Legend wrapperStyle={{ fontSize: 8, fontFamily: C.dt }} />
           </LineChart>
         </ResponsiveContainer>
       </CH>
 
       <CH title="DAMPER POWER DISSIPATION [W]">
-        <ResponsiveContainer width="100%" height={200}>
+        <ResponsiveContainer width="100%" height={200} debounce={80}>
           <AreaChart data={ds} margin={{ top: 4, right: 10, bottom: 4, left: 4 }}>
             <CartesianGrid stroke={C.b1} strokeDasharray="2 4" />
             <XAxis dataKey="t" {...ax()} />
             <YAxis {...ax()} />
             <Tooltip {...tt()} />
-            <Area dataKey="Pd_FL" stroke={CL.fl} fill={CL.fl} fillOpacity={0.15} strokeWidth={1.5} name="FL" />
-            <Area dataKey="Pd_FR" stroke={CL.fr} fill={CL.fr} fillOpacity={0.15} strokeWidth={1.5} name="FR" />
-            <Area dataKey="Pd_RL" stroke={CL.rl} fill={CL.rl} fillOpacity={0.15} strokeWidth={1.5} name="RL" />
-            <Area dataKey="Pd_RR" stroke={CL.rr} fill={CL.rr} fillOpacity={0.15} strokeWidth={1.5} name="RR" />
+            <Area isAnimationActive={false} dataKey="Pd_FL" stroke={CL.fl} fill={CL.fl} fillOpacity={0.15} strokeWidth={1.5} name="FL" />
+            <Area isAnimationActive={false} dataKey="Pd_FR" stroke={CL.fr} fill={CL.fr} fillOpacity={0.15} strokeWidth={1.5} name="FR" />
+            <Area isAnimationActive={false} dataKey="Pd_RL" stroke={CL.rl} fill={CL.rl} fillOpacity={0.15} strokeWidth={1.5} name="RL" />
+            <Area isAnimationActive={false} dataKey="Pd_RR" stroke={CL.rr} fill={CL.rr} fillOpacity={0.15} strokeWidth={1.5} name="RR" />
             <Legend wrapperStyle={{ fontSize: 8, fontFamily: C.dt }} />
           </AreaChart>
         </ResponsiveContainer>
       </CH>
 
       <CH title="ROLL & PITCH ANGLE [°]">
-        <ResponsiveContainer width="100%" height={200}>
+        <ResponsiveContainer width="100%" height={200} debounce={80}>
           <LineChart data={ds} margin={{ top: 4, right: 10, bottom: 4, left: 4 }}>
             <CartesianGrid stroke={C.b1} strokeDasharray="2 4" />
             <XAxis dataKey="t" {...ax()} />
             <YAxis {...ax()} />
             <Tooltip {...tt()} />
             <ReferenceLine y={0} stroke={C.b2} />
-            <Line dataKey="roll" stroke={C.am} dot={false} strokeWidth={2} name="Roll [°]" />
-            <Line dataKey="pitch" stroke={C.cy} dot={false} strokeWidth={2} name="Pitch [°]" />
+            <Line isAnimationActive={false} dataKey="roll" stroke={C.am} dot={false} strokeWidth={2} name="Roll [°]" />
+            <Line isAnimationActive={false} dataKey="pitch" stroke={C.cy} dot={false} strokeWidth={2} name="Pitch [°]" />
             <Legend wrapperStyle={{ fontSize: 8, fontFamily: C.dt }} />
           </LineChart>
         </ResponsiveContainer>
       </CH>
 
       <CH title="LLTD & ROLL GRADIENT">
-        <ResponsiveContainer width="100%" height={200}>
+        <ResponsiveContainer width="100%" height={200} debounce={80}>
           <ComposedChart data={ds} margin={{ top: 4, right: 10, bottom: 4, left: 4 }}>
             <CartesianGrid stroke={C.b1} strokeDasharray="2 4" />
             <XAxis dataKey="t" {...ax()} />
             <YAxis yAxisId="l" {...ax()} />
             <YAxis yAxisId="r" orientation="right" {...ax()} />
             <Tooltip {...tt()} />
-            <Line yAxisId="l" dataKey="LLTD" stroke={C.cy} dot={false} strokeWidth={2} name="LLTD [%]" />
-            <Line yAxisId="r" dataKey="rollGrad" stroke={C.am} dot={false} strokeWidth={2} name="Roll Grad [°/G]" />
+            <Line isAnimationActive={false} yAxisId="l" dataKey="LLTD" stroke={C.cy} dot={false} strokeWidth={2} name="LLTD [%]" />
+            <Line isAnimationActive={false} yAxisId="r" dataKey="rollGrad" stroke={C.am} dot={false} strokeWidth={2} name="Roll Grad [°/G]" />
             <ReferenceLine yAxisId="l" y={50} stroke={C.b2} strokeDasharray="3 3" label={{ value: "50%", fontSize: 7, fill: C.dm }} />
             <Legend wrapperStyle={{ fontSize: 8, fontFamily: C.dt }} />
           </ComposedChart>
@@ -1166,30 +1482,30 @@ function DynamicsTab({ dynamics }) {
       </CH>
 
       <CH title="CAMBER — PER CORNER [°]">
-        <ResponsiveContainer width="100%" height={200}>
+        <ResponsiveContainer width="100%" height={200} debounce={80}>
           <LineChart data={ds} margin={{ top: 4, right: 10, bottom: 4, left: 4 }}>
             <CartesianGrid stroke={C.b1} strokeDasharray="2 4" />
             <XAxis dataKey="t" {...ax()} />
             <YAxis {...ax()} />
             <Tooltip {...tt()} />
-            <Line dataKey="camFL" stroke={CL.fl} dot={false} strokeWidth={1.5} name="FL" />
-            <Line dataKey="camFR" stroke={CL.fr} dot={false} strokeWidth={1.5} name="FR" />
-            <Line dataKey="camRL" stroke={CL.rl} dot={false} strokeWidth={1.5} name="RL" />
-            <Line dataKey="camRR" stroke={CL.rr} dot={false} strokeWidth={1.5} name="RR" />
+            <Line isAnimationActive={false} dataKey="camFL" stroke={CL.fl} dot={false} strokeWidth={1.5} name="FL" />
+            <Line isAnimationActive={false} dataKey="camFR" stroke={CL.fr} dot={false} strokeWidth={1.5} name="FR" />
+            <Line isAnimationActive={false} dataKey="camRL" stroke={CL.rl} dot={false} strokeWidth={1.5} name="RL" />
+            <Line isAnimationActive={false} dataKey="camRR" stroke={CL.rr} dot={false} strokeWidth={1.5} name="RR" />
             <Legend wrapperStyle={{ fontSize: 8, fontFamily: C.dt }} />
           </LineChart>
         </ResponsiveContainer>
       </CH>
 
       <CH title="ROLL CENTRE MIGRATION [mm]">
-        <ResponsiveContainer width="100%" height={200}>
+        <ResponsiveContainer width="100%" height={200} debounce={80}>
           <LineChart data={ds} margin={{ top: 4, right: 10, bottom: 4, left: 4 }}>
             <CartesianGrid stroke={C.b1} strokeDasharray="2 4" />
             <XAxis dataKey="t" {...ax()} />
             <YAxis {...ax()} />
             <Tooltip {...tt()} />
-            <Line dataKey="rcF" stroke={C.cy} dot={false} strokeWidth={2} name="Front RC [mm]" />
-            <Line dataKey="rcR" stroke={C.am} dot={false} strokeWidth={2} name="Rear RC [mm]" />
+            <Line isAnimationActive={false} dataKey="rcF" stroke={C.cy} dot={false} strokeWidth={2} name="Front RC [mm]" />
+            <Line isAnimationActive={false} dataKey="rcR" stroke={C.am} dot={false} strokeWidth={2} name="Rear RC [mm]" />
             <Legend wrapperStyle={{ fontSize: 8, fontFamily: C.dt }} />
           </LineChart>
         </ResponsiveContainer>
@@ -1338,7 +1654,7 @@ function ComplianceTab() {
   return (
     <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
       <CH title="COMPLIANCE STEER vs LATERAL FORCE">
-        <ResponsiveContainer width="100%" height={220}>
+        <ResponsiveContainer width="100%" height={220} debounce={80}>
           <LineChart data={compData} margin={{ top: 4, right: 10, bottom: 4, left: 4 }}>
             <CartesianGrid stroke={C.b1} strokeDasharray="2 4" />
             <XAxis dataKey="Fy" {...ax()} label={{ value: "Fy [N]", fontSize: 7, fill: C.dm, position: "bottom" }} />
@@ -1346,23 +1662,23 @@ function ComplianceTab() {
             <Tooltip {...tt()} />
             <ReferenceLine x={0} stroke={C.b2} strokeDasharray="3 3" />
             <ReferenceLine y={0} stroke={C.b2} strokeDasharray="3 3" />
-            <Line dataKey="toe_f" stroke={C.cy} dot={false} strokeWidth={2} name="Front Comp. Steer" />
-            <Line dataKey="toe_r" stroke={C.am} dot={false} strokeWidth={2} name="Rear Comp. Steer" />
+            <Line isAnimationActive={false} dataKey="toe_f" stroke={C.cy} dot={false} strokeWidth={2} name="Front Comp. Steer" />
+            <Line isAnimationActive={false} dataKey="toe_r" stroke={C.am} dot={false} strokeWidth={2} name="Rear Comp. Steer" />
             <Legend wrapperStyle={{ fontSize: 8, fontFamily: C.dt }} />
           </LineChart>
         </ResponsiveContainer>
       </CH>
 
       <CH title="COMPLIANCE CAMBER vs LATERAL FORCE">
-        <ResponsiveContainer width="100%" height={220}>
+        <ResponsiveContainer width="100%" height={220} debounce={80}>
           <LineChart data={compData} margin={{ top: 4, right: 10, bottom: 4, left: 4 }}>
             <CartesianGrid stroke={C.b1} strokeDasharray="2 4" />
             <XAxis dataKey="Fy" {...ax()} />
             <YAxis {...ax()} />
             <Tooltip {...tt()} />
             <ReferenceLine x={0} stroke={C.b2} strokeDasharray="3 3" />
-            <Line dataKey="camber_f" stroke={C.cy} dot={false} strokeWidth={2} name="Front" />
-            <Line dataKey="camber_r" stroke={C.am} dot={false} strokeWidth={2} name="Rear" />
+            <Line isAnimationActive={false} dataKey="camber_f" stroke={C.cy} dot={false} strokeWidth={2} name="Front" />
+            <Line isAnimationActive={false} dataKey="camber_r" stroke={C.am} dot={false} strokeWidth={2} name="Rear" />
             <Legend wrapperStyle={{ fontSize: 8, fontFamily: C.dt }} />
           </LineChart>
         </ResponsiveContainer>
@@ -1440,7 +1756,7 @@ function ModalTab() {
         <div style={{ fontSize: 8, fontWeight: 700, letterSpacing: 1.5, color: C.dm, fontFamily: C.dt, marginBottom: 6 }}>
           FREQUENCY RESPONSE — MAGNITUDE [dB]
         </div>
-        <ResponsiveContainer width="100%" height={280}>
+        <ResponsiveContainer width="100%" height={280} debounce={80}>
           <LineChart data={freqResp} margin={{ top: 4, right: 10, bottom: 4, left: 4 }}>
             <CartesianGrid stroke={C.b1} strokeDasharray="2 4" />
             <XAxis dataKey="f" scale="log" domain={[0.5, 30]} {...ax()} label={{ value: "Frequency [Hz]", fontSize: 7, fill: C.dm, position: "bottom" }} />
@@ -1448,7 +1764,7 @@ function ModalTab() {
             <Tooltip {...tt()} />
             <ReferenceLine y={0} stroke={C.b2} strokeDasharray="3 3" />
             {modes.map(m => (
-              <Line key={m.mode} dataKey={m.mode} stroke={m.color} dot={false} strokeWidth={1.5} name={m.mode} />
+              <Line isAnimationActive={false} key={m.mode} dataKey={m.mode} stroke={m.color} dot={false} strokeWidth={1.5} name={m.mode} />
             ))}
             <Legend wrapperStyle={{ fontSize: 7, fontFamily: C.dt }} />
           </LineChart>
@@ -1628,6 +1944,7 @@ export default function SuspensionModule({ data, mode }) {
 
       {/* Tab content */}
       {tab === "schematic" && <SchematicTab dynamics={dynamics} frame={frame} />}
+      {tab === "model3d" && <ThreeDModelTab />}
       {tab === "kinematics" && <KinematicsTab />}
       {tab === "dynamics" && <DynamicsTab dynamics={dynamics} />}
       {tab === "antigeom" && <AntiGeomTab />}
