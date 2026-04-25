@@ -51,36 +51,47 @@ function srng(s) { return () => { s = (s * 16807 + 0) % 2147483647; return (s & 
 
 const HP = {
   front: {
-    lca_f:  { x: 160, y: 160, z: 110,  label: "LCA Front Pivot" },
-    lca_r:  { x:-160, y: 160, z: 130,  label: "LCA Rear Pivot" },
-    uca_f:  { x: 120, y: 245, z: 267,  label: "UCA Front Pivot" },
-    uca_r:  { x:-120, y: 245, z: 258,  label: "UCA Rear Pivot" },
-    lca_o:  { x:   2, y: 583, z: 122,  label: "LCA Outer BJ" },
-    uca_o:  { x: -11, y: 555, z: 280,  label: "UCA Outer BJ" },
-    tie_i:  { x:  50, y: 144, z: 144,  label: "Tie Rod Inner" },
-    tie_o:  { x:  70, y: 571, z: 150,  label: "Tie Rod Outer" },
-    wc:     { x:   0, y: 610, z: 229,  label: "Wheel Centre" },
-    cp:     { x:   0, y: 610, z:   0,  label: "Contact Patch" },
-    push_u: { x:  30, y: 400, z: 200,  label: "Pushrod Upper" },
-    push_l: { x:  20, y: 350, z: 155,  label: "Pushrod Lower (LCA)" },
-    rc_piv: { x: -80, y: 220, z: 310,  label: "Rocker Pivot" },
-    sd_top: { x: -60, y: 180, z: 420,  label: "Spring/Damper Top" },
+    lca_f: { x: 160, y: 160, z: 110, label: "Lower Control Arm, Front" },
+    lca_r: { x: -160, y: 160, z: 130, label: "Lower Control Arm, Rear" },
+    uca_f: { x: 120, y: 245, z: 267, label: "Upper Control Arm, Front" },
+    uca_r: { x: -120, y: 245, z: 258, label: "Upper Control Arm, Rear" },
+
+    lca_o: { x: 2.27, y: 583.374, z: 122.65, label: "Upright Lower Balljoint" },
+    uca_o: { x: -11.496, y: 555.63, z: 280, label: "Upright Upper Balljoint" },
+
+    tie_i: { x: 50, y: 144.78, z: 144.5, label: "Tie Rod Inner" },
+    tie_o: { x: 70, y: 571, z: 150, label: "Tie Rod Outer" },
+
+    pushrod: { x: -3.51, y: 514.71, z: 294.18, label: "Pushrod Attachment" },
+    chShock: { x: -179.33, y: 150, z: 614.79, label: "Chassis Shock Mount" },
+    rockerPivot: { x: 0.67, y: 195.06, z: 575.18, label: "Rocker Pivot" },
+    rockerRod: { x: 59.98, y: 201.85, z: 569.21, label: "Rocker Pushrod Mount" },
+    rockerShock: { x: 0.67, y: 150, z: 614.79, label: "Rocker Shock Mount" },
+
+    wc: { x: 0, y: 615, z: 228.6, label: "Wheel Centre" },
+    cp: { x: 0, y: 615, z: 0, label: "Contact Patch" },
   },
+
   rear: {
-    lca_f:  { x: 150, y: 195, z: 119,  label: "LCA Front Pivot" },
-    lca_r:  { x:-150, y: 195, z: 110,  label: "LCA Rear Pivot" },
-    uca_f:  { x: 150, y: 195, z: 245,  label: "UCA Front Pivot" },
-    uca_r:  { x:-150, y: 195, z: 272,  label: "UCA Rear Pivot" },
-    lca_o:  { x:   0, y: 585, z: 112,  label: "LCA Outer BJ" },
-    uca_o:  { x:   0, y: 537, z: 290,  label: "UCA Outer BJ" },
-    tie_i:  { x: -80, y: 195, z: 180,  label: "Tie Rod Inner" },
-    tie_o:  { x: -95, y: 530, z: 230,  label: "Tie Rod Outer" },
-    wc:     { x:   0, y: 590, z: 229,  label: "Wheel Centre" },
-    cp:     { x:   0, y: 590, z:   0,  label: "Contact Patch" },
-    push_u: { x: -30, y: 380, z: 210,  label: "Pushrod Upper" },
-    push_l: { x: -20, y: 340, z: 150,  label: "Pushrod Lower (LCA)" },
-    rc_piv: { x:  80, y: 200, z: 300,  label: "Rocker Pivot" },
-    sd_top: { x:  60, y: 160, z: 400,  label: "Spring/Damper Top" },
+    lca_f: { x: 150, y: 240, z: 126.2, label: "Lower Control Arm, Front" },
+    lca_r: { x: -150, y: 240, z: 120, label: "Lower Control Arm, Rear" },
+    uca_f: { x: 150, y: 240, z: 282, label: "Upper Control Arm, Front" },
+    uca_r: { x: -150, y: 240, z: 250, label: "Upper Control Arm, Rear" },
+
+    lca_o: { x: 0, y: 576.78, z: 112.65, label: "Upright Lower Balljoint" },
+    uca_o: { x: 0, y: 520.001, z: 280, label: "Upright Upper Balljoint" },
+
+    tie_i: { x: -95, y: 240, z: 163, label: "Tie Link Inner" },
+    tie_o: { x: -80, y: 590, z: 165.8, label: "Tie Link Outer" },
+
+    pushrod: { x: 8.93, y: 497.39, z: 297.58, label: "Pushrod Attachment" },
+    chShock: { x: -30, y: 50, z: 430, label: "Chassis Shock Mount" },
+    rockerPivot: { x: 107.43, y: 108.26, z: 547.13, label: "Rocker Pivot" },
+    rockerRod: { x: 148.42, y: 144.1, z: 572.38, label: "Rocker Pushrod Mount" },
+    rockerShock: { x: 97.28, y: 50, z: 557.28, label: "Rocker Shock Mount" },
+
+    wc: { x: 0, y: 615, z: 228.6, label: "Wheel Centre" },
+    cp: { x: 0, y: 615, z: 0, label: "Contact Patch" },
   },
 };
 
@@ -365,56 +376,20 @@ function generateDynamicsData(maneuver = "lap", dur = 8, n = 480) {
 function KinematicSchematicSVG({ axle, heave, roll, liveForces }) {
   const hp = HP[axle];
   const isF = axle === "front";
-  const tw = isF ? VG.tF : VG.tR;
 
-  // SVG coordinate transform: Y→lateral (right), Z→vertical (up)
-  // Map from mm hardpoint space to SVG viewport
-  const svgW = 700, svgH = 420;
-  const scale = 0.48;
-  const oX = svgW / 2, oY = svgH - 40;
+  const svgW = 1400;
+  const svgH = 420;
+  const panelW = svgW / 2;
+  const panelH = svgH;
+  const scale = 0.42;
+  const oY = panelH - 40;
 
-  const toSVG = (y_mm, z_mm, heaveOff = 0) => ({
-    x: oX + y_mm * scale,
-    y: oY - (z_mm + heaveOff) * scale,
-  });
-
-  // Compute IC and RC
-  const lcaI = hp.lca_f, lcaO = hp.lca_o, ucaI = hp.uca_f, ucaO = hp.uca_o;
-  const ic = computeIC(lcaI.z, lcaO.z, ucaI.z, ucaO.z, lcaI.y, lcaO.y, ucaI.y, ucaO.y);
-  const cp = hp.cp;
-  const rc = computeRC(ic.y, ic.z, cp.y);
-
-  // Apply heave offset
-  const hz = heave || 0;
-  const rollRad = (roll || 0) * Math.PI / 180;
-
-  // Key points for drawing
-  const lcaI_svg = toSVG((lcaI.y + lcaI.y) / 2, lcaI.z);  // avg inner Y
-  const lcaO_svg = toSVG(lcaO.y, lcaO.z + hz);
-  const ucaI_svg = toSVG((ucaI.y + ucaI.y) / 2, ucaI.z);
-  const ucaO_svg = toSVG(ucaO.y, ucaO.z + hz);
-  const tieI_svg = toSVG(hp.tie_i.y, hp.tie_i.z);
-  const tieO_svg = toSVG(hp.tie_o.y, hp.tie_o.z + hz);
-  const wc_svg = toSVG(hp.wc.y, hp.wc.z + hz);
-  const cp_svg = toSVG(cp.y, 0);
-  const pushU_svg = toSVG(hp.push_u.y, hp.push_u.z + hz);
-  const pushL_svg = toSVG(hp.push_l.y, hp.push_l.z + hz);
-  const rcPiv_svg = toSVG(hp.rc_piv.y, hp.rc_piv.z);
-  const sdTop_svg = toSVG(hp.sd_top.y, hp.sd_top.z);
-  const ic_svg = toSVG(Math.min(Math.max(ic.y, -200), 1200), ic.z);
-  const rc_svg = toSVG(0, Math.max(-50, Math.min(300, rc.z)));
-
-  // Force magnitudes
-  const Fz = liveForces?.Fz || VG.mass * 9.81 / 4;
+  const Fz = liveForces?.Fz || (VG.mass * 9.81) / 4;
   const Fy = liveForces?.Fy || 0;
   const Fs = liveForces?.Fs || 0;
   const Fd = liveForces?.Fd || 0;
-  const fScale = 0.04; // px per N
+  const fScale = 0.04;
 
-  // Mirror for left side
-  const mirX = x => svgW - x + (svgW - 2 * oX);
-
-  // Component colors
   const lcaC = "#00d4ff";
   const ucaC = "#00ff88";
   const tieC = "#ffaa00";
@@ -423,6 +398,358 @@ function KinematicSchematicSVG({ axle, heave, roll, liveForces }) {
   const uprightC = "#8892a8";
   const forceC = "#ff4444";
   const rcColor = "#ff6090";
+
+  function renderPanel(side, offsetX) {
+    const sideSign = side === "left" ? 1 : -1;
+    const cx = offsetX + panelW / 2;
+
+    // Small visual roll effect so both sides do not look identical when animating.
+    const motion = (heave || 0) + sideSign * (roll || 0) * 2.5;
+
+    const toXY = (y_mm, z_mm) => ({
+      x: cx - y_mm * scale,
+      y: oY - z_mm * scale,
+    });
+
+    const toPt = (pt, zExtra = 0, moving = false) =>
+      toXY(sideSign * pt.y, pt.z + zExtra + (moving ? motion : 0));
+
+    const lcaI = toPt(hp.lca_f);
+    const lcaO = toPt(hp.lca_o, 0, true);
+    const ucaI = toPt(hp.uca_f);
+    const ucaO = toPt(hp.uca_o, 0, true);
+
+    const tieI = toPt(hp.tie_i);
+    const tieO = toPt(hp.tie_o, 0, true);
+
+    const pushA = toPt(hp.pushrod, 0, true);
+    const chShock = toPt(hp.chShock);
+    const rockerPivot = toPt(hp.rockerPivot);
+    const rockerRod = toPt(hp.rockerRod);
+    const rockerShock = toPt(hp.rockerShock);
+
+    const wc = toPt(hp.wc, 0, true);
+    const cp = toXY(sideSign * hp.cp.y, hp.cp.z);
+    const ic = computeIC(
+      hp.lca_f.z, hp.lca_o.z,
+      hp.uca_f.z, hp.uca_o.z,
+      sideSign * hp.lca_f.y, sideSign * hp.lca_o.y,
+      sideSign * hp.uca_f.y, sideSign * hp.uca_o.y
+    );
+    const rc = computeRC(ic.y, ic.z, sideSign * hp.cp.y);
+    const icSvg = toXY(ic.y, ic.z);
+    const rcSvg = toXY(0, rc.z);
+
+    return (
+      <g key={side}>
+        <rect
+          x={offsetX}
+          y={0}
+          width={panelW}
+          height={panelH}
+          fill="transparent"
+        />
+
+        <line
+          x1={offsetX + 20}
+          y1={oY}
+          x2={offsetX + panelW - 20}
+          y2={oY}
+          stroke={C.b2 || "#1a2035"}
+          strokeWidth="1"
+          strokeDasharray="4 3"
+        />
+        <line
+          x1={cx}
+          y1={10}
+          x2={cx}
+          y2={oY - 5}
+          stroke={C.b1 || "#1a2035"}
+          strokeWidth="0.5"
+          strokeDasharray="2 4"
+        />
+
+        <text
+          x={offsetX + 12}
+          y={16}
+          fill={C.w || "#e8eaf6"}
+          fontSize="10"
+          fontFamily="monospace"
+          fontWeight="700"
+        >
+          {side.toUpperCase()} SIDE — {isF ? "FRONT" : "REAR"} VIEW
+        </text>
+        <text
+          x={offsetX + 12}
+          y={28}
+          fill={C.dm || "#4a5568"}
+          fontSize="7"
+          fontFamily="monospace"
+        >
+          Track: {(isF ? VG.tF : VG.tR)}mm | Heave: {(heave || 0).toFixed(1)}mm | Roll: {(roll || 0).toFixed(2)}°
+        </text>
+
+        <line
+          x1={lcaI.x}
+          y1={lcaI.y}
+          x2={lcaO.x}
+          y2={lcaO.y}
+          stroke={lcaC}
+          strokeWidth="3"
+          strokeLinecap="round"
+        />
+        <circle cx={lcaI.x} cy={lcaI.y} r="4" fill={C.bg || "#0a0a0f"} stroke={lcaC} strokeWidth="1.5" />
+        <circle cx={lcaO.x} cy={lcaO.y} r="4" fill={C.bg || "#0a0a0f"} stroke={lcaC} strokeWidth="1.5" />
+
+        <line
+          x1={ucaI.x}
+          y1={ucaI.y}
+          x2={ucaO.x}
+          y2={ucaO.y}
+          stroke={ucaC}
+          strokeWidth="3"
+          strokeLinecap="round"
+        />
+        <circle cx={ucaI.x} cy={ucaI.y} r="4" fill={C.bg || "#0a0a0f"} stroke={ucaC} strokeWidth="1.5" />
+        <circle cx={ucaO.x} cy={ucaO.y} r="4" fill={C.bg || "#0a0a0f"} stroke={ucaC} strokeWidth="1.5" />
+
+        <line
+          x1={tieI.x}
+          y1={tieI.y}
+          x2={tieO.x}
+          y2={tieO.y}
+          stroke={tieC}
+          strokeWidth="2"
+          strokeDasharray="6 3"
+        />
+        <circle cx={tieI.x} cy={tieI.y} r="3" fill={tieC} opacity="0.7" />
+        <circle cx={tieO.x} cy={tieO.y} r="3" fill={tieC} opacity="0.7" />
+
+        <line
+          x1={lcaO.x}
+          y1={lcaO.y}
+          x2={ucaO.x}
+          y2={ucaO.y}
+          stroke={uprightC}
+          strokeWidth="4"
+          strokeLinecap="round"
+          opacity="0.8"
+        />
+
+        <line
+          x1={pushA.x}
+          y1={pushA.y}
+          x2={rockerRod.x}
+          y2={rockerRod.y}
+          stroke={pushC}
+          strokeWidth="2.5"
+          strokeLinecap="round"
+        />
+
+        <line
+          x1={rockerPivot.x}
+          y1={rockerPivot.y}
+          x2={rockerRod.x}
+          y2={rockerRod.y}
+          stroke="#a78bfa"
+          strokeWidth="2.2"
+        />
+        <line
+          x1={rockerPivot.x}
+          y1={rockerPivot.y}
+          x2={rockerShock.x}
+          y2={rockerShock.y}
+          stroke={springC}
+          strokeWidth="2.5"
+          strokeDasharray="4 2"
+        />
+        <line
+          x1={rockerShock.x}
+          y1={rockerShock.y}
+          x2={chShock.x}
+          y2={chShock.y}
+          stroke={springC}
+          strokeWidth="2.2"
+          strokeDasharray="4 2"
+        />
+        <circle cx={rockerPivot.x} cy={rockerPivot.y} r="5" fill="#a78bfa" opacity="0.5" />
+        <circle cx={rockerRod.x} cy={rockerRod.y} r="4" fill="#a78bfa" opacity="0.5" />
+        <rect
+          x={rockerShock.x - 6}
+          y={rockerShock.y - 3}
+          width="12"
+          height="6"
+          rx="2"
+          fill={C.bg || "#0a0a0f"}
+          stroke={springC}
+          strokeWidth="1"
+        />
+        <circle cx={chShock.x} cy={chShock.y} r="4" fill={springC} opacity="0.8" />
+
+        <circle
+          cx={wc.x}
+          cy={wc.y}
+          r={VG.wR * scale * 0.9}
+          fill="none"
+          stroke={C.dm || "#4a5568"}
+          strokeWidth="1.5"
+          opacity="0.4"
+        />
+        <circle cx={wc.x} cy={wc.y} r="3" fill={C.dm || "#4a5568"} />
+        <rect
+          x={cp.x - 12}
+          y={cp.y - 2}
+          width="24"
+          height="4"
+          rx="2"
+          fill={C.gn || "#00ff88"}
+          opacity="0.5"
+        />
+
+        <line
+          x1={lcaI.x}
+          y1={lcaI.y}
+          x2={icSvg.x}
+          y2={icSvg.y}
+          stroke={lcaC}
+          strokeWidth="0.5"
+          strokeDasharray="3 3"
+          opacity="0.35"
+        />
+        <line
+          x1={ucaI.x}
+          y1={ucaI.y}
+          x2={icSvg.x}
+          y2={icSvg.y}
+          stroke={ucaC}
+          strokeWidth="0.5"
+          strokeDasharray="3 3"
+          opacity="0.35"
+        />
+
+        <circle cx={icSvg.x} cy={icSvg.y} r="5" fill="none" stroke={rcColor} strokeWidth="1.5" />
+        <line x1={icSvg.x - 4} y1={icSvg.y} x2={icSvg.x + 4} y2={icSvg.y} stroke={rcColor} strokeWidth="1" />
+        <line x1={icSvg.x} y1={icSvg.y - 4} x2={icSvg.x} y2={icSvg.y + 4} stroke={rcColor} strokeWidth="1" />
+        <text x={icSvg.x + 8} y={icSvg.y - 4} fill={rcColor} fontSize="7" fontFamily="monospace" fontWeight="700">
+          IC
+        </text>
+
+        <line
+          x1={cp.x}
+          y1={cp.y}
+          x2={icSvg.x}
+          y2={icSvg.y}
+          stroke={rcColor}
+          strokeWidth="0.7"
+          strokeDasharray="4 2"
+          opacity="0.5"
+        />
+        <line
+          x1={icSvg.x}
+          y1={icSvg.y}
+          x2={rcSvg.x}
+          y2={rcSvg.y}
+          stroke={rcColor}
+          strokeWidth="0.7"
+          strokeDasharray="4 2"
+          opacity="0.5"
+        />
+
+        <circle cx={rcSvg.x} cy={rcSvg.y} r="6" fill={rcColor} opacity="0.3" />
+        <circle cx={rcSvg.x} cy={rcSvg.y} r="3" fill={rcColor} />
+        <text x={rcSvg.x + 10} y={rcSvg.y + 3} fill={rcColor} fontSize="8" fontFamily="monospace" fontWeight="700">
+          RC
+        </text>
+
+        {Fz > 0 && (
+          <line
+            x1={cp.x}
+            y1={cp.y}
+            x2={cp.x}
+            y2={cp.y + Math.min(80, Fz * fScale)}
+            stroke={forceC}
+            strokeWidth="2"
+            markerEnd="url(#arrowF)"
+            opacity="0.8"
+          />
+        )}
+        {Fz > 0 && (
+          <text
+            x={cp.x + 6}
+            y={cp.y + Math.min(60, Fz * fScale * 0.7)}
+            fill={forceC}
+            fontSize="7"
+            fontFamily="monospace"
+          >
+            Fz={Fz.toFixed(0)}N
+          </text>
+        )}
+
+        {Math.abs(Fy) > 10 && (
+          <line
+            x1={cp.x}
+            y1={cp.y - 3}
+            x2={cp.x + Math.sign(Fy) * Math.min(60, Math.abs(Fy) * fScale)}
+            y2={cp.y - 3}
+            stroke={C.am || "#ffaa00"}
+            strokeWidth="2"
+            markerEnd="url(#arrowF)"
+            opacity="0.8"
+          />
+        )}
+
+        {Math.abs(Fs) > 10 && (
+          <line
+            x1={rockerShock.x}
+            y1={rockerShock.y}
+            x2={rockerShock.x}
+            y2={rockerShock.y + Math.sign(Fs) * Math.min(40, Math.abs(Fs) * fScale * 0.5)}
+            stroke={springC}
+            strokeWidth="1.5"
+            markerEnd="url(#arrowS)"
+            opacity="0.7"
+          />
+        )}
+
+        <text x={lcaI.x - 2} y={lcaI.y + 12} fill={lcaC} fontSize="6" fontFamily="monospace" textAnchor="end">
+          LCA
+        </text>
+        <text x={ucaI.x - 2} y={ucaI.y - 6} fill={ucaC} fontSize="6" fontFamily="monospace" textAnchor="end">
+          UCA
+        </text>
+        <text x={tieI.x - 2} y={tieI.y + 10} fill={tieC} fontSize="6" fontFamily="monospace" textAnchor="end">
+          TIE
+        </text>
+        <text x={pushA.x + 6} y={pushA.y - 4} fill={pushC} fontSize="6" fontFamily="monospace">
+          PUSH
+        </text>
+        <text x={rockerPivot.x + 6} y={rockerPivot.y - 4} fill="#a78bfa" fontSize="6" fontFamily="monospace">
+          ROCKER
+        </text>
+        <text x={chShock.x + 6} y={chShock.y - 4} fill={springC} fontSize="6" fontFamily="monospace">
+          SHOCK
+        </text>
+
+        <g transform={`translate(${offsetX + panelW - 130}, 12)`}>
+          {[
+            { c: lcaC, l: "Lower Control Arm" },
+            { c: ucaC, l: "Upper Control Arm" },
+            { c: tieC, l: "Tie Rod" },
+            { c: pushC, l: "Pushrod" },
+            { c: rcColor, l: "IC / Roll Centre" },
+            { c: forceC, l: "Force Vectors" },
+          ].map((item, i) => (
+            <g key={i} transform={`translate(0, ${i * 11})`}>
+              <line x1="0" y1="4" x2="12" y2="4" stroke={item.c} strokeWidth="2" />
+              <text x="16" y="7" fill={C.dm || "#4a5568"} fontSize="6.5" fontFamily="monospace">
+                {item.l}
+              </text>
+            </g>
+          ))}
+        </g>
+      </g>
+    );
+  }
 
   return (
     <svg viewBox={`0 0 ${svgW} ${svgH}`} style={{ width: "100%", height: "100%", background: "transparent" }}>
@@ -433,152 +760,11 @@ function KinematicSchematicSVG({ axle, heave, roll, liveForces }) {
         <marker id="arrowS" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
           <path d="M0,0 L8,3 L0,6 Z" fill={springC} />
         </marker>
-        <marker id="arrowIC" markerWidth="6" markerHeight="6" refX="3" refY="3" orient="auto">
-          <circle cx="3" cy="3" r="3" fill={rcColor} />
-        </marker>
       </defs>
 
-      {/* Ground line */}
-      <line x1="20" y1={oY} x2={svgW - 20} y2={oY} stroke={C.b2 || "#1a2035"} strokeWidth="1" strokeDasharray="4 3" />
-      <text x={svgW / 2} y={oY + 14} textAnchor="middle" fill={C.dm || "#4a5568"} fontSize="8" fontFamily="monospace">GROUND PLANE</text>
-
-      {/* Centreline */}
-      <line x1={oX} y1="10" x2={oX} y2={oY - 5} stroke={C.b1 || "#1a2035"} strokeWidth="0.5" strokeDasharray="2 4" />
-      <text x={oX} y="8" textAnchor="middle" fill={C.dm || "#4a5568"} fontSize="7" fontFamily="monospace">CL</text>
-
-      {/* ─── RIGHT SIDE SUSPENSION ─── */}
-
-      {/* LCA — Lower Control Arm */}
-      <line x1={lcaI_svg.x} y1={lcaI_svg.y} x2={lcaO_svg.x} y2={lcaO_svg.y}
-        stroke={lcaC} strokeWidth="3" strokeLinecap="round" />
-      <circle cx={lcaI_svg.x} cy={lcaI_svg.y} r="4" fill={C.bg || "#0a0a0f"} stroke={lcaC} strokeWidth="1.5" />
-      <circle cx={lcaO_svg.x} cy={lcaO_svg.y} r="4" fill={C.bg || "#0a0a0f"} stroke={lcaC} strokeWidth="1.5" />
-
-      {/* UCA — Upper Control Arm */}
-      <line x1={ucaI_svg.x} y1={ucaI_svg.y} x2={ucaO_svg.x} y2={ucaO_svg.y}
-        stroke={ucaC} strokeWidth="3" strokeLinecap="round" />
-      <circle cx={ucaI_svg.x} cy={ucaI_svg.y} r="4" fill={C.bg || "#0a0a0f"} stroke={ucaC} strokeWidth="1.5" />
-      <circle cx={ucaO_svg.x} cy={ucaO_svg.y} r="4" fill={C.bg || "#0a0a0f"} stroke={ucaC} strokeWidth="1.5" />
-
-      {/* Tie Rod */}
-      <line x1={tieI_svg.x} y1={tieI_svg.y} x2={tieO_svg.x} y2={tieO_svg.y}
-        stroke={tieC} strokeWidth="2" strokeDasharray="6 3" />
-      <circle cx={tieI_svg.x} cy={tieI_svg.y} r="3" fill={tieC} opacity="0.6" />
-      <circle cx={tieO_svg.x} cy={tieO_svg.y} r="3" fill={tieC} opacity="0.6" />
-
-      {/* Upright (LCA outer → UCA outer) */}
-      <line x1={lcaO_svg.x} y1={lcaO_svg.y} x2={ucaO_svg.x} y2={ucaO_svg.y}
-        stroke={uprightC} strokeWidth="4" strokeLinecap="round" opacity="0.7" />
-
-      {/* Pushrod */}
-      <line x1={pushL_svg.x} y1={pushL_svg.y} x2={pushU_svg.x} y2={pushU_svg.y}
-        stroke={pushC} strokeWidth="2.5" strokeLinecap="round" />
-
-      {/* Rocker & Spring/Damper line */}
-      <line x1={pushU_svg.x} y1={pushU_svg.y} x2={rcPiv_svg.x} y2={rcPiv_svg.y}
-        stroke="#a78bfa" strokeWidth="2" />
-      <line x1={rcPiv_svg.x} y1={rcPiv_svg.y} x2={sdTop_svg.x} y2={sdTop_svg.y}
-        stroke={springC} strokeWidth="2.5" strokeDasharray="4 2" />
-      <circle cx={rcPiv_svg.x} cy={rcPiv_svg.y} r="5" fill="#a78bfa" opacity="0.4" />
-      <rect x={sdTop_svg.x - 6} y={sdTop_svg.y - 3} width="12" height="6" rx="2"
-        fill={C.bg || "#0a0a0f"} stroke={springC} strokeWidth="1" />
-
-      {/* Wheel circle */}
-      <circle cx={wc_svg.x} cy={wc_svg.y} r={VG.wR * scale * 0.9}
-        fill="none" stroke={C.dm || "#4a5568"} strokeWidth="1.5" opacity="0.4" />
-      <circle cx={wc_svg.x} cy={wc_svg.y} r="3" fill={C.dm || "#4a5568"} />
-
-      {/* Contact patch */}
-      <rect x={cp_svg.x - 12} y={cp_svg.y - 2} width="24" height="4" rx="2"
-        fill={C.gn || "#00ff88"} opacity="0.5" />
-
-      {/* ─── IC and RC visualization ─── */}
-
-      {/* IC lines (extended LCA and UCA) */}
-      <line x1={lcaI_svg.x} y1={lcaI_svg.y} x2={ic_svg.x} y2={ic_svg.y}
-        stroke={lcaC} strokeWidth="0.5" strokeDasharray="3 3" opacity="0.3" />
-      <line x1={ucaI_svg.x} y1={ucaI_svg.y} x2={ic_svg.x} y2={ic_svg.y}
-        stroke={ucaC} strokeWidth="0.5" strokeDasharray="3 3" opacity="0.3" />
-
-      {/* IC point */}
-      <circle cx={ic_svg.x} cy={ic_svg.y} r="5" fill="none" stroke={rcColor} strokeWidth="1.5" />
-      <line x1={ic_svg.x - 4} y1={ic_svg.y} x2={ic_svg.x + 4} y2={ic_svg.y} stroke={rcColor} strokeWidth="1" />
-      <line x1={ic_svg.x} y1={ic_svg.y - 4} x2={ic_svg.x} y2={ic_svg.y + 4} stroke={rcColor} strokeWidth="1" />
-      <text x={ic_svg.x + 8} y={ic_svg.y - 4} fill={rcColor} fontSize="7" fontFamily="monospace" fontWeight="700">IC</text>
-
-      {/* RC line (CP → IC → centreline) */}
-      <line x1={cp_svg.x} y1={cp_svg.y} x2={ic_svg.x} y2={ic_svg.y}
-        stroke={rcColor} strokeWidth="0.7" strokeDasharray="4 2" opacity="0.5" />
-      <line x1={ic_svg.x} y1={ic_svg.y} x2={rc_svg.x} y2={rc_svg.y}
-        stroke={rcColor} strokeWidth="0.7" strokeDasharray="4 2" opacity="0.5" />
-
-      {/* RC point */}
-      <circle cx={rc_svg.x} cy={rc_svg.y} r="6" fill={rcColor} opacity="0.3" />
-      <circle cx={rc_svg.x} cy={rc_svg.y} r="3" fill={rcColor} />
-      <text x={rc_svg.x + 10} y={rc_svg.y + 3} fill={rcColor} fontSize="8" fontFamily="monospace" fontWeight="700">RC</text>
-      <text x={rc_svg.x + 10} y={rc_svg.y + 12} fill={C.dm || "#4a5568"} fontSize="7" fontFamily="monospace">
-        h={Math.max(-50, Math.min(300, rc.z)).toFixed(0)}mm
-      </text>
-
-      {/* ─── FORCE VECTORS ─── */}
-
-      {/* Fz (vertical at CP) */}
-      {Fz > 0 && <line x1={cp_svg.x} y1={cp_svg.y} x2={cp_svg.x} y2={cp_svg.y + Math.min(80, Fz * fScale)}
-        stroke={forceC} strokeWidth="2" markerEnd="url(#arrowF)" opacity="0.8" />}
-      {Fz > 0 && <text x={cp_svg.x + 6} y={cp_svg.y + Math.min(60, Fz * fScale * 0.7)} fill={forceC} fontSize="7" fontFamily="monospace">
-        Fz={Fz.toFixed(0)}N
-      </text>}
-
-      {/* Fy (lateral at CP) */}
-      {Math.abs(Fy) > 10 && <line x1={cp_svg.x} y1={cp_svg.y - 3}
-        x2={cp_svg.x + Math.sign(Fy) * Math.min(60, Math.abs(Fy) * fScale)} y2={cp_svg.y - 3}
-        stroke={C.am || "#ffaa00"} strokeWidth="2" markerEnd="url(#arrowF)" opacity="0.8" />}
-
-      {/* Spring force (along pushrod) */}
-      {Math.abs(Fs) > 10 && <line x1={sdTop_svg.x} y1={sdTop_svg.y}
-        x2={sdTop_svg.x} y2={sdTop_svg.y + Math.sign(Fs) * Math.min(40, Math.abs(Fs) * fScale * 0.5)}
-        stroke={springC} strokeWidth="1.5" markerEnd="url(#arrowS)" opacity="0.7" />}
-
-      {/* ─── MIRROR LEFT SIDE (simplified) ─── */}
-      <g transform={`translate(${svgW}, 0) scale(-1, 1)`} opacity="0.35">
-        <line x1={lcaI_svg.x} y1={lcaI_svg.y} x2={lcaO_svg.x} y2={lcaO_svg.y} stroke={lcaC} strokeWidth="3" strokeLinecap="round" />
-        <line x1={ucaI_svg.x} y1={ucaI_svg.y} x2={ucaO_svg.x} y2={ucaO_svg.y} stroke={ucaC} strokeWidth="3" strokeLinecap="round" />
-        <line x1={lcaO_svg.x} y1={lcaO_svg.y} x2={ucaO_svg.x} y2={ucaO_svg.y} stroke={uprightC} strokeWidth="4" strokeLinecap="round" />
-        <line x1={tieI_svg.x} y1={tieI_svg.y} x2={tieO_svg.x} y2={tieO_svg.y} stroke={tieC} strokeWidth="2" strokeDasharray="6 3" />
-        <circle cx={wc_svg.x} cy={wc_svg.y} r={VG.wR * scale * 0.9} fill="none" stroke={C.dm || "#4a5568"} strokeWidth="1.5" />
-        <rect x={cp_svg.x - 12} y={cp_svg.y - 2} width="24" height="4" rx="2" fill={C.gn || "#00ff88"} opacity="0.5" />
-      </g>
-
-      {/* ─── LABELS ─── */}
-      <text x={lcaI_svg.x - 2} y={lcaI_svg.y + 12} fill={lcaC} fontSize="6" fontFamily="monospace" textAnchor="end">LCA</text>
-      <text x={ucaI_svg.x - 2} y={ucaI_svg.y - 6} fill={ucaC} fontSize="6" fontFamily="monospace" textAnchor="end">UCA</text>
-      <text x={tieI_svg.x - 2} y={tieI_svg.y + 10} fill={tieC} fontSize="6" fontFamily="monospace" textAnchor="end">TIE</text>
-      <text x={pushU_svg.x + 6} y={(pushU_svg.y + pushL_svg.y) / 2} fill={pushC} fontSize="6" fontFamily="monospace">PUSH</text>
-
-      {/* Title block */}
-      <text x="12" y="16" fill={C.w || "#e8eaf6"} fontSize="10" fontFamily="monospace" fontWeight="700">
-        {isF ? "FRONT" : "REAR"} AXLE — FRONT VIEW
-      </text>
-      <text x="12" y="28" fill={C.dm || "#4a5568"} fontSize="7" fontFamily="monospace">
-        Track: {tw}mm | Heave: {(heave || 0).toFixed(1)}mm | Roll: {(roll || 0).toFixed(2)}°
-      </text>
-
-      {/* Legend */}
-      <g transform={`translate(${svgW - 130}, 12)`}>
-        {[
-          { c: lcaC, l: "Lower Control Arm" },
-          { c: ucaC, l: "Upper Control Arm" },
-          { c: tieC, l: "Tie Rod" },
-          { c: pushC, l: "Pushrod" },
-          { c: rcColor, l: "IC / Roll Centre" },
-          { c: forceC, l: "Force Vectors" },
-        ].map((item, i) => (
-          <g key={i} transform={`translate(0, ${i * 11})`}>
-            <line x1="0" y1="4" x2="12" y2="4" stroke={item.c} strokeWidth="2" />
-            <text x="16" y="7" fill={C.dm || "#4a5568"} fontSize="6.5" fontFamily="monospace">{item.l}</text>
-          </g>
-        ))}
-      </g>
+      {renderPanel("left", 0)}
+      <line x1={panelW} y1="8" x2={panelW} y2={svgH - 8} stroke={C.b1 || "#1a2035"} strokeWidth="1" opacity="0.7" />
+      {renderPanel("right", panelW)}
     </svg>
   );
 }
