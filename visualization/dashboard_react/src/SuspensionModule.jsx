@@ -586,14 +586,18 @@ function KinematicSchematicSVG({ axle, heave, roll, liveForces }) {
         />
         <circle cx={chShock.x} cy={chShock.y} r="4" fill={springC} opacity="0.8" />
 
-        <circle
-          cx={wc.x}
-          cy={wc.y}
-          r={VG.wR * scale * 0.9}
+        {/* Front-view Tire Profile with Static Camber */}
+        <rect
+          x={wc.x - (250 * scale) / 2}
+          y={wc.y - (VG.wR * scale)}
+          width={250 * scale}
+          height={VG.wR * 2 * scale}
+          rx="8"
           fill="none"
           stroke={C.dm || "#4a5568"}
           strokeWidth="1.5"
           opacity="0.4"
+          transform={`rotate(${sideSign * (isF ? VG.camberF : VG.camberR)}, ${wc.x}, ${wc.y})`}
         />
         <circle cx={wc.x} cy={wc.y} r="3" fill={C.dm || "#4a5568"} />
         <rect
