@@ -209,7 +209,7 @@ export default function App() {
   const energy = useMemo(() => gEnergyBudgetPH(), []);
   const alData = useMemo(() => gALConstraints(), []);
   const wavelets = useMemo(() => gWaveletCoeffsMPC(), []);
-  const tubes = useMemo(() => gTubePoints(), []);
+  const tubes = useMemo(() => gTubePoints(track), [track]);
   const landscape = useMemo(() => gHnetLandscape(), []);
   const rMatrix = useMemo(() => gRMatrix(), []);
   const gpEnv = useMemo(() => gGPEnvelope(), []);
