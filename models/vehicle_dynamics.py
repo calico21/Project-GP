@@ -1362,6 +1362,7 @@ class DifferentiableMultiBodyVehicle:
     def default_setup_params() -> jax.Array:
         return DEFAULT_SETUP
     
+    @staticmethod
     def make_initial_state(T_env: float = 25.0, vx0: float = 0.0) -> jax.Array:
         """
         Create a valid 108-state initial vector for the extended model.

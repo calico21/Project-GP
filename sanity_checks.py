@@ -60,43 +60,34 @@ def test_neural_convergence():
 
 def test_forward_pass():
     print("\n" + "=" * 60)
-    print("TEST 2: 46-DOF SYMPLECTIC FORWARD PASS")
+    print("TEST 2: 108-DOF SYMPLECTIC FORWARD PASS")
     print("=" * 60)
     print("Instantiating DifferentiableMultiBodyVehicle...")
 
     try:
         vehicle = DifferentiableMultiBodyVehicle(VP_DICT, TP_DICT)
 
-        # CRITICAL: setup must be defined BEFORE compute_equilibrium_suspension.
-        # Python sees `setup` as a local name (assigned on the next statement),
-        # so any reference before assignment raises UnboundLocalError — even if
-        # the runtime would never reach it before the assignment in exec order.
         from optimization.objectives import _expand_8_to_28_setup
         setup = _expand_8_to_28_setup(
             jnp.array([35000., 38000., 400., 450., 2500., 2800., 0.28, 0.60])
         )
 
+        # ── Build 108-state initial vector via make_initial_state ─────────
+        # State layout: [0:28] kinematics | [28:56] thermal 3D |
+        #               [56:72] transient 2nd-order | [72:84] damper |
+        #               [84:108] elastokin
         _z_eq = compute_equilibrium_suspension(setup, VP_DICT)
-        x0 = (jnp.zeros(46)
-              .at[14].set(10.0)
-              .at[6:10].set(_z_eq)
-              .at[28:38].set(jnp.array([85., 85., 85., 80., 75.,
-                                         85., 85., 85., 80., 75.])))
+        x0 = (DifferentiableMultiBodyVehicle.make_initial_state(T_env=25.0, vx0=10.0)
+              .at[6:10].set(_z_eq))
 
-        # ── rest of test_forward_pass is UNCHANGED below this line ─────────
-        from optimization.objectives import _expand_8_to_28_setup
-        setup = _expand_8_to_28_setup(
-            jnp.array([35000., 38000., 400., 450., 2500., 2800., 0.28, 0.60])
-        )
-
-        print("\n  ── Passive energy budget check (u=[0,0]) ──")
-        u_passive = jnp.array([0.0, 0.0])
+        print("\n  ── Passive energy budget check (u=[0,...,0]) ──")
+        u_passive = jnp.zeros(6)
         x_passive = vehicle.simulate_step(x0, u_passive, setup, dt=0.01)
 
         m_total  = VP_DICT.get('total_mass', 230.0)
-        vx0      = float(x0[14])
+        vx_init  = float(x0[14])
         vx_pass  = float(x_passive[14])
-        delta_KE = 0.5 * m_total * (vx_pass ** 2 - vx0 ** 2)
+        delta_KE = 0.5 * m_total * (vx_pass ** 2 - vx_init ** 2)
         budget_J = 0.15
 
         if jnp.all(jnp.isfinite(x_passive)):
@@ -110,17 +101,24 @@ def test_forward_pass():
         else:
             print("[FAIL] Passive rollout produced NaN — physics engine unstable.")
 
-        print("\n  ── Active forward pass (u=[0.2, 1000]) ──")
-        u_active = jnp.array([0.2, 1000.0])
+        print("\n  ── Active forward pass (δ=0.2, T_fl=1000 Nm) ──")
+        # u = [δ, T_fl, T_fr, T_rl, T_rr, F_brake_hyd]
+        u_active = jnp.array([0.2, 1000.0, 1000.0, 1000.0, 1000.0, 0.0])
         print("Executing single simulate_step (dt=0.01s)...")
         x_next = vehicle.simulate_step(x0, u_active, setup, dt=0.01)
 
         is_finite = bool(jnp.all(jnp.isfinite(x_next)))
         if is_finite:
-            print(f"  > Speed changed: 10.000 m/s -> {x_next[14]:.3f} m/s")
-            print(f"  > Yaw rate built to: {x_next[19]:.3f} rad/s")
-            print(f"  > Transient Slip Angle FL: {x_next[38]:.4f} rad")
-            print("[PASS] Forward pass is mathematically stable and outputs are finite.")
+            print(f"  > State size: {len(x_next)} (expected 108)")
+            print(f"  > Speed changed: {vx_init:.3f} m/s -> {float(x_next[14]):.3f} m/s")
+            print(f"  > Yaw rate built to: {float(x_next[19]):.3f} rad/s")
+            # Transient slip FL alpha_t is now at x[56] (not x[38])
+            print(f"  > Transient slip α_t FL: {float(x_next[56]):.4f} rad  [x[56]]")
+            # Thermal: mean surface rib temp FL (nodes 0,1,2 of first 7-node block)
+            T_fl_mean = float(jnp.mean(x_next[28:31]))
+            print(f"  > Mean surface T FL: {T_fl_mean:.1f} °C  [x[28:31]]")
+            assert len(x_next) == 108, f"State size mismatch: got {len(x_next)}, expected 108"
+            print("[PASS] 108-DOF forward pass stable — all outputs finite.")
         else:
             nan_idx = jnp.where(~jnp.isfinite(x_next))[0]
             print(f"[FAIL] NaNs detected at state indices: {nan_idx.tolist()}")
@@ -173,8 +171,8 @@ def test_circular_track():
     from optimization.objectives import _expand_8_to_28_setup  # <--- Add import
     
     _veh = DifferentiableMultiBodyVehicle(VP, TC)
-    _x   = jnp.zeros(46).at[14].set(15.0)
-    _u   = jnp.array([0.15, 1000.0])
+    _x   = DifferentiableMultiBodyVehicle.make_initial_state(T_env=25.0, vx0=15.0)
+    _u   = jnp.array([0.15, 1000.0, 1000.0, 1000.0, 1000.0, 0.0])
     
     # <--- Wrap the 8-element array
     _sp  = _expand_8_to_28_setup(
@@ -332,10 +330,10 @@ def test_differential_yaw_moment():
     vx_init = 15.0
     omega_init = vx_init / veh.R_wheel   # ≈ 73.4 rad/s — wheels rolling freely
 
-    x0 = jnp.zeros(46)
-    x0 = x0.at[14].set(vx_init)
-    x0 = x0.at[24:28].set(omega_init)   # ← CRITICAL: initialize wheel ω states
-    x0 = x0.at[28:38].set(jnp.full(10, 88.0))
+    # Build 108-state initial vector — wheel ω lives at v[10:14] = x[24:28]
+    x0 = (DifferentiableMultiBodyVehicle.make_initial_state(T_env=25.0, vx0=vx_init)
+          .at[24:28].set(omega_init)    # ← wheel ω states
+          .at[28:56].set(88.0))         # ← all 28 thermal nodes warm (3D block)
 
     # ── Phase 1: warm up wheel ω states with low, symmetric torque ────────
     # 100 steps = 0.5 s ≈ 21 time constants (tau = rl/vx = 0.35/15 = 23ms)
@@ -345,8 +343,12 @@ def test_differential_yaw_moment():
     for _ in range(100):
         x_warm = veh.simulate_step(x_warm, u_sym, setup, dt=dt)
 
-    kt_rl = float(x_warm[43])
-    kt_rr = float(x_warm[45])
+    # New state layout: transient_4x4 at x[56:72]
+    # Corner layout: [alpha_t, alpha_dot, kappa_t, kappa_dot] per corner
+    # RL = corner 2 → base 56+2*4=64, kappa_t at offset 2 → x[66]
+    # RR = corner 3 → base 56+3*4=68, kappa_t at offset 2 → x[70]
+    kt_rl = float(x_warm[66])
+    kt_rr = float(x_warm[70])
     wz_warm = float(x_warm[19])
     print(f"  Warmup check — wz: {wz_warm:+.4f} rad/s (should be ≈0)")
     print(f"  Warm kappa_t: RL={kt_rl:.4f}  RR={kt_rr:.4f} "
@@ -1323,6 +1325,528 @@ def run_all():
     print("=" * 60 + "\n")
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# TEST 19: STATE VECTOR INTEGRITY (108-DOF)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def test_108dof_state_integrity():
+    print("\n" + "=" * 60)
+    print("TEST 19: 108-DOF STATE VECTOR INTEGRITY")
+    print("=" * 60)
+    from models.vehicle_dynamics import DifferentiableMultiBodyVehicle
+
+    x = DifferentiableMultiBodyVehicle.make_initial_state(T_env=25.0, vx0=10.0)
+
+    # Size check
+    if len(x) == 108:
+        print(f"[PASS] State vector length = 108")
+    else:
+        print(f"[FAIL] State vector length = {len(x)}, expected 108")
+        return
+
+    # Finiteness
+    if bool(jnp.all(jnp.isfinite(x))):
+        print("[PASS] All 108 states are finite")
+    else:
+        bad = jnp.where(~jnp.isfinite(x))[0]
+        print(f"[FAIL] Non-finite at indices: {bad.tolist()}")
+
+    # Block value checks
+    vx_init = float(x[14])
+    T_fl_surface = float(jnp.mean(x[28:31]))   # FL surface ribs [28:31]
+    T_fl_gas     = float(x[28 + 5])             # FL gas node (node 5 of first 7)
+    T_fl_contact = float(x[28 + 6])             # FL contact node (node 6)
+    T_oil_fl     = float(x[74])                  # FL damper T_oil (72+2)
+
+    print(f"  > vx_init: {vx_init:.1f} m/s  (expected 10.0)")
+    print(f"  > FL surface ribs: {T_fl_surface:.1f} °C  (expected ~30.0)")
+    print(f"  > FL gas node:    {T_fl_gas:.1f} °C  (expected 25.0)")
+    print(f"  > FL contact:     {T_fl_contact:.1f} °C  (expected 35.0)")
+    print(f"  > FL damper T_oil: {T_oil_fl:.1f} °C  (expected 40.0)")
+    print(f"  > Transient slip x[56:72]: all zeros = "
+          f"{bool(jnp.all(x[56:72] == 0.0))}")
+    print(f"  > Elastokin x[84:108]: all zeros = "
+          f"{bool(jnp.all(x[84:108] == 0.0))}")
+
+    checks = [
+        abs(vx_init - 10.0) < 0.01,
+        25.0 < T_fl_surface < 35.0,
+        abs(T_fl_gas - 25.0) < 1.0,
+        abs(T_fl_contact - 35.0) < 1.0,
+        abs(T_oil_fl - 40.0) < 1.0,
+        bool(jnp.all(x[56:72] == 0.0)),
+        bool(jnp.all(x[84:108] == 0.0)),
+    ]
+    if all(checks):
+        print("[PASS] All block values correctly initialized.")
+    else:
+        print(f"[FAIL] Block value mismatch — {checks.count(False)} check(s) failed")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TEST 20: GROUND EFFECT STALL (Module 1 — AeroPlatformModel)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def test_aero_ground_effect_stall():
+    print("\n" + "=" * 60)
+    print("TEST 20: GROUND EFFECT STALL (AeroPlatformModel)")
+    print("=" * 60)
+    try:
+        from models.aero_platform import AeroPlatformModel, AeroPlatformConfig, ground_effect_envelope
+
+        cfg = AeroPlatformConfig()
+        model = AeroPlatformModel(cfg)
+
+        # Test 1: Ground effect envelope stalls below rh_stall
+        rh_nominal = cfg.rh_peak                    # peak rh — should give Gamma ≈ 1
+        rh_stall   = cfg.rh_stall * 0.6            # 40% below stall — should give Gamma << 0.5
+        rh_high    = cfg.rh_high * 1.3             # well above ceiling — should give Gamma << 0.5
+
+        Gamma_nom   = float(ground_effect_envelope(jnp.array(rh_nominal), cfg.rh_peak, cfg.rh_stall, cfg.rh_high))
+        Gamma_stall = float(ground_effect_envelope(jnp.array(rh_stall),   cfg.rh_peak, cfg.rh_stall, cfg.rh_high))
+        Gamma_high  = float(ground_effect_envelope(jnp.array(rh_high),    cfg.rh_peak, cfg.rh_stall, cfg.rh_high))
+
+        print(f"  Γ_ge at rh={rh_nominal:.0f}mm (peak):  {Gamma_nom:.3f}  (expected ≈1.0)")
+        print(f"  Γ_ge at rh={rh_stall:.0f}mm (stall):  {Gamma_stall:.3f}  (expected <0.5)")
+        print(f"  Γ_ge at rh={rh_high:.0f}mm (high):   {Gamma_high:.3f}  (expected <0.7)")
+
+        if Gamma_nom > 0.85:
+            print("[PASS] Peak ride height gives maximum downforce (Γ ≈ 1)")
+        else:
+            print(f"[FAIL] Peak Γ = {Gamma_nom:.3f} — should be close to 1.0")
+
+        if Gamma_stall < 0.5:
+            print("[PASS] Aero stalls below rh_stall — optimizer gets gradient penalty")
+        else:
+            print(f"[FAIL] Stall Γ = {Gamma_stall:.3f} — should be < 0.5 at {rh_stall:.0f}mm")
+
+        # Test 2: CoP migrates under pitch — front split increases nose-down
+        Fz_f_up, _, _, _, _   = model.apply(None, jnp.array(20.0), jnp.array(-0.05), 0.0, 0.0, 0.0)
+        Fz_f_flat, Fz_r_flat, _, _, _ = model.apply(None, jnp.array(20.0), jnp.array(0.0), 0.0, 0.0, 0.0)
+        Fz_f_down, Fz_r_down, _, _, _ = model.apply(None, jnp.array(20.0), jnp.array(0.05), 0.0, 0.0, 0.0)
+
+        split_up   = float(Fz_f_up / (Fz_f_up + float(model.apply(None, jnp.array(20.0), jnp.array(-0.05), 0.0, 0.0, 0.0)[1]) + 1e-6))
+        split_flat = float(Fz_f_flat / (Fz_f_flat + Fz_r_flat + 1e-6))
+        split_down = float(Fz_f_down / (Fz_f_down + Fz_r_down + 1e-6))
+        print(f"  CoP front split: nose-up={split_up:.3f} | flat={split_flat:.3f} | nose-down={split_down:.3f}")
+
+        if split_down > split_flat:
+            print("[PASS] CoP migrates forward under nose-down pitch (correct aero balance shift)")
+        else:
+            print("[WARN] CoP pitch sensitivity unexpected — check dCoP_dpitch sign")
+
+        # Test 3: Differentiability — gradient of Fz_f w.r.t. heave_f is nonzero at nominal
+        grad_fz_heave = jax.grad(
+            lambda h: model.apply(None, jnp.array(20.0), jnp.array(0.0), 0.0, h, jnp.array(0.0))[0]
+        )(jnp.array(0.0))
+        if jnp.isfinite(grad_fz_heave) and abs(float(grad_fz_heave)) > 0.0:
+            print(f"[PASS] ∂Fz_f/∂heave_f is finite and nonzero: {float(grad_fz_heave):.1f} N/m")
+        else:
+            print(f"[FAIL] Gradient dead at nominal heave: {grad_fz_heave}")
+
+    except Exception as e:
+        print(f"[FAIL] Aero platform test crashed: {e}")
+        import traceback; traceback.print_exc()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TEST 21: DAMPER HYSTERESIS (Module 2)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def test_damper_hysteresis():
+    print("\n" + "=" * 60)
+    print("TEST 21: DAMPER HYSTERESIS (Maxwell ODE)")
+    print("=" * 60)
+    try:
+        from models.damper_hysteresis import DamperState, damper_step, DamperHysteresisConfig
+
+        cfg = DamperHysteresisConfig()
+        state = DamperState.default()
+        dt = 0.001  # 1ms steps
+
+        # ── Test 1: Hysteresis — same |v| gives different force on
+        # compression vs rebound after a pre-loading half-cycle ────────────
+        # Pre-load: compression at +0.3 m/s for 40ms
+        s = state
+        for _ in range(40):
+            _, s = damper_step(jnp.array(0.3), s, dt, cfg)
+
+        F_comp, s_comp = damper_step(jnp.array(0.1), s, dt, cfg)   # slow compression
+        # Reset to same pre-loaded state and apply rebound at same |v|
+        s2 = s
+        F_reb, _ = damper_step(jnp.array(-0.1), s2, dt, cfg)       # slow rebound
+
+        hysteresis_ratio = abs(float(F_reb)) / (abs(float(F_comp)) + 1e-6)
+        print(f"  F_comp @ v=+0.1 m/s: {float(F_comp):.1f} N")
+        print(f"  F_reb  @ v=-0.1 m/s: {float(F_reb):.1f} N  (after same pre-load)")
+        print(f"  |F_reb| / |F_comp| = {hysteresis_ratio:.3f}  (rebound:bump ratio)")
+
+        if hysteresis_ratio > cfg.rho_rebound * 0.8:
+            print(f"[PASS] Rebound is stiffer than compression (ratio={hysteresis_ratio:.2f})")
+        else:
+            print(f"[WARN] Rebound/compression ratio {hysteresis_ratio:.2f} lower than expected")
+
+        # ── Test 2: Oil heats up under sustained oscillation ──────────────
+        s = DamperState.default()
+        for _ in range(500):
+            v = jnp.array(0.2 * float(jnp.sin(jnp.array(_ * 0.05))))
+            _, s = damper_step(v, s, dt, cfg)
+
+        T_final = float(s.T_oil)
+        print(f"  T_oil after 500 oscillation steps: {T_final:.1f} °C (initial: {cfg.T_oil_ref:.0f} °C)")
+        if T_final > cfg.T_oil_ref + 1.0:
+            print("[PASS] Oil temperature rises under oscillation — thermal model active")
+        else:
+            print(f"[WARN] T_oil barely changed ({T_final:.1f} °C) — check power dissipation")
+
+        # ── Test 3: Cavitation — force drops at extreme rebound ───────────
+        s = DamperState.default()
+        F_norm, _ = damper_step(jnp.array(-0.5), s, dt, cfg)
+        F_cav,  _ = damper_step(jnp.array(-cfg.v_cavitation * 1.5), s, dt, cfg)
+        cav_ratio = abs(float(F_cav)) / (cfg.v_cavitation * 1.5 / 0.5 * abs(float(F_norm)) + 1e-6)
+        if cav_ratio < 0.9:
+            print(f"[PASS] Cavitation suppresses extreme rebound force (ratio={cav_ratio:.2f})")
+        else:
+            print(f"[WARN] Cavitation not clearly visible at {cfg.v_cavitation*1.5:.1f} m/s rebound")
+
+        # ── Test 4: Differentiability ─────────────────────────────────────
+        def total_force(v_in):
+            F, _ = damper_step(v_in, DamperState.default(), dt, cfg)
+            return F
+        grad_F = jax.grad(total_force)(jnp.array(0.05))
+        if jnp.isfinite(grad_F):
+            print(f"[PASS] ∂F_damper/∂v is finite: {float(grad_F):.1f} N·s/m")
+        else:
+            print(f"[FAIL] Non-finite damper gradient: {grad_F}")
+
+    except Exception as e:
+        print(f"[FAIL] Damper hysteresis test crashed: {e}")
+        import traceback; traceback.print_exc()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TEST 22: TIRE THERMAL 3D — LATERAL ASYMMETRY (Module 3)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def test_tire_thermal_3d():
+    print("\n" + "=" * 60)
+    print("TEST 22: TIRE THERMAL 3D — CAMBER ASYMMETRY & GROWTH")
+    print("=" * 60)
+    try:
+        from models.tire_thermal_3d import (
+            camber_load_distribution,
+            four_corner_thermal_derivatives,
+            TireThermalProps,
+        )
+
+        props = TireThermalProps()
+
+        # ── Test 1: Camber load distribution ─────────────────────────────
+        # At -2° camber, outer rib should carry more load than inner
+        gamma_neg = jnp.deg2rad(jnp.array(-2.0))
+        gamma_zero = jnp.array(0.0)
+        Fz = jnp.array(800.0)
+
+        loads_neg  = camber_load_distribution(gamma_neg,  Fz)
+        loads_zero = camber_load_distribution(gamma_zero, Fz)
+
+        F_inner, F_mid, F_outer = float(loads_neg[0]), float(loads_neg[1]), float(loads_neg[2])
+        F_sum = F_inner + F_mid + F_outer
+        print(f"  At γ=-2°:  inner={F_inner:.1f}N  mid={F_mid:.1f}N  outer={F_outer:.1f}N  (sum={F_sum:.1f}N)")
+        print(f"  At γ=0°:   inner={float(loads_zero[0]):.1f}N  mid={float(loads_zero[1]):.1f}N  outer={float(loads_zero[2]):.1f}N")
+
+        if F_outer > F_inner and abs(F_sum - float(Fz)) < 1.0:
+            print("[PASS] Negative camber loads outer rib (asymmetric distribution)")
+        else:
+            print(f"[FAIL] Camber distribution incorrect: outer={F_outer:.1f} <= inner={F_inner:.1f}")
+
+        # ── Test 2: Thermal derivatives grow under slip ───────────────────
+        # 4×7 state starting at ambient
+        T_env = 25.0
+        T_all = jnp.full((4, 7), T_env)
+        # Set gas and contact nodes correctly
+        for i in range(4):
+            T_all = T_all.at[i, 5].set(T_env)
+            T_all = T_all.at[i, 6].set(T_env + 10.0)
+
+        Fz_c  = jnp.array([700.0, 700.0, 750.0, 750.0])
+        kappa = jnp.array([0.08, 0.08, 0.06, 0.06])   # modest slip
+        alpha = jnp.zeros(4)
+        gamma = jnp.full(4, jnp.deg2rad(-2.0))
+        omega = jnp.full(4, 15.0 / 0.2045)
+        Vx    = jnp.array(15.0)
+
+        dT = four_corner_thermal_derivatives(T_all, Fz_c, kappa, alpha, gamma, Vx, omega, props)
+
+        mean_surface_rate = float(jnp.mean(dT[:, :3]))
+        print(f"  Mean surface rib dT/dt under κ=0.07: {mean_surface_rate:.1f} °C/s")
+
+        if mean_surface_rate > 0.0:
+            print("[PASS] Surface ribs heat up under slip (positive dT/dt)")
+        else:
+            print(f"[FAIL] dT/dt = {mean_surface_rate:.2f} °C/s — expected positive under slip")
+
+        # ── Test 3: Camber asymmetry in heat — outer rib heats faster ─────
+        dT_inner_fl = float(dT[0, 0])
+        dT_outer_fl = float(dT[0, 2])
+        print(f"  FL: dT_inner={dT_inner_fl:.2f}  dT_outer={dT_outer_fl:.2f} °C/s")
+        if dT_outer_fl > dT_inner_fl:
+            print("[PASS] Outer rib heats faster than inner at -2° camber")
+        else:
+            print("[WARN] No outer-rib thermal asymmetry at -2° camber")
+
+        # ── Test 4: Differentiability through full 4-corner ODE ───────────
+        grad_ok = jax.grad(
+            lambda fz: jnp.sum(four_corner_thermal_derivatives(
+                T_all, fz * jnp.ones(4), kappa, alpha, gamma, Vx, omega, props))
+        )(jnp.array(750.0))
+        if jnp.isfinite(grad_ok):
+            print(f"[PASS] ∂(ΣdT)/∂Fz finite: {float(grad_ok):.3e} °C·s⁻¹·N⁻¹")
+        else:
+            print(f"[FAIL] Non-finite thermal gradient w.r.t. Fz: {grad_ok}")
+
+    except Exception as e:
+        print(f"[FAIL] Tire thermal 3D test crashed: {e}")
+        import traceback; traceback.print_exc()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TEST 23: ELASTOKINEMATIC COMPLIANCE (Module 4)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def test_elastokinematics():
+    print("\n" + "=" * 60)
+    print("TEST 23: ELASTOKINEMATIC COMPLIANCE STEER")
+    print("=" * 60)
+    try:
+        from suspension.elastokinematics import compute_elastokinematic_corrections
+
+        zh = jnp.zeros(6)     # zero hysteresis state
+        vd = jnp.zeros(6)     # zero deflection rate
+
+        # ── Test 1: Lateral load → compliance steer (toe-in expected) ─────
+        Fy_front = jnp.array(1500.0)    # 1.5 kN lateral load
+        d_toe, d_camber, d_caster, _ = compute_elastokinematic_corrections(
+            jnp.array(0.0), Fy_front, jnp.array(800.0), jnp.array(0.0), zh, vd)
+
+        print(f"  At Fy=1.5kN: δ_toe={float(jnp.rad2deg(d_toe)):.3f}°  "
+              f"δ_camber={float(jnp.rad2deg(d_camber)):.3f}°  "
+              f"δ_caster={float(jnp.rad2deg(d_caster)):.3f}°")
+
+        if abs(float(d_toe)) > 1e-4:
+            print("[PASS] Compliance steer nonzero under lateral load")
+        else:
+            print("[FAIL] Zero compliance steer — tie rod bushing not deflecting")
+
+        # ── Test 2: Compliance scales with load magnitude ──────────────────
+        _, _, _, _ = compute_elastokinematic_corrections(
+            jnp.array(0.0), Fy_front * 2.0, jnp.array(800.0), jnp.array(0.0), zh, vd)
+        d_toe_2x, _, _, _ = compute_elastokinematic_corrections(
+            jnp.array(0.0), Fy_front * 2.0, jnp.array(800.0), jnp.array(0.0), zh, vd)
+
+        ratio = abs(float(d_toe_2x)) / (abs(float(d_toe)) + 1e-9)
+        print(f"  Compliance at 2× load: {float(jnp.rad2deg(d_toe_2x)):.3f}°  (ratio={ratio:.2f})")
+
+        if ratio > 1.0:
+            print("[PASS] Compliance increases with load (monotone response)")
+        else:
+            print(f"[WARN] Compliance ratio {ratio:.2f} — expected > 1.0")
+
+        # ── Test 3: Braking + cornering (coupled Fx+Fy) produces different toe ──
+        d_toe_pure_Fy, _, _, _ = compute_elastokinematic_corrections(
+            jnp.array(0.0), Fy_front, jnp.array(800.0), jnp.array(0.0), zh, vd)
+        d_toe_combined, _, _, _ = compute_elastokinematic_corrections(
+            jnp.array(-2000.0), Fy_front, jnp.array(800.0), jnp.array(0.0), zh, vd)
+
+        print(f"  Pure Fy:        δ_toe={float(jnp.rad2deg(d_toe_pure_Fy)):.3f}°")
+        print(f"  Fy+Fx (brake):  δ_toe={float(jnp.rad2deg(d_toe_combined)):.3f}°")
+        if abs(float(d_toe_combined) - float(d_toe_pure_Fy)) > 1e-5:
+            print("[PASS] Multi-axial coupling: braking changes compliance steer")
+        else:
+            print("[WARN] No Fx-Fy coupling in compliance — check link force model")
+
+        # ── Test 4: Differentiability ──────────────────────────────────────
+        grad_toe = jax.grad(
+            lambda fy: compute_elastokinematic_corrections(
+                jnp.array(0.0), fy, jnp.array(800.0), jnp.array(0.0), zh, vd)[0]
+        )(Fy_front)
+        if jnp.isfinite(grad_toe):
+            print(f"[PASS] ∂δ_toe/∂Fy finite: {float(grad_toe):.2e} rad/N")
+        else:
+            print(f"[FAIL] Non-finite elastokin gradient: {grad_toe}")
+
+    except Exception as e:
+        print(f"[FAIL] Elastokinematics test crashed: {e}")
+        import traceback; traceback.print_exc()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TEST 24: SECOND-ORDER TIRE TRANSIENT (Module 5)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def test_tire_transient_2nd_order():
+    print("\n" + "=" * 60)
+    print("TEST 24: SECOND-ORDER TIRE TRANSIENT DYNAMICS")
+    print("=" * 60)
+    try:
+        from models.tire_transient import (
+            TireTransientConfig, four_corner_transient_derivatives,
+            tire_bandwidth_hz, relaxation_length,
+        )
+
+        cfg = TireTransientConfig()
+
+        # ── Test 1: Relaxation length decreases under light load ──────────
+        sigma_heavy = float(relaxation_length(jnp.array(1200.0), jnp.array(0.0),
+                                               cfg.sigma_alpha_0, cfg.Fz0, cfg.p_load_alpha))
+        sigma_light = float(relaxation_length(jnp.array(300.0),  jnp.array(0.0),
+                                               cfg.sigma_alpha_0, cfg.Fz0, cfg.p_load_alpha))
+        sigma_slip  = float(relaxation_length(jnp.array(800.0),  jnp.array(0.13),
+                                               cfg.sigma_alpha_0, cfg.Fz0, cfg.p_load_alpha,
+                                               cfg.alpha_peak, cfg.beta_collapse))
+        print(f"  σ at Fz=1200N: {sigma_heavy:.3f}m  |  Fz=300N: {sigma_light:.3f}m  "
+              f"|  Fz=800N,α≈peak: {sigma_slip:.3f}m")
+
+        if sigma_light < sigma_heavy:
+            print("[PASS] σ decreases under lighter load (shorter carcass deflection path)")
+        else:
+            print(f"[FAIL] σ not load-dependent: heavy={sigma_heavy:.3f} light={sigma_light:.3f}")
+
+        if sigma_slip < sigma_heavy * 0.9:
+            print("[PASS] σ collapses near peak slip (partial sliding contact)")
+        else:
+            print(f"[WARN] σ slip-collapse weak: {sigma_slip:.3f} vs {sigma_heavy:.3f}")
+
+        # ── Test 2: Bandwidth scales with speed ───────────────────────────
+        bw_5  = tire_bandwidth_hz(5.0)
+        bw_15 = tire_bandwidth_hz(15.0)
+        bw_30 = tire_bandwidth_hz(30.0)
+        print(f"  Bandwidth: 5m/s={bw_5:.1f}Hz | 15m/s={bw_15:.1f}Hz | 30m/s={bw_30:.1f}Hz")
+
+        if bw_15 > bw_5 and bw_30 > bw_15:
+            print("[PASS] Tire bandwidth increases with speed (correct)")
+        else:
+            print(f"[FAIL] Bandwidth not monotone with speed")
+
+        # ── Test 3: Step response — verify 2nd-order lag is steeper ───────
+        # Simulate step input at t=0, compare steady-state convergence rate
+        dt = 0.001
+        alpha_kin = jnp.array(0.10)   # step to 0.10 rad
+        kappa_kin = jnp.zeros(4)
+        Fz = jnp.full(4, 800.0)
+        Vx = jnp.array(15.0)
+
+        state = jnp.zeros((4, 4))   # start at rest
+        steps_to_90pct = 0
+        for i in range(500):
+            d = four_corner_transient_derivatives(
+                jnp.full(4, float(alpha_kin)), kappa_kin, state, Fz, Vx, cfg)
+            state = state + d * dt
+            if steps_to_90pct == 0 and float(state[0, 0]) > 0.09:   # 90% of 0.10
+                steps_to_90pct = i + 1
+
+        t_90pct = steps_to_90pct * dt
+        print(f"  2nd-order: 90% settling time at 15m/s = {t_90pct*1000:.1f}ms")
+
+        # Theoretical: τ = σ/V = 0.25/15 = 16.7ms. For 2nd-order ζ=0.7: t_90 ≈ 2.5τ ≈ 42ms
+        if 10.0 < t_90pct * 1000 < 150.0:
+            print("[PASS] Settling time physically realistic")
+        else:
+            print(f"[WARN] Settling time {t_90pct*1000:.0f}ms outside 10–150ms physical range")
+
+        # ── Test 4: Differentiability ──────────────────────────────────────
+        grad_d = jax.grad(
+            lambda ak: jnp.sum(four_corner_transient_derivatives(
+                ak * jnp.ones(4), kappa_kin, state, Fz, Vx, cfg))
+        )(jnp.array(0.05))
+        if jnp.isfinite(grad_d):
+            print(f"[PASS] ∂(Σd_transient)/∂α_kin finite: {float(grad_d):.3e}")
+        else:
+            print(f"[FAIL] Non-finite transient gradient: {grad_d}")
+
+    except Exception as e:
+        print(f"[FAIL] Tire transient 2nd-order test crashed: {e}")
+        import traceback; traceback.print_exc()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TEST 25: TRACK SURFACE — RUBBER BUILD-UP & GRIP ASYMMETRY (Module 6)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def test_track_surface():
+    print("\n" + "=" * 60)
+    print("TEST 25: TRACK SURFACE — RUBBER BUILD-UP & GRIP ASYMMETRY")
+    print("=" * 60)
+    try:
+        from models.track_surface import (
+            create_track_surface, query_track_friction,
+            update_rubber_level, update_track_temperature,
+        )
+
+        state, cfg = create_track_surface(
+            track_length=1000.0, n_laps_pre_rubbered=10)
+
+        # ── Test 1: Pre-rubbered racing line has more grip ─────────────────
+        # Racing line is near n=0; dusty inside is at n = -half_width+1m
+        mu_line,  T_line  = query_track_friction(jnp.array(250.0), jnp.array(0.0),  state, cfg)
+        mu_dusty, T_dusty = query_track_friction(jnp.array(250.0), jnp.array(-4.0), state, cfg)
+
+        print(f"  μ on racing line (n=0):    {float(mu_line):.4f}")
+        print(f"  μ on dusty inside (n=-4m): {float(mu_dusty):.4f}")
+        print(f"  Track T_surface: {float(T_line):.1f}°C")
+
+        if float(mu_line) > float(mu_dusty):
+            print("[PASS] Racing line has higher grip than dusty inside")
+        else:
+            print(f"[FAIL] Grip not higher on racing line: {float(mu_line):.4f} vs {float(mu_dusty):.4f}")
+
+        # ── Test 2: Shadow zone has lower temperature ──────────────────────
+        # Default shadow: ~280-320m region. Query at 300m vs 100m (sunny)
+        T_shade = query_track_friction(jnp.array(300.0), jnp.array(0.0), state, cfg)[1]
+        T_sun   = query_track_friction(jnp.array(100.0), jnp.array(0.0), state, cfg)[1]
+        print(f"  T_surface in shadow zone (s=300m): {float(T_shade):.1f}°C  vs  sun (s=100m): {float(T_sun):.1f}°C")
+
+        # ── Test 3: Rubber build-up is Gaussian around deposit point ──────
+        state_fresh, cfg_f = create_track_surface(track_length=1000.0)
+        rubber_before = float(state_fresh.rubber_level[100, 2])  # mid-track, mid-lane
+        rubber_new = update_rubber_level(
+            state_fresh.rubber_level,
+            jnp.array(cfg_f.track_length * 100.0 / cfg_f.N_s),  # s at cell 100
+            jnp.array(0.0),  # n=0 (mid-lane)
+            cfg_f, dt=1.0,
+        )
+        rubber_on_line  = float(rubber_new[100, 2])
+        rubber_off_line = float(rubber_new[100, 0])  # inner lane
+        print(f"  Rubber deposit: on-line={rubber_on_line:.5f}  off-line={rubber_off_line:.5f}")
+        if rubber_on_line > rubber_off_line:
+            print("[PASS] Rubber deposits in Gaussian pattern on racing line")
+        else:
+            print("[WARN] Rubber deposit distribution unexpected")
+
+        # ── Test 4: Thermal update produces positive net temperature ──────
+        T_new = update_track_temperature(state.T_surface, state.shadow_mask, cfg, dt=60.0)
+        T_mean_new = float(jnp.mean(T_new))
+        T_mean_old = float(jnp.mean(state.T_surface))
+        print(f"  After 60s solar heating: T_mean {T_mean_old:.1f}°C → {T_mean_new:.1f}°C")
+        if T_mean_new > T_mean_old or T_mean_new > 28.0:
+            print("[PASS] Track temperature responds to solar heating")
+        else:
+            print("[WARN] Minimal thermal response — check solar flux / heat capacity")
+
+        # ── Test 5: Differentiability of friction query w.r.t. position ───
+        grad_mu = jax.grad(
+            lambda s: query_track_friction(s, jnp.array(0.0), state, cfg)[0]
+        )(jnp.array(250.0))
+        if jnp.isfinite(grad_mu):
+            print(f"[PASS] ∂μ/∂s is finite: {float(grad_mu):.2e} /m")
+        else:
+            print(f"[FAIL] Non-finite μ gradient w.r.t. track position: {grad_mu}")
+
+    except Exception as e:
+        print(f"[FAIL] Track surface test crashed: {e}")
+        import traceback; traceback.print_exc()
+
+
 if __name__ == "__main__":
     print("\n" + "█" * 60)
     print(" PROJECT-GP DIGITAL TWIN: FULL SYSTEM VERIFICATION")
@@ -1331,7 +1855,7 @@ if __name__ == "__main__":
     # ── Physics & dynamics (Tests 1–9) ──
     test_neural_convergence()
     test_forward_pass()
-    #test_circular_track()
+    test_circular_track()
     test_friction_circle()
     test_load_sensitivity()
     test_diagonal_load_transfer()
@@ -1350,5 +1874,13 @@ if __name__ == "__main__":
     test_koopman_observer()
     test_koopman_eabs_slip_containment()   # Test 17b
     test_dynamic_regen_blend()   # Test 18
+
+    test_108dof_state_integrity()
+    test_aero_ground_effect_stall()
+    test_damper_hysteresis()
+    test_tire_thermal_3d()
+    test_elastokinematics()
+    test_tire_transient_2nd_order()
+    test_track_surface()
 
     print("\n✅ END-TO-END VALIDATION COMPLETE.\n")
