@@ -234,17 +234,22 @@ def train_regime(module, m, E_norm, Mz_norm, E_next_norm, F_e_norm,
 def _build_initial_state(vx: float, vy: float, wz: float,
                          t_tire: float = _WARM_TIRE_TEMP) -> jax.Array:
     r_w   = VP_DICT.get('wheel_radius', 0.2032)
-    state = jnp.zeros(46)
+    
+    # Use the 108-DOF factory method instead of zeros(46)
+    state = DifferentiableMultiBodyVehicle.make_initial_state(T_env=25.0, vx0=vx)
+    
     state = state.at[2].set(-0.015)
-    state = state.at[S.VX].set(vx)
     state = state.at[S.VY].set(vy)
     state = state.at[S.WYAW].set(wz)
+    
     omega0 = float(np.clip(vx / (r_w + 1e-6), 0.0, 200.0))
     state = state.at[S.WSPIN_FL].set(omega0)
     state = state.at[S.WSPIN_FR].set(omega0)
     state = state.at[S.WSPIN_RL].set(omega0)
     state = state.at[S.WSPIN_RR].set(omega0)
-    state = state.at[28:38].set(jnp.full(10, t_tire))
+    
+    # 108-DOF model has 28 thermal states (4 wheels * 7 nodes), not 10
+    state = state.at[28:56].set(jnp.full(28, t_tire))
     return state
 
 

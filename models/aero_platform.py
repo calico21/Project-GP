@@ -247,7 +247,7 @@ def yaw_sensitivity(
 
 def _softplus_floor(x: jax.Array, floor: float, beta: float = 20.0) -> jax.Array:
     """C∞ lower bound: approaches floor from above, never negative gradient."""
-    return floor + jax.nn.softplus(x - floor, beta=beta)
+    return floor + jax.nn.softplus(beta * (x - floor)) / beta
 
 
 # ─────────────────────────────────────────────────────────────────────────────

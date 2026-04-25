@@ -74,8 +74,9 @@ def _make_compiled_fns(vehicle):
     def eval_fn(z: jax.Array) -> tuple[jax.Array, jax.Array]:
         s    = _logit_to_setup(z)
         z_eq = compute_equilibrium_suspension(s, VP)
-        x0   = (jnp.zeros(46)
-                .at[14].set(15.0)
+        from models.vehicle_dynamics import DifferentiableMultiBodyVehicle
+        x0_base = DifferentiableMultiBodyVehicle.make_initial_state(T_env=25.0, vx0=15.0)
+        x0   = (x0_base
                 .at[6:10].set(z_eq)
                 .at[28:38].set(jnp.array([85., 85., 85., 85., 80.,
                                            85., 85., 85., 85., 80.])))

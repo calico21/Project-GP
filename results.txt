@@ -1,3 +1,5 @@
+(project_gp_env) alexr@ALEXRP:~/FS_Driver_Setup_Optimizer$ python sanity_checks.py
+
 ████████████████████████████████████████████████████████████
  PROJECT-GP DIGITAL TWIN: FULL SYSTEM VERIFICATION
 ████████████████████████████████████████████████████████████
@@ -19,18 +21,18 @@ Training H_net and R_net for 2000 epochs (synthetic chassis flex)...
   [Config] Epochs: 2500 | AdamW | weight_decay: 1e-4
   [GP-vX3] PassiveHNet: ICNN + gauge. Passivity structural.
   [GP-vX3] Target: H_density = target_H / susp_sq  [J/m²]
-  Epoch   200 | Loss: 3.693336 | lr: 9.84e-04
-  Epoch   400 | Loss: 3.613415 | lr: 9.39e-04
-  Epoch   600 | Loss: 3.315012 | lr: 8.66e-04
-  Epoch   800 | Loss: 2.686453 | lr: 7.70e-04
-  Epoch  1000 | Loss: 2.087494 | lr: 6.58e-04
-  Epoch  1200 | Loss: 1.833440 | lr: 5.36e-04
-  Epoch  1400 | Loss: 1.744488 | lr: 4.12e-04
-  Epoch  1600 | Loss: 1.701212 | lr: 2.94e-04
-  Epoch  1800 | Loss: 1.675744 | lr: 1.89e-04
-  Epoch  2000 | Loss: 1.661092 | lr: 1.05e-04
-  Epoch  2200 | Loss: 1.653876 | lr: 4.48e-05
-  Epoch  2400 | Loss: 1.651202 | lr: 1.39e-05
+  Epoch   200 | Loss: 3.693170 | lr: 9.84e-04
+  Epoch   400 | Loss: 3.610754 | lr: 9.39e-04
+  Epoch   600 | Loss: 3.295977 | lr: 8.66e-04
+  Epoch   800 | Loss: 2.631768 | lr: 7.70e-04
+  Epoch  1000 | Loss: 2.045223 | lr: 6.58e-04
+  Epoch  1200 | Loss: 1.804841 | lr: 5.36e-04
+  Epoch  1400 | Loss: 1.736250 | lr: 4.12e-04
+  Epoch  1600 | Loss: 1.704844 | lr: 2.94e-04
+  Epoch  1800 | Loss: 1.686399 | lr: 1.89e-04
+  Epoch  2000 | Loss: 1.675795 | lr: 1.05e-04
+  Epoch  2200 | Loss: 1.670564 | lr: 4.48e-05
+  Epoch  2400 | Loss: 1.668607 | lr: 1.39e-05
 
 [Neural Physics] Verifying structural passivity properties (P1–P4)...
   P1 H≥0:         min=+5.00e+04  ✓
@@ -55,36 +57,37 @@ Training H_net and R_net for 2000 epochs (synthetic chassis flex)...
 [VehicleDynamics] H_net train scale (diagnostic): 4977.7896 J  [NOT applied to architecture]
 [VehicleDynamics] Loaded h_net.bytes
 [VehicleDynamics] Loaded r_net.bytes
-
-[Neural Physics] Passive energy injection: ✗ WARN  (-929.8 mJ — phantom braking)
-[Neural Physics] FiLM sensitivity: std(H_density | varied_setup) = 65.46 J/m²  (threshold: 497.78 J/m²)  ✗ WARN — FiLM underutilized
+[Neural Physics] Energy injection check skipped: cannot reshape array of shape (18,) (size 18) into shape (4, 7) (size 28)
+[Neural Physics] FiLM sensitivity: std(H_density | varied_setup) = 126.21 J/m²  (threshold: 497.78 J/m²)  ✗ WARN — FiLM underutilized
 
 [Neural Physics] Pre-training complete!
 Scale factors:  h_scale=4977.79 J/m²  |  r_scale=76.8194
 [Neural Physics] Weights saved → /home/alexr/FS_Driver_Setup_Optimizer/models/h_net.bytes
-[Neural Physics] LAST_TRAIN_MSE=1.650625
+[Neural Physics] LAST_TRAIN_MSE=1.668196
 [PASS] Weights saved → /home/alexr/FS_Driver_Setup_Optimizer/models/h_net.bytes
 [PASS] Scale saved   → /home/alexr/FS_Driver_Setup_Optimizer/models/h_net_scale.txt  (4977.79 J)
 [PASS] Test 2 will load passivity-trained H_net from disk.
 
 ============================================================
-TEST 2: 46-DOF SYMPLECTIC FORWARD PASS
+TEST 2: 108-DOF SYMPLECTIC FORWARD PASS
 ============================================================
 Instantiating DifferentiableMultiBodyVehicle...
 [VehicleDynamics] H_net train scale (diagnostic): 4977.7896 J  [NOT applied to architecture]
 [VehicleDynamics] Loaded h_net.bytes
 [VehicleDynamics] Loaded r_net.bytes
 
-  ── Passive energy budget check (u=[0,0]) ──
-  > Passive ΔKE: 898.4 mJ  (budget: 150 mJ)
-[WARN] Energy budget EXCEEDED by 6× — passivity not yet converged.
+  ── Passive energy budget check (u=[0,...,0]) ──
+  > Passive ΔKE: -46441.3 mJ  (budget: 150 mJ)
+[WARN] Energy budget EXCEEDED by 310× — passivity not yet converged.
 
-  ── Active forward pass (u=[0.2, 1000]) ──
+  ── Active forward pass (δ=0.2, T_fl=1000 Nm) ──
 Executing single simulate_step (dt=0.01s)...
-  > Speed changed: 10.000 m/s -> 10.057 m/s
-  > Yaw rate built to: -0.599 rad/s
-  > Transient Slip Angle FL: 0.0561 rad
-[PASS] Forward pass is mathematically stable and outputs are finite.
+  > State size: 108 (expected 108)
+  > Speed changed: 10.000 m/s -> 9.984 m/s
+  > Yaw rate built to: -0.016 rad/s
+  > Transient slip α_t FL: 0.0113 rad  [x[56]]
+  > Mean surface T FL: 30.0 °C  [x[28:31]]
+[PASS] 108-DOF forward pass stable — all outputs finite.
 
 ============================================================
 TEST 3: WMPC CIRCULAR TRACK OPTIMIZATION
@@ -93,7 +96,7 @@ Solving MPC for constant curvature (R=20m). Expected physical limit ~16.6 m/s (P
 [VehicleDynamics] H_net train scale (diagnostic): 4977.7896 J  [NOT applied to architecture]
 [VehicleDynamics] Loaded h_net.bytes
 [VehicleDynamics] Loaded r_net.bytes
-   [DEBUG] 200-step rollout clean. Final vx=18.119 m/s — physics is stable.
+   [DEBUG] 200-step rollout clean. Final vx=19.439 m/s — physics is stable.
 [VehicleDynamics] H_net train scale (diagnostic): 4977.7896 J  [NOT applied to architecture]
 [VehicleDynamics] Loaded h_net.bytes
 [VehicleDynamics] Loaded r_net.bytes
@@ -101,24 +104,24 @@ Solving MPC for constant curvature (R=20m). Expected physical limit ~16.6 m/s (P
 [Diff-WMPC] Physics P-ctrl warm start (N=64, Kp=6000 N/(m/s)).
 [Diff-WMPC] AL iter 1/5 — ρ=10.0, λ_max=0.000
 [Diff-WMPC] Optimising 3-level Db4 basis over N=64 via L-BFGS-B…
-[Diff-WMPC] Constraint max violation: 0.5830 (0=feasible). Updated λ_max=5.830
-[Diff-WMPC] AL iter 2/5 — ρ=40.0, λ_max=5.830
+[Diff-WMPC] Constraint max violation: 0.2359 (0=feasible). Updated λ_max=2.359
+[Diff-WMPC] AL iter 2/5 — ρ=40.0, λ_max=2.359
 [Diff-WMPC] Optimising 3-level Db4 basis over N=64 via L-BFGS-B…
-[Diff-WMPC] Constraint max violation: 0.5830 (0=feasible). Updated λ_max=29.152
-[Diff-WMPC] AL iter 3/5 — ρ=150.0, λ_max=29.152
+[Diff-WMPC] Constraint max violation: 0.2633 (0=feasible). Updated λ_max=12.891
+[Diff-WMPC] AL iter 3/5 — ρ=150.0, λ_max=12.891
 [Diff-WMPC] Optimising 3-level Db4 basis over N=64 via L-BFGS-B…
-[Diff-WMPC] Constraint max violation: 0.5830 (0=feasible). Updated λ_max=116.609
-[Diff-WMPC] AL iter 4/5 — ρ=500.0, λ_max=116.609
+[Diff-WMPC] Constraint max violation: 0.0724 (0=feasible). Updated λ_max=14.489
+[Diff-WMPC] AL iter 4/5 — ρ=500.0, λ_max=14.489
 [Diff-WMPC] Optimising 3-level Db4 basis over N=64 via L-BFGS-B…
-[Diff-WMPC] Constraint max violation: 0.5830 (0=feasible). Updated λ_max=408.130
-[Diff-WMPC] AL iter 5/5 — ρ=500.0, λ_max=408.130
+[Diff-WMPC] Constraint max violation: 0.0724 (0=feasible). Updated λ_max=50.710
+[Diff-WMPC] AL iter 5/5 — ρ=500.0, λ_max=50.710
 [Diff-WMPC] Optimising 3-level Db4 basis over N=64 via L-BFGS-B…
-[Diff-WMPC] Constraint max violation: 0.5830 (0=feasible). Updated λ_max=699.651
-[Diff-WMPC] L-BFGS-B converged: CONVERGENCE: RELATIVE REDUCTION OF F <= FACTR*EPSMCH (nit=1, nfev=22)
-[Diff-WMPC] Friction circle: 0.0% inside μ=1.4 (max G_combined=1.258)
-  > Solver achieved mean speed: 17.71 m/s
-  > Solver achieved Lat G: 1.60 G
-[FAIL] Solver velocity (17.71 m/s) EXCEEDS physical tire limit (17.5 m/s). Trajectory violates friction constraint.
+[Diff-WMPC] Constraint max violation: 0.0724 (0=feasible). Updated λ_max=86.931
+[Diff-WMPC] L-BFGS-B note: ABNORMAL:  (nit=0, nfev=31)
+[Diff-WMPC] Friction circle: 96.9% inside μ=1.4 (max G_combined=1.036)
+  > Solver achieved mean speed: 14.80 m/s
+  > Solver achieved Lat G: 1.12 G
+[PASS] Solver correctly discovered the exact physical limit of the tires.
 
 ============================================================
 TEST 4: FRICTION CIRCLE (COMBINED SLIP COUPLING)
@@ -142,15 +145,19 @@ TEST 7: AERODYNAMIC V^2 SCALING
 [PASS] Aero scales by v^2 exactly: 279N @ 10m/s -> 1116N @ 20m/s (ratio 4.0)
 
 ============================================================
-TEST 8: SPOOL DIFFERENTIAL YAW MOMENT
+TEST 8: HUB MOTOR TORQUE VECTORING YAW MOMENT
 ============================================================
 [VehicleDynamics] H_net train scale (diagnostic): 4977.7896 J  [NOT applied to architecture]
 [VehicleDynamics] Loaded h_net.bytes
 [VehicleDynamics] Loaded r_net.bytes
-  > Inner (RL) Force: -483.4 N | Slip: 0.494
-  > Outer (RR) Force: 547.4 N | Slip: 0.500
-  > Generated Diff Yaw Moment: 618.4 N.m
-[PASS] Locked differential successfully generating track-realistic asymmetric yaw moment.
+  Warmup check — wz: +66.8401 rad/s (should be ≈0)
+  Warm kappa_t: RL=0.8160  RR=0.0060 (should be equal and nonzero)
+  [WARN] Car developing spin during warmup (66.840 rad/s) — torque may still be too high or model is unstable at this speed.
+  Symmetric  wz after divergence: +106.22002 rad/s
+  Asymmetric wz after divergence: +106.34769 rad/s
+  Δwz from torque vectoring:      +0.12768 rad/s
+  NaN in state: False
+[PASS] Hub motor torque vectoring generates correct-sign yaw moment.
 
 ============================================================
 TEST 9: OPTIMIZER BOUNDARY DIVERSITY
@@ -160,17 +167,17 @@ Running brief MORL simulation to verify parameter bounding...
 [VehicleDynamics] Loaded h_net.bytes
 [VehicleDynamics] Loaded r_net.bytes
 
-[Pareto-IFT] Done in 189.7s  (3 candidates → 2 non-dominated)
+[Pareto-IFT] Done in 169.7s  (3 candidates → 2 non-dominated)
   Best grip:       1.5427 G
-  Stability range: -0.759–-0.748  (higher = more stable)
+  Stability range: -0.546–-0.532  (higher = more stable)
 
 [Pareto-IFT] Setup sensitivity (∂grip/∂param) at Pareto front:
   Setup   Grip   Stab      k_f      k_r    arb_f    arb_r  c_low_f  c_low_r  c_high_  c_high_
   ───────────────────────────────────────────────────────────────────────────────────────────
-      1  1.543  -0.76    -0.00    -0.00    +0.00    -0.00    -0.00    -0.00    -0.00    -0.00
-      2  1.523  -0.75    -0.00    -0.00    +0.00    -0.00    -0.00    -0.00    -0.00    -0.00
+      1  1.543  -0.55    -0.00    -0.00    +0.00    -0.00    -0.00    -0.00    -0.00    -0.00
+      2  1.523  -0.53    -0.00    -0.00    +0.00    -0.00    -0.00    -0.00    -0.00    -0.00
 [PASS] Optimizer search domain healthy. Lower bound fraction: 0% (Target <50%)
-[PASS] Stability cap working: max Stability_Overshoot = 0.76 ≤ 5.0
+[PASS] Stability cap working: max Stability_Overshoot = 0.55 ≤ 5.0
 
 ============================================================
 TEST 10: MOTOR TORQUE ENVELOPE (FIELD-WEAKENING CONTINUITY)
@@ -186,7 +193,7 @@ TEST 11: SOCP TORQUE ALLOCATOR (FRICTION FEASIBILITY)
 [PASS] All torques within motor limits (T=[-199.1, -199.1, -227.6, -227.6] Nm)
 [PASS] Friction circles feasible (max utilization: 1.000)
 [PASS] Straight-line yaw moment ≈ 0 (actual: 0.0 Nm)
-[PASS] KKT allocator solve time: 0.600ms (budget: <1ms)
+[PASS] KKT allocator solve time: 0.492ms (budget: <1ms)
 
 ============================================================
 TEST 12: CBF SAFETY FILTER (SIDESLIP INVARIANCE)
@@ -221,9 +228,9 @@ TEST 15: VIRTUAL IMPEDANCE (PIO SUPPRESSION)
 TEST 16: FULL POWERTRAIN PIPELINE (JIT + TIMING)
 ============================================================
   Compiling full pipeline (first call)...
-  Compile time: 2.57s
+  Compile time: 0.79s
   Running 50 warm steps for timing...
-[WARN] Per-step time: 31.516ms (exceeds 5.0ms budget — expected on CPU, OK if <1ms on target SBC)
+[WARN] Per-step time: 14.872ms (exceeds 5.0ms budget — expected on CPU, OK if <1ms on target SBC)
 [PASS] Output torques finite: [-44.5, 55.3, -41.8, 57.1] Nm
 [PASS] Thermal dynamics active: ΔT_motor = +0.4586°C after 50 steps
 [PASS] SoC decreasing under load: 94.9770% (Δ = -0.022957%)
@@ -243,8 +250,8 @@ TEST 17: KOOPMAN SLIP OBSERVER
 TEST 17b: KOOPMAN E-ABS SLIP CONTAINMENT (BATCH 8)
 ============================================================
 [PASS] Lockup torque (−400 Nm) correctly identified as slip-infeasible
-[FAIL] Polish did not restore feasibility (max viol = 0.1629)
-[WARN] Polished torque lost braking intent — polish too aggressive?
+[FAIL] Polish did not restore feasibility (max viol = 0.0777)
+[PASS] Polished torque still deceleration-oriented (mean = -350.0 Nm)
 [PASS] Gradient through slip barrier is finite: [-99.9967, -99.9967, -99.9967, -99.9967]
 [PASS] Disabled barrier: lockup torque trivially feasible (rhs=1e6)
 [PASS] make_slip_barrier_inputs factory: b_slip finite, b[0]=0.2308
@@ -260,6 +267,94 @@ TEST 18: DYNAMIC REGEN BLEND (BATCH 9)
 [PASS] ∂α/∂Fx finite: 6.43e-05
 [PASS] Selective scaling: drive torques preserved, regen scaled (rear: [-180.0, -180.0] Nm)
 [PASS] Energy integrator: E_regen = 12857.0 mWh over 1.0s braking
+
+============================================================
+TEST 19: 108-DOF STATE VECTOR INTEGRITY
+============================================================
+[PASS] State vector length = 108
+[PASS] All 108 states are finite
+  > vx_init: 10.0 m/s  (expected 10.0)
+  > FL surface ribs: 30.0 °C  (expected ~30.0)
+  > FL gas node:    25.0 °C  (expected 25.0)
+  > FL contact:     35.0 °C  (expected 35.0)
+  > FL damper T_oil: 40.0 °C  (expected 40.0)
+  > Transient slip x[56:72]: all zeros = True
+  > Elastokin x[84:108]: all zeros = True
+[PASS] All block values correctly initialized.
+
+============================================================
+TEST 20: GROUND EFFECT STALL (AeroPlatformModel)
+============================================================
+  Γ_ge at rh=30mm (peak):  1.000  (expected ≈1.0)
+  Γ_ge at rh=7mm (stall):  0.308  (expected <0.5)
+  Γ_ge at rh=104mm (high):   0.017  (expected <0.7)
+[PASS] Peak ride height gives maximum downforce (Γ ≈ 1)
+[PASS] Aero stalls below rh_stall — optimizer gets gradient penalty
+  CoP front split: nose-up=0.354 | flat=0.394 | nose-down=0.436
+[PASS] CoP migrates forward under nose-down pitch (correct aero balance shift)
+[PASS] ∂Fz_f/∂heave_f is finite and nonzero: -2069.3 N/m
+
+============================================================
+TEST 21: DAMPER HYSTERESIS (Maxwell ODE)
+============================================================
+  F_comp @ v=+0.1 m/s: 283.7 N
+  F_reb  @ v=-0.1 m/s: -210.5 N  (after same pre-load)
+  |F_reb| / |F_comp| = 0.742  (rebound:bump ratio)
+[WARN] Rebound/compression ratio 0.74 lower than expected
+  T_oil after 500 oscillation steps: 39.9 °C (initial: 40 °C)
+[WARN] T_oil barely changed (39.9 °C) — check power dissipation
+[PASS] Cavitation suppresses extreme rebound force (ratio=0.22)
+[PASS] ∂F_damper/∂v is finite: 1954.3 N·s/m
+
+============================================================
+TEST 22: TIRE THERMAL 3D — CAMBER ASYMMETRY & GROWTH
+============================================================
+  At γ=-2°:  inner=224.4N  mid=266.7N  outer=309.0N  (sum=800.0N)
+  At γ=0°:   inner=266.7N  mid=266.7N  outer=266.7N
+[PASS] Negative camber loads outer rib (asymmetric distribution)
+  Mean surface rib dT/dt under κ=0.07: 0.5 °C/s
+[PASS] Surface ribs heat up under slip (positive dT/dt)
+  FL: dT_inner=0.45  dT_outer=0.61 °C/s
+[PASS] Outer rib heats faster than inner at -2° camber
+[PASS] ∂(ΣdT)/∂Fz finite: 7.913e-03 °C·s⁻¹·N⁻¹
+
+============================================================
+TEST 23: ELASTOKINEMATIC COMPLIANCE STEER
+============================================================
+  At Fy=1.5kN: δ_toe=-0.302°  δ_camber=-0.028°  δ_caster=0.000°
+[PASS] Compliance steer nonzero under lateral load
+  Compliance at 2× load: -0.414°  (ratio=1.37)
+[PASS] Compliance increases with load (monotone response)
+  Pure Fy:        δ_toe=-0.302°
+  Fy+Fx (brake):  δ_toe=-0.368°
+[PASS] Multi-axial coupling: braking changes compliance steer
+[PASS] ∂δ_toe/∂Fy finite: -2.42e-06 rad/N
+
+============================================================
+TEST 24: SECOND-ORDER TIRE TRANSIENT DYNAMICS
+============================================================
+  σ at Fz=1200N: 0.289m  |  Fz=300N: 0.221m  |  Fz=800N,α≈peak: 0.125m
+[PASS] σ decreases under lighter load (shorter carcass deflection path)
+[PASS] σ collapses near peak slip (partial sliding contact)
+  Bandwidth: 5m/s=3.2Hz | 15m/s=9.6Hz | 30m/s=19.3Hz
+[PASS] Tire bandwidth increases with speed (correct)
+  2nd-order: 90% settling time at 15m/s = 42.0ms
+[PASS] Settling time physically realistic
+[PASS] ∂(Σd_transient)/∂α_kin finite: 4.020e+04
+
+============================================================
+TEST 25: TRACK SURFACE — RUBBER BUILD-UP & GRIP ASYMMETRY
+============================================================
+  μ on racing line (n=0):    1.0584
+  μ on dusty inside (n=-4m): 0.9424
+  Track T_surface: 35.0°C
+[PASS] Racing line has higher grip than dusty inside
+  T_surface in shadow zone (s=300m): 35.0°C  vs  sun (s=100m): 35.0°C
+  Rubber deposit: on-line=0.00000  off-line=0.00000
+[PASS] Rubber deposits in Gaussian pattern on racing line
+  After 60s solar heating: T_mean 35.0°C → 35.6°C
+[PASS] Track temperature responds to solar heating
+[PASS] ∂μ/∂s is finite: 0.00e+00 /m
 
 ✅ END-TO-END VALIDATION COMPLETE.
 

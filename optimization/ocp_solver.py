@@ -678,13 +678,14 @@ class DiffWMPCSolver:
             setup_params = sp_arr
 
         # ── Initial state ─────────────────────────────────────────────────────
-        x0    = jnp.zeros(46)
+        k0    = abs(float(track_k[0])) + 1e-4
+        v0    = min(math.sqrt((self.mu_friction * 9.81) / k0), self.V_limit)
+        
+        x0    = DifferentiableMultiBodyVehicle.make_initial_state(T_env=25.0, vx0=v0)
         x0    = x0.at[STATE_X  ].set(track_x[0])
         x0    = x0.at[STATE_Y  ].set(track_y[0])
         x0    = x0.at[STATE_YAW].set(track_psi[0])
-        k0    = abs(float(track_k[0])) + 1e-4
-        v0    = min(math.sqrt((self.mu_friction * 9.81) / k0), self.V_limit)
-        x0    = x0.at[STATE_VX].set(v0)
+        
         # Initialize tire temperatures to warm operating point
         x0    = x0.at[28:38].set(jnp.array([85., 85., 85., 85., 80.,  # front
                                             85., 85., 85., 85., 80.]))  # rear

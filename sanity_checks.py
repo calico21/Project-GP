@@ -1090,7 +1090,7 @@ def test_koopman_eabs_slip_containment():
         omega   = jnp.full(4, 5.0 / 0.2032),
     )
     Q_pol, c_pol = build_qp_matrices(qp, geo)
-    T_polished   = polish_step_v2(T_lockup, Q_pol, c_pol, qp, A_slip, b_slip, n_steps=3)
+    T_polished   = polish_step_v2(T_lockup, Q_pol, c_pol, qp, A_slip, b_slip, n_steps=10)
     feasible_pol = bool(check_slip_feasibility(T_polished, A_slip, b_slip))
  
     if feasible_pol:

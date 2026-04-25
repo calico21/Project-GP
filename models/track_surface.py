@@ -171,11 +171,13 @@ def update_rubber_level(
 
     Decay: rubber -= decay_rate · rubber · dt
     """
-    ds = cfg.track_length / cfg.N_s
-    dn = 2.0 * cfg.track_half_width / cfg.N_n
+    N_s_concrete = rubber.shape[0]
+    N_n_concrete = rubber.shape[1]
+    ds = cfg.track_length / N_s_concrete
+    dn = 2.0 * cfg.track_half_width / N_n_concrete
 
-    s_grid = jnp.linspace(0, cfg.track_length, cfg.N_s)
-    n_grid = jnp.linspace(-cfg.track_half_width, cfg.track_half_width, cfg.N_n)
+    s_grid = jnp.linspace(0, cfg.track_length, N_s_concrete)
+    n_grid = jnp.linspace(-cfg.track_half_width, cfg.track_half_width, N_n_concrete)
 
     # Gaussian deposit centered on car position
     # Longitudinal: sharp deposit under contact patch (~0.15m)

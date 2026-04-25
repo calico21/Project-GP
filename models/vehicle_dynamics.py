@@ -1139,8 +1139,8 @@ class DifferentiableMultiBodyVehicle:
                                   - (F_susp_fl + F_susp_fr) * self.lf
                                   + (F_susp_rl + F_susp_rr) * self.lr + My_aero)
         F_ext = F_ext.at[19].set(Fy_f * self.lf - Fy_r * self.lr
-                                  + (Fx_fl - Fx_fr) * tf2
-                                  + (Fx_rl - Fx_rr) * tr2
+                                  - (Fx_fl - Fx_fr) * tf2
+                                  - (Fx_rl - Fx_rr) * tr2
                                   + Mz_total + M_diff)
         F_ext = F_ext.at[20].set(-F_susp_fl + Fz_fl - self.m_us_f * self.g)
         F_ext = F_ext.at[21].set(-F_susp_fr + Fz_fr - self.m_us_f * self.g)
