@@ -73,8 +73,10 @@ import jax.numpy as jnp
 import flax.linen as nn
 import flax.serialization
 from physics.h_net_icnn import PassiveHNet
-
-
+from models.aero_platform import AeroPlatformModel, create_aero_platform
+from models.damper_hysteresis import damper_force_legacy
+from models.tire_thermal_3d import four_corner_thermal_derivatives
+from models.tire_transient import four_corner_transient_derivatives
 # ─────────────────────────────────────────────────────────────────────────────
 # Module-level XLA-static constants
 # ─────────────────────────────────────────────────────────────────────────────
@@ -739,27 +741,20 @@ class DifferentiableMultiBodyVehicle:
         # h_scale=1.0 ALWAYS — weights were trained with h_scale=1.0 default.
         self.H_net    = PassiveHNet(q_dim=14, p_dim=14, setup_dim=28)
         self.R_net    = NeuralDissipationMatrix(dim=14)
-        self.aero_map = PhysicsInformedAeroMap(
-            base_A  = self.vp.get('A_ref',  1.10),
-            base_Cl = self.vp.get('Cl_ref', 4.14),
-            base_Cd = self.vp.get('Cd_ref', 2.50),
-            lf      = self.lf,
-            lr      = self.lr,
-        )
+        self.aero_map = create_aero_platform(self.vp)
 
         rng = jax.random.PRNGKey(rng_seed)
-        rng_h, rng_r, rng_a = jax.random.split(rng, 3)
+        rng_h, rng_r = jax.random.split(rng, 2)
 
         self.H_params    = self.H_net.init(rng_h, jnp.zeros(14), jnp.zeros(14), DEFAULT_SETUP)
         self.R_params    = self.R_net.init(rng_r, jnp.zeros(14), jnp.zeros(14))
-        self.Aero_params = self.aero_map.init(rng_a, 0.0, 0.0, 0.0, 0.0, 0.0)
+        self.Aero_params = None   # AeroPlatformModel is stateless — no Flax params
 
         # Batch 10.5 default setup export
         self._default_setup_vec = jnp.array(DEFAULT_SETUP, dtype=jnp.float32)
 
-        for attr, fname in [('H_params',    'h_net.bytes'),
-                             ('R_params',    'r_net.bytes'),
-                             ('Aero_params', 'aero_net.bytes')]:
+        for attr, fname in [('H_params', 'h_net.bytes'),
+                             ('R_params', 'r_net.bytes')]:
             ckpt = os.path.join(current_dir, fname)
             if os.path.exists(ckpt):
                 with open(ckpt, 'rb') as f:
@@ -834,7 +829,27 @@ class DifferentiableMultiBodyVehicle:
         u:            jax.Array,
         setup_params: jax.Array,
     ) -> jax.Array:
-        q, v = x[0:14], x[14:28]
+        # ── 74-DOF STATE UNPACKING ──────────────────────────────
+        # 1. Kinematics (0:28) - Unchanged
+        q = x[0:14]
+        v = x[14:28]
+
+        # 2. Thermal 3D [Module 3] (28:56) 
+        # 4 corners × 7 nodes = 28 states
+        T_4x7 = x[28:56].reshape((4, 7))
+
+        # 3. Transient 2nd Order [Module 5] (56:72)
+        # 4 corners × 4 states (alpha_t, alpha_dot, kappa_t, kappa_dot)
+        transient_4x4 = x[56:72].reshape((4, 4))
+
+        # 4. Damper Hysteresis [Module 2] (72:84)
+        # 4 corners × 3 states (F1, F2, T_oil)
+        damper_4x3 = x[72:84].reshape((4, 3))
+
+        # 5. Elastokinematics [Module 4] (84:108)
+        # 4 corners × 6 states (Bouc-Wen internal variables)
+        elastokin_4x6 = x[84:108].reshape((4, 6))
+        # ────────────────────────────────────────────────────────
         p    = self.M_diag * v
 
         def _full_H(h_params, q_, p_, setup_):
@@ -913,10 +928,16 @@ class DifferentiableMultiBodyVehicle:
         omega_fl, omega_fr          = v[10], v[11]
         omega_rl, omega_rr          = v[12], v[13]
 
-        alpha_t_fl, kappa_t_fl = x[38], x[39]
-        alpha_t_fr, kappa_t_fr = x[40], x[41]
-        alpha_t_rl, kappa_t_rl = x[42], x[43]
-        alpha_t_rr, kappa_t_rr = x[44], x[45]
+        # Read from 2nd-order transient block already unpacked as transient_4x4
+        # Layout per corner: [alpha_t, alpha_dot, kappa_t, kappa_dot]
+        alpha_t_fl = transient_4x4[0, 0];  alpha_dot_fl = transient_4x4[0, 1]
+        kappa_t_fl = transient_4x4[0, 2];  kappa_dot_fl = transient_4x4[0, 3]
+        alpha_t_fr = transient_4x4[1, 0];  alpha_dot_fr = transient_4x4[1, 1]
+        kappa_t_fr = transient_4x4[1, 2];  kappa_dot_fr = transient_4x4[1, 3]
+        alpha_t_rl = transient_4x4[2, 0];  alpha_dot_rl = transient_4x4[2, 1]
+        kappa_t_rl = transient_4x4[2, 2];  kappa_dot_rl = transient_4x4[2, 3]
+        alpha_t_rr = transient_4x4[3, 0];  alpha_dot_rr = transient_4x4[3, 1]
+        kappa_t_rr = transient_4x4[3, 2];  kappa_dot_rr = transient_4x4[3, 3]
 
         MR_fl = compute_motion_ratio(z_fl, self._mr_f_poly)
         MR_fr = compute_motion_ratio(z_fr, self._mr_f_poly)
@@ -977,7 +998,7 @@ class DifferentiableMultiBodyVehicle:
 
         Fz_aero_f, Fz_aero_r, Fx_aero, My_aero, Mx_aero = self.aero_map.apply(
             self.Aero_params, vx, theta_pitch, phi_roll,
-            z_fl + z_fr, z_rl + z_rr,
+            z_fl + z_fr, z_rl + z_rr, wz,  # added yaw_rate
         )
         Fz_fl = Fz_fl + Fz_aero_f * 0.5
         Fz_fr = Fz_fr + Fz_aero_f * 0.5
@@ -1015,20 +1036,27 @@ class DifferentiableMultiBodyVehicle:
         alpha_kin_rl = delta_comply_r - jnp.arctan2(vy - wz * self.lr, jnp.maximum(jnp.abs(vx - wz * tr2), eps_v))
         alpha_kin_rr = delta_comply_r - jnp.arctan2(vy - wz * self.lr, jnp.maximum(jnp.abs(vx + wz * tr2), eps_v))
 
-        rl  = self.vp.get('relaxation_length', 0.35)
-        tau = rl / (jnp.maximum(jnp.abs(vx), 1.0))
-        d_alpha_fl = (alpha_kin_fl - alpha_t_fl) / tau
-        d_alpha_fr = (alpha_kin_fr - alpha_t_fr) / tau
-        d_alpha_rl = (alpha_kin_rl - alpha_t_rl) / tau
-        d_alpha_rr = (alpha_kin_rr - alpha_t_rr) / tau
+        # 2nd-order model: dα_t/dt = α_dot (already in state)
+        # The acceleration (dα_dot/dt) is computed in the dx_slip block below
+        d_alpha_fl = alpha_dot_fl
+        d_alpha_fr = alpha_dot_fr
+        d_alpha_rl = alpha_dot_rl
+        d_alpha_rr = alpha_dot_rr
 
-        T_ribs_f = x[28:31]
-        T_gas_f  = x[31]
-        T_ribs_r = x[32:35]
-        T_gas_r  = x[35]
+        # Per-corner surface ribs and gas from 3D thermal block (T_4x7 already unpacked)
+        # T_4x7[i] = [inner, mid, outer, bulk, carcass, gas, track_contact]
+        T_ribs_fl = T_4x7[0, :3];  T_gas_fl = T_4x7[0, 5]
+        T_ribs_fr = T_4x7[1, :3];  T_gas_fr = T_4x7[1, 5]
+        T_ribs_rl = T_4x7[2, :3];  T_gas_rl = T_4x7[2, 5]
+        T_ribs_rr = T_4x7[3, :3];  T_gas_rr = T_4x7[3, 5]
+        # Axle-averaged aliases (used by code below that hasn't been per-corner-ized yet)
+        T_ribs_f = (T_ribs_fl + T_ribs_fr) * 0.5
+        T_gas_f  = (T_gas_fl  + T_gas_fr)  * 0.5
+        T_ribs_r = (T_ribs_rl + T_ribs_rr) * 0.5
+        T_gas_r  = (T_gas_rl  + T_gas_rr)  * 0.5
 
-        Fx_fl, Fy_fl = self.tire.compute_force(alpha_t_fl, kappa_t_fl, Fz_fl, gamma_fl, T_ribs_f, T_gas_f, vx, wz=wz)
-        Fx_fr, Fy_fr = self.tire.compute_force(alpha_t_fr, kappa_t_fr, Fz_fr, gamma_fr, T_ribs_f, T_gas_f, vx, wz=wz)
+        Fx_fl, Fy_fl = self.tire.compute_force(alpha_t_fl, kappa_t_fl, Fz_fl, gamma_fl, T_ribs_fl, T_gas_fl, vx, wz=wz)
+        Fx_fr, Fy_fr = self.tire.compute_force(alpha_t_fr, kappa_t_fr, Fz_fr, gamma_fr, T_ribs_fr, T_gas_fr, vx, wz=wz)
         Mz_fl        = self.tire.compute_aligning_torque(alpha_t_fl, kappa_t_fl, Fz_fl, gamma_fl, Fy_fl, Fx_fl)
         Mz_fr        = self.tire.compute_aligning_torque(alpha_t_fr, kappa_t_fr, Fz_fr, gamma_fr, Fy_fr, Fx_fr)
         Mz_castor_fl = compute_castor_trail(s.castor_f, Fz_fl, self.R_wheel)
@@ -1068,20 +1096,21 @@ class DifferentiableMultiBodyVehicle:
         kappa_ref_rl = (omega_wheel_rl * self.R_wheel) / (v_rl_g + 1e-6) - 1.0
         kappa_ref_rr = (omega_wheel_rr * self.R_wheel) / (v_rr_g + 1e-6) - 1.0
 
-        d_kappa_fl = (kappa_ref_fl - kappa_t_fl) / tau
-        d_kappa_fr = (kappa_ref_fr - kappa_t_fr) / tau
-        d_kappa_rl = (kappa_ref_rl - kappa_t_rl) / tau
-        d_kappa_rr = (kappa_ref_rr - kappa_t_rr) / tau
+        # 2nd-order model: dκ_t/dt = κ_dot (already in state)
+        d_kappa_fl = kappa_dot_fl
+        d_kappa_fr = kappa_dot_fr
+        d_kappa_rl = kappa_dot_rl
+        d_kappa_rr = kappa_dot_rr
  
         # Tire forces — all 4 corners independently
         Fx_fl, Fy_fl = self.tire.compute_force(
-            alpha_t_fl, kappa_t_fl, Fz_fl, gamma_fl, T_ribs_f, T_gas_f, vx, wz=wz)
+            alpha_t_fl, kappa_t_fl, Fz_fl, gamma_fl, T_ribs_fl, T_gas_fl, vx, wz=wz)
         Fx_fr, Fy_fr = self.tire.compute_force(
-            alpha_t_fr, kappa_t_fr, Fz_fr, gamma_fr, T_ribs_f, T_gas_f, vx, wz=wz)
+            alpha_t_fr, kappa_t_fr, Fz_fr, gamma_fr, T_ribs_fr, T_gas_fr, vx, wz=wz)
         Fx_rl, Fy_rl = self.tire.compute_force(
-            alpha_t_rl, kappa_t_rl, Fz_rl, gamma_rl, T_ribs_r, T_gas_r, vx, wz=wz)
+            alpha_t_rl, kappa_t_rl, Fz_rl, gamma_rl, T_ribs_rl, T_gas_rl, vx, wz=wz)
         Fx_rr, Fy_rr = self.tire.compute_force(
-            alpha_t_rr, kappa_t_rr, Fz_rr, gamma_rr, T_ribs_r, T_gas_r, vx, wz=wz)
+            alpha_t_rr, kappa_t_rr, Fz_rr, gamma_rr, T_ribs_rr, T_gas_rr, vx, wz=wz)
  
         Mz_rl = self.tire.compute_aligning_torque(
             alpha_t_rl, kappa_t_rl, Fz_rl, gamma_rl, Fy_rl, Fx_rl)
@@ -1129,24 +1158,63 @@ class DifferentiableMultiBodyVehicle:
         dv_dt = jnp.clip(dv_dt, -500.0, 500.0)
         dx_mech = jnp.concatenate([dq_dt, dv_dt])
 
-        dx_therm = (self.tire.compute_thermal_derivatives(
-            x[28:38],
+        # ── Module 3: 3D per-corner thermal ODE → 28 states ──────────────────
+        dT_4x7 = four_corner_thermal_derivatives(
+            T_4x7,
             jnp.array([Fz_fl, Fz_fr, Fz_rl, Fz_rr]),
             jnp.array([jnp.abs(kappa_ref_fl), jnp.abs(kappa_ref_fr),
                        jnp.abs(kappa_ref_rl), jnp.abs(kappa_ref_rr)]),
+            jnp.array([alpha_t_fl, alpha_t_fr, alpha_t_rl, alpha_t_rr]),
+            jnp.array([gamma_fl, gamma_fr, gamma_rl, gamma_rr]),
             jnp.abs(vx),
-        ) if hasattr(self.tire, 'compute_thermal_derivatives') else jnp.zeros(10))
+            jnp.array([omega_wheel_fl, omega_wheel_fr, omega_wheel_rl, omega_wheel_rr]),
+        )
+        dx_therm = dT_4x7.ravel()   # (28,)
 
-        dx_slip = jnp.array([
-            d_alpha_fl, d_kappa_fl, d_alpha_fr, d_kappa_fr,
-            d_alpha_rl, d_kappa_rl, d_alpha_rr, d_kappa_rr,
-        ])
+        # ── Module 5: 2nd-order transient slip → 16 states ───────────────────
+        # four_corner_transient_derivatives computes both velocity passthrough
+        # (d_alpha_t = alpha_dot) AND the acceleration (d_alpha_dot) from the
+        # 2nd-order ODE: ẍ + 2ζωₙẋ + ωₙ²x = ωₙ²·x_kin
+        d_transient_4x4 = four_corner_transient_derivatives(
+            jnp.array([alpha_kin_fl, alpha_kin_fr, alpha_kin_rl, alpha_kin_rr]),
+            jnp.array([kappa_ref_fl, kappa_ref_fr, kappa_ref_rl, kappa_ref_rr]),
+            transient_4x4,
+            jnp.array([Fz_fl, Fz_fr, Fz_rl, Fz_rr]),
+            jnp.abs(vx),
+        )
+        dx_slip = jnp.clip(d_transient_4x4.ravel(), -500.0, 500.0)   # (16,)
 
-        # FIX: Clip slip derivatives to prevent Explicit Euler instability
-        # at high speeds where the relaxation time constant tau < dt/2.
-        dx_slip = jnp.clip(dx_slip, -200.0, 200.0)
+        # ── Module 2: Damper Maxwell branch + thermal ODE → 12 states ────────
+        # damper_4x3[i] = [F_branch_1, F_branch_2, T_oil]
+        # dF1/dt = k1·v_shaft - F1/τ1
+        # dF2/dt = k2·v_shaft - F2/τ2
+        # dT_oil/dt = (|F·v| - h·(T-T_env)) / C_oil
+        dz_corners = jnp.array([dz_fl, dz_fr, dz_rl, dz_rr])
+        F1_all  = damper_4x3[:, 0]
+        F2_all  = damper_4x3[:, 1]
+        T_oil   = damper_4x3[:, 2]
+        mu_visc = jnp.exp(0.015 * (40.0 - T_oil))   # Arrhenius viscosity scaling
+        dF1     = 15000.0 * dz_corners - F1_all / 0.008
+        dF2     =  5000.0 * dz_corners - F2_all / 0.040
+        P_diss  = jnp.abs((F1_all + F2_all) * mu_visc * dz_corners)
+        dT_oil_dt = (P_diss - 8.0 * (T_oil - 25.0)) / 500.0
+        dx_damper = jnp.stack([dF1, dF2, dT_oil_dt], axis=1).ravel()   # (12,)
 
-        return jnp.concatenate([dx_mech[:28], dx_therm, dx_slip])
+        # ── Module 4: Bouc-Wen elastokinematic hysteresis → 24 states ────────
+        # ż = A·v - β·|v|·|z|·z - γ·v·|z|²
+        # Proxy input velocity: suspension shaft velocity (dominant bushing driver)
+        v_bcast  = jnp.broadcast_to(dz_corners[:, None], (4, 6))
+        z_hyst   = elastokin_4x6
+        v_abs_bw = jnp.abs(v_bcast)
+        z_abs_bw = jnp.sqrt(z_hyst ** 2 + 1e-12)
+        dz_hyst  = (v_bcast
+                    - 0.5 * v_abs_bw * z_abs_bw * z_hyst
+                    - 0.05 * v_bcast * z_abs_bw ** 2)
+        dx_elastokin = dz_hyst.ravel()   # (24,)
+
+        return jnp.concatenate([
+            dx_mech[:28], dx_therm, dx_slip, dx_damper, dx_elastokin
+        ])   # total: 28+28+16+12+24 = 108 states
 
     # ─────────────────────────────────────────────────────────────────────────
     # §5.4  Gauss-Legendre RK4 Variational Integrator
@@ -1182,8 +1250,8 @@ class DifferentiableMultiBodyVehicle:
         a21, a22 = 0.25 + sqrt3 / 6.0, 0.25
         b1, b2   = 0.5, 0.5
 
-        q0   = x[0:14];  v0   = x[14:28];  aux0 = x[28:46]
-        _AUX = 18
+        q0   = x[0:14];  v0   = x[14:28];  aux0 = x[28:108]
+        _AUX = 80
 
         dx0         = self._compute_derivatives(x, u, setup_params)
         k1_q, k1_v  = dx0[0:14], dx0[14:28]
@@ -1232,7 +1300,7 @@ class DifferentiableMultiBodyVehicle:
                     jnp.clip(dx1[14:28], -_DC, _DC),
                     jnp.clip(dx2[0:14],  -_DC, _DC),
                     jnp.clip(dx2[14:28], -_DC, _DC),
-                    dx1[28:46], dx2[28:46]), None
+                    dx1[28:108], dx2[28:108]), None
 
         (k1_q, k1_v, k2_q, k2_v,
          dx1_aux, dx2_aux), _ = jax.lax.scan(
@@ -1250,7 +1318,7 @@ class DifferentiableMultiBodyVehicle:
 
         return (x.at[0:14].set(q_new)
                   .at[14:28].set(v_new)
-                  .at[28:46].set(aux_new))
+                  .at[28:108].set(aux_new))
 
     # ─────────────────────────────────────────────────────────────────────────
     # §5.5  Public simulate_step
@@ -1293,7 +1361,38 @@ class DifferentiableMultiBodyVehicle:
     @staticmethod
     def default_setup_params() -> jax.Array:
         return DEFAULT_SETUP
+    
+    def make_initial_state(T_env: float = 25.0, vx0: float = 0.0) -> jax.Array:
+        """
+        Create a valid 108-state initial vector for the extended model.
 
+        State layout:
+          [0:28]   kinematics (q, v)
+          [28:56]  thermal 3D  — 4 corners × 7 nodes
+          [56:72]  transient 2nd-order — 4 corners × 4 (α_t, α̇, κ_t, κ̇)
+          [72:84]  damper hysteresis  — 4 corners × 3 (F1, F2, T_oil)
+          [84:108] elastokin Bouc-Wen — 4 corners × 6
+        """
+        x = jnp.zeros(108)
+
+        # CG height and optional initial speed
+        x = x.at[2].set(0.3)
+        x = x.at[14].set(vx0)
+
+        # Thermal 3D: all nodes start at T_env+5 (soaked car)
+        # Node layout per corner: [inner, mid, outer, bulk, carcass, gas, contact]
+        x = x.at[28:56].set(T_env + 5.0)
+        # Override gas (node 5) and track contact (node 6) per corner
+        for i in range(4):
+            x = x.at[28 + i * 7 + 5].set(T_env)          # gas at ambient
+            x = x.at[28 + i * 7 + 6].set(T_env + 10.0)   # track warmer than air
+
+        # Damper: T_oil starts at 40°C (warm but not hot)
+        for i in range(4):
+            x = x.at[72 + i * 3 + 2].set(40.0)
+
+        # Transient slip and elastokin: all zeros (quiescent start)
+        return x
 
 # ─────────────────────────────────────────────────────────────────────────────
 # §6  Public factory functions
