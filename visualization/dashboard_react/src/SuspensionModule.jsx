@@ -70,7 +70,21 @@ function rotatePoint3D(p, rot) {
 
   return { x: nx, y: ny, z };
 }
-
+function sampleDynamics(dynamics, t) {
+  if (!dynamics || dynamics.length === 0) return null;
+  
+  // Find the first frame that exceeds our current animation time
+  const idx = dynamics.findIndex(frame => frame.t >= t);
+  
+  // Edge cases: beginning or end of the array
+  if (idx <= 0) return dynamics[0];
+  if (idx >= dynamics.length) return dynamics[dynamics.length - 1];
+  
+  // Find which frame is actually closer in time to ensure smooth playback
+  const d0 = dynamics[idx - 1];
+  const d1 = dynamics[idx];
+  return (t - d0.t) < (d1.t - t) ? d0 : d1;
+}
 function projectPoint3D(p, view) {
   const dist = view.dist || 1700;
   const fov = view.fov || 980;
