@@ -165,7 +165,11 @@ def stabilise_koopman(K, target_radius=0.97):
 
 
 def compute_koopman_gain(K, b, phi_apply, m, cfg,
-                         Q_scale: float = 10.0, R_scale: float = 0.01):
+                         Q_scale: float = 200.0, R_scale: float = 0.01):
+    # Q_scale raised 10→200: previous value gave Mz ~0.05× PD (effectively inactive).
+    # At Q=200, R=0.01: the Riccati gain L weights yaw error 20,000× more than
+    # control effort, matching the physical priority (stability >> Mz economy).
+    # This does not require retraining — L is computed from already-trained K, b.
     K_stab = stabilise_koopman(K)
     Q = Q_scale * np.eye(m)
     R = np.array([[R_scale]])
@@ -185,6 +189,12 @@ def compute_koopman_gain(K, b, phi_apply, m, cfg,
         Mz_pd  = Kp_eff * wz_n_test * cfg.wz_scale
         print(f"    [{label}] Mz={Mz_t:.1f} Nm  PD={Mz_pd:.1f} Nm  "
               f"ratio={Mz_t / (Mz_pd + 1e-9):.2f}×")
+    # Clip: regime 2 (saturation) gain must never exceed 2× PD fallback.
+    # The 6× ratio indicates K is encoding limit-cycle dynamics, not yaw correction.
+    # Hard clip prevents dangerous Mz demand during tire saturation events.
+    Kp_phys = cfg.Kp_fallback
+    L_max   = 2.0 * Kp_phys / (cfg.wz_scale + 1e-6)   # convert from Nm/(rad/s) to per unit-z
+    L       = np.clip(L, -L_max, L_max)
     return L
 
 

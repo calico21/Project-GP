@@ -998,7 +998,7 @@ class DifferentiableMultiBodyVehicle:
 
         Fz_aero_f, Fz_aero_r, Fx_aero, My_aero, Mx_aero = self.aero_map.apply(
             self.Aero_params, vx, theta_pitch, phi_roll,
-            z_fl + z_fr, z_rl + z_rr, wz,  # added yaw_rate
+            z_fl + z_fr, z_rl + z_rr,
         )
         Fz_fl = Fz_fl + Fz_aero_f * 0.5
         Fz_fr = Fz_fr + Fz_aero_f * 0.5
@@ -1391,6 +1391,28 @@ class DifferentiableMultiBodyVehicle:
         # Damper: T_oil starts at 40°C (warm but not hot)
         for i in range(4):
             x = x.at[72 + i * 3 + 2].set(40.0)
+
+        # Wheel spin: consistent with vx0 to avoid false lockup at t=0.
+        # kappa = (omega*r - vx)/vx → zero slip requires omega = vx/r.
+        # R_wheel=0.2045 matches self.R_wheel default in __init__.
+        _R_WHEEL = 0.2045
+        _omega0  = vx0 / (_R_WHEEL + 1e-6)
+        x = x.at[24].set(_omega0)
+        x = x.at[25].set(_omega0)
+        x = x.at[26].set(_omega0)
+        x = x.at[27].set(_omega0)
+
+        # Suspension equilibrium: static deflection under sprung mass weight.
+        # z=0 → bumpstop softplus(200*(0-0.025)) overflows float32 → NaN.
+        # Default spring rates k_f≈35000, k_r≈35000 N/m from build_default_setup_28.
+        # Static load per corner: F = m_s * g / 4
+        # z_eq = F / k ≈ (200 * 9.81 / 4) / 35000 ≈ 0.014 m
+        _z_eq_f = 0.0128   # m — front static deflection
+        _z_eq_r = 0.0142   # m — rear static deflection  
+        x = x.at[6].set(_z_eq_f)   # z_FL
+        x = x.at[7].set(_z_eq_f)   # z_FR
+        x = x.at[8].set(_z_eq_r)   # z_RL
+        x = x.at[9].set(_z_eq_r)   # z_RR
 
         # Transient slip and elastokin: all zeros (quiescent start)
         return x

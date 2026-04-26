@@ -364,25 +364,21 @@ class DiffWMPCSolver:
     
     def _db4_dwt(self, signal: jax.Array) -> jax.Array:
         """
-        Best-basis Wavelet Packet DWT.  signal: (N, 2) → coeffs: (N, 2)
+        3-level Db4 DWT.  signal: (N, 2) → coeffs: (N, 2)
 
-        Replaces the fixed 3-level Db4 DWT with a Coifman-Wickerhauser
-        best-basis decomposition. The selected basis minimises Shannon
-        entropy of coefficients — provably optimal L² compression for the
-        given signal (Coifman & Wickerhauser 1992).
+        Uses the standard fixed 3-level DWT — exact inverse pair with _db4_idwt.
+        The CW best-basis (_coifman_wickerhauser_basis) is NOT used here because
+        CW produces a WP-tree coefficient layout that is incompatible with
+        _idwt_1d_3level, making DWT∘IDWT non-identity and the optimizer gradient
+        landscape near-singular for smooth trajectories.
 
-        For smooth control trajectories (typical of feasible MPC solutions),
-        the CW basis concentrates energy in fewer coefficients than the fixed
-        DWT, reducing effective DOF and tightening stochastic tube margins.
-
-        DIFFERENTIABILITY: soft best-basis via sigmoid interpolation →
-        all C∞, safe inside jit/grad/vmap.
+        CW entropy is used separately as a loss regulariser in _loss_fn to
+        promote sparse representations without breaking the inverse pair.
         """
         signal = signal.reshape(self.N, 2)
-
-        ch0 = self._coifman_wickerhauser_basis(signal[:, 0], max_level=3)
-        ch1 = self._coifman_wickerhauser_basis(signal[:, 1], max_level=3)
-        return jnp.stack([ch0, ch1], axis=1)           # (N, 2)
+        ch0 = self._dwt_1d_3level(signal[:, 0])
+        ch1 = self._dwt_1d_3level(signal[:, 1])
+        return jnp.stack([ch0, ch1], axis=1)
     
     def _wp_idwt_from_leaves(self, leaves: list, max_level: int = 3) -> jax.Array:
         """
@@ -593,12 +589,24 @@ class DiffWMPCSolver:
                 + 2.0 * jnp.sum(_pseudo_huber(D1, delta=0.005))
             )
 
-        # Apply per-band Huber cost to both steer (0) and accel (1) channels
         l1_detail_cost = _huber_detail_cost(wavelet_coeffs[:, 0]) + _huber_detail_cost(wavelet_coeffs[:, 1])
+
+        # CW entropy regulariser: promotes sparse WP representations without
+        # using CW as the forward/inverse pair (which breaks gradient computation).
+        # We compute CW entropy of the RECONSTRUCTED control trajectory U_opt,
+        # not of the coefficient vector — this is differentiable through _db4_idwt.
+        def _cw_entropy_cost(sig_1d):
+            leaves = self._wpd_full_tree(sig_1d, max_level=self._cw_max_level)
+            # Penalise high-entropy leaf nodes — encourages energy concentration
+            return jnp.sum(jnp.array([self._shannon_entropy(leaf) for leaf in leaves]))
+
+        cw_entropy_cost = (_cw_entropy_cost(U_opt[:, 0])
+                           + _cw_entropy_cost(U_opt[:, 1]))
 
         effort_cost   = (jnp.sum(w_steer * U_opt[:, 0] ** 2) * 1e-3
                          + jnp.sum(w_accel * U_opt[:, 1] ** 2) * self.w_effort
-                         + self.w_l1_detail * l1_detail_cost)
+                         + self.w_l1_detail * l1_detail_cost
+                         + 1e-3 * cw_entropy_cost)   # CW entropy weight: small, exploratory
 
         # ── 3. Stochastic tube barrier (soft log-barrier) ─────────────────────
         eps         = 0.05

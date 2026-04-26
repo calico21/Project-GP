@@ -191,8 +191,8 @@ def train_neural_residuals():
     print(f"   [Neural Physics] H density scale: {h_scale:.2f} J/m²  "
           f"| R target scale: {r_scale:.4f}")
 
-    NUM_EPOCHS = 2500
-    h_schedule = optax.cosine_decay_schedule(init_value=1e-3, decay_steps=NUM_EPOCHS, alpha=0.01)
+    NUM_EPOCHS = 6000   # 2500→6000: P4 convergence requires more iterations
+    h_schedule = optax.cosine_decay_schedule(init_value=1e-3, decay_steps=NUM_EPOCHS, alpha=0.005)
     h_tx       = optax.adamw(learning_rate=h_schedule, weight_decay=1e-4)
 
     # ── Phase 1: pure MSE on density ──────────────────────────────────────────
@@ -200,12 +200,25 @@ def train_neural_residuals():
     # h_scale ~ std(target_H / susp_sq) ~ 5000 J/m²
     @jax.jit
     def h_update_p1(params, opt_state, q, p, setup, target_norm):
-        def mse_loss(params_):
+        def combined_loss(params_):
             def per_sample(q_s, p_s, setup_s, t_s):
                 H_neural = h_net.apply(params_, q_s, p_s, setup_s)
-                return (H_neural / h_scale - t_s) ** 2
+                l_mse = (H_neural / h_scale - t_s) ** 2
+
+                # Explicit P4: p·∇_p H ≥ 0  (kinetic energy must be non-negative)
+                # grad_H_p: (14,) gradient of H w.r.t. momenta p_s
+                grad_H_p = jax.grad(
+                    lambda p_: h_net.apply(params_, q_s, p_, setup_s)
+                )(p_s)
+                p_dot_grad = jnp.dot(p_s, grad_H_p)
+                # softplus penalty: zero when p·∇H ≥ 0, positive when violated
+                # λ_P4=100 makes this ~50× MSE weight at a 0.1 J violation
+                l_p4 = 100.0 * jax.nn.softplus(-p_dot_grad * 0.01)
+                return l_mse + l_p4
+
             return jnp.mean(jax.vmap(per_sample)(q, p, setup, target_norm))
-        loss, grads = jax.value_and_grad(mse_loss)(params)
+
+        loss, grads = jax.value_and_grad(combined_loss)(params)
         updates, new_state = h_tx.update(grads, opt_state, params)
         return optax.apply_updates(params, updates), new_state, loss
 
@@ -245,18 +258,59 @@ def train_neural_residuals():
     # ═════════════════════════════════════════════════════════════════════════
     # H_net training loop
     # ═════════════════════════════════════════════════════════════════════════
+    # ── FiLM contrastive pairs: same (q,p), different setups ─────────────────
+    # Pre-compute paired indices where setup differs but state is identical.
+    # Loss: H(q,p,s1) ≠ H(q,p,s2) when |target(s1)-target(s2)| is large.
+    # This forces FiLM to modulate the network output based on setup.
+    _rng_film = jax.random.PRNGKey(7777)
+    _idx_a    = jax.random.randint(_rng_film, (512,), 0, len(q_data))
+    _idx_b    = jax.random.randint(jax.random.fold_in(_rng_film, 1), (512,), 0, len(q_data))
+    _q_film   = q_data[_idx_a];    _p_film   = p_data[_idx_a]
+    _s_film_a = setup_data[_idx_a]; _s_film_b = setup_data[_idx_b]
+    _t_film_a = target_H_norm[_idx_a]; _t_film_b = target_H_norm[_idx_b]
+
+    @jax.jit
+    def h_update_film(params, opt_state, q, p, setup, target_norm,
+                      q_f, p_f, s_a, s_b, t_a, t_b):
+        def film_loss(params_):
+            # Standard MSE
+            def per_sample(q_s, p_s, setup_s, t_s):
+                H = h_net.apply(params_, q_s, p_s, setup_s)
+                l_mse = (H / h_scale - t_s) ** 2
+                grad_H_p = jax.grad(
+                    lambda p_: h_net.apply(params_, q_s, p_, setup_s)
+                )(p_s)
+                l_p4 = 100.0 * jax.nn.softplus(-jnp.dot(p_s, grad_H_p) * 0.01)
+                return l_mse + l_p4
+            l_main = jnp.mean(jax.vmap(per_sample)(q, p, setup, target_norm))
+
+            # FiLM contrastive: H(q,p,s_a) - H(q,p,s_b) ≈ t_a - t_b
+            def film_pair(q_s, p_s, s_a_, s_b_, t_a_, t_b_):
+                Ha = h_net.apply(params_, q_s, p_s, s_a_) / h_scale
+                Hb = h_net.apply(params_, q_s, p_s, s_b_) / h_scale
+                return ((Ha - Hb) - (t_a_ - t_b_)) ** 2
+            l_film = jnp.mean(jax.vmap(film_pair)(q_f, p_f, s_a, s_b, t_a, t_b))
+
+            return l_main + 2.0 * l_film   # 2× weight on FiLM contrastive
+
+        loss, grads = jax.value_and_grad(film_loss)(params)
+        updates, new_state = h_tx.update(grads, opt_state, params)
+        return optax.apply_updates(params, updates), new_state, loss
+
     print("\n[Neural Physics] Training H_net (Energy Density Residual)...")
     print(f"  [Config] Epochs: {NUM_EPOCHS} | AdamW | weight_decay: 1e-4")
     print(f"  [GP-vX3] PassiveHNet: ICNN + gauge. Passivity structural.")
     print(f"  [GP-vX3] Target: H_density = target_H / susp_sq  [J/m²]")
+    print(f"  [GP-vX3] P4 explicit penalty λ=100 + FiLM contrastive loss (2×)")
 
     h_opt_state   = h_tx.init(h_params)
     _last_mse_val = float('nan')
 
     for epoch in range(1, NUM_EPOCHS + 1):
-        h_params, h_opt_state, h_loss = h_update_p1(
+        h_params, h_opt_state, h_loss = h_update_film(
             h_params, h_opt_state,
             q_data, p_data, setup_data, target_H_norm,
+            _q_film, _p_film, _s_film_a, _s_film_b, _t_film_a, _t_film_b,
         )
         _last_mse_val = float(h_loss)
         if epoch % 200 == 0:

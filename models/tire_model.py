@@ -223,14 +223,12 @@ class SparseGPMatern52(nn.Module):
                                jax.nn.initializers.normal(0.3), (Q_mix, 5))  # (Q, D)
         log_sig_q = self.param('log_sig_q',
                                 jax.nn.initializers.constant(jnp.log(jnp.array(
-                                    # σ_q is frequency bandwidth in the SM kernel.
-                                    # Small σ_q → wide Gaussian envelope in space → RBF-like.
-                                    # Init near 0.05 for all dims: envelope decays over ~3 units
-                                    # of normalised distance, covering the full inducing point range.
-                                    # Physical dims (Fz=400, Vx=15) must be normalised:
-                                    # σ_q_Fz = 0.05/Z_scale_Fz = 0.05/400 = 1.25e-4
-                                    # σ_q_Vx = 0.05/Z_scale_Vx = 0.05/10  = 5e-3
-                                    [0.05, 0.05, 0.05, 1.25e-4, 5e-3]
+                                    # σ_q initialised to match Matérn 5/2 lengthscales.
+                                    # In the SM kernel, large σ_q → narrow Gaussian envelope
+                                    # (decays quickly with distance). Init at the same scale
+                                    # as the original Matérn lengthscales so k_ZZ is well-
+                                    # conditioned at init. Adam will learn the correct values.
+                                    [0.2, 0.15, 0.1, 400.0, 15.0]
                                 ).reshape(1, 5).repeat(Q_mix, axis=0))),
                                 (Q_mix, 5))
         w_q   = jax.nn.softmax(log_w_q)              # (Q,) sums to 1, positive
