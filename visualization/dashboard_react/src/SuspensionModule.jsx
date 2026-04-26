@@ -72,25 +72,23 @@ function rotatePoint3D(p, rot) {
 }
 function sampleDynamics(dynamics, t) {
   if (!dynamics || dynamics.length === 0) return null;
-  
-  // Find the first frame that exceeds our current animation time
+
   const idx = dynamics.findIndex(frame => frame.t >= t);
-  
-  // Edge cases: beginning or end of the array
+
   if (idx <= 0) return dynamics[0];
   if (idx >= dynamics.length) return dynamics[dynamics.length - 1];
-  
-  // Find which frame is actually closer in time to ensure smooth playback
+
   const d0 = dynamics[idx - 1];
   const d1 = dynamics[idx];
   return (t - d0.t) < (d1.t - t) ? d0 : d1;
 }
 function projectPoint3D(p, view) {
-  const dist = view.dist || 1700;
+  const dist = view.dist || 2400;
   const fov = view.fov || 980;
   const scale = view.scale || 1;
-  const z = p.z + dist;
-  const k = fov / Math.max(200, z);
+  const depthClamp = view.depthClamp || 2200;
+  const z = Math.max(depthClamp, p.z + dist);
+  const k = fov / z;
   return {
     x: view.cx + p.x * k * scale,
     y: view.cy - p.y * k * scale,
@@ -671,8 +669,12 @@ function AnimatedChartFrame({ children }) {
   const [reveal, setReveal] = useState(0);
 
   useEffect(() => {
-    const id = requestAnimationFrame(() => setReveal(1));
-    return () => cancelAnimationFrame(id);
+    setReveal(0);
+    const raf1 = requestAnimationFrame(() => {
+      const raf2 = requestAnimationFrame(() => setReveal(1));
+      return () => cancelAnimationFrame(raf2);
+    });
+    return () => cancelAnimationFrame(raf1);
   }, []);
 
   return (
@@ -688,7 +690,7 @@ function AnimatedChartFrame({ children }) {
   );
 }
 
-function Model3DTab({ dynamics }) {
+function Model3DTab({ dynamics = [] }) {
   const [axle, setAxle] = useState("front");
   const [focus, setFocus] = useState("all"); // all | front | rear
   const [rot, setRot] = useState({ x: -18, y: 34, z: 0 });
@@ -717,9 +719,10 @@ function Model3DTab({ dynamics }) {
   const view = useMemo(() => ({
     cx: 520,
     cy: 300,
-    dist: 2400,
-    fov: 1200,
+    dist: 2600,
+    fov: 1160,
     scale: 1.1 * zoom,
+    depthClamp: 2200,
   }), [zoom]);
 
   const motion = useMemo(() => {
@@ -740,6 +743,8 @@ function Model3DTab({ dynamics }) {
     const hp = HP[axName];
     const axleFocus = focus !== "all" && focus !== axName;
     const dim = axleFocus ? 0.18 : 1;
+    const axleScale = focus === "all" ? 1 : (focus === axName ? 1 : 0.72);
+    const localView = { ...view, scale: view.scale * axleScale, depthClamp: axleScale < 1 ? 2350 : view.depthClamp };
     const pushMotion = axName === "front" ? (frame.pitch || 0) * 2.5 : -(frame.pitch || 0) * 2.0;
 
     ["left", "right"].forEach((side) => {
@@ -794,7 +799,7 @@ function Model3DTab({ dynamics }) {
 
       const store = {};
       Object.entries(pts).forEach(([k, pt]) => {
-        store[k] = projectPoint3D(rotatePoint3D(pt, rot), view);
+        store[k] = projectPoint3D(rotatePoint3D(pt, rot), localView);
       });
 
       const seg = (a, b, color, width = 1.8, dash = "") => {
@@ -816,9 +821,57 @@ function Model3DTab({ dynamics }) {
         x: (axleOffset + hp.lca_o.x + hp.uca_o.x) / 2,
         y: sideSign * ((hp.lca_o.y + hp.uca_o.y) / 2),
         z: (hp.lca_o.z + hp.uca_o.z) / 2 + cornerTravel,
-      }, rot), view);
+      }, rot), localView);
       segments.push({ z: uprightMid.z, jsx: <line key={`${axName}-${side}-upright`} x1={store.lca_o.x} y1={store.lca_o.y} x2={store.uca_o.x} y2={store.uca_o.y} stroke="#8892a8" strokeWidth="5" opacity={dim} /> });
-      const wheelTop = projectPoint3D(rotatePoint3D(shiftPoint(pts.wc, 0, 0, 0), rot), view);
+
+      const tireOuterRx = 240 * store.wc.s;
+      const tireOuterRy = 112 * store.wc.s;
+      const tireInnerRx = 214 * store.wc.s;
+      const tireInnerRy = 96 * store.wc.s;
+      segments.push({
+        z: store.wc.z - 30,
+        jsx: <ellipse
+          key={`${axName}-${side}-tire-outer`}
+          cx={store.wc.x}
+          cy={store.wc.y}
+          rx={tireOuterRx}
+          ry={tireOuterRy}
+          fill="none"
+          stroke="#0b0f18"
+          strokeWidth="11"
+          opacity={0.7 * dim}
+        />,
+      });
+      segments.push({
+        z: store.wc.z - 29,
+        jsx: <ellipse
+          key={`${axName}-${side}-tire-inner`}
+          cx={store.wc.x}
+          cy={store.wc.y}
+          rx={tireInnerRx}
+          ry={tireInnerRy}
+          fill="none"
+          stroke="#8892a8"
+          strokeWidth="1.2"
+          strokeDasharray="3 5"
+          opacity={0.75 * dim}
+        />,
+      });
+      segments.push({
+        z: store.wc.z - 28,
+        jsx: <ellipse
+          key={`${axName}-${side}-tire-highlight`}
+          cx={store.wc.x}
+          cy={store.wc.y}
+          rx={tireInnerRx + 6}
+          ry={tireInnerRy + 4}
+          fill="none"
+          stroke="#e8eaf6"
+          strokeWidth="1"
+          opacity={0.22 * dim}
+        />,
+      });
+      const wheelTop = projectPoint3D(rotatePoint3D(shiftPoint(pts.wc, 0, 0, 0), rot), localView);
       allPoints.push(
         { key: `${axName}-${side}-wc`, pt: store.wc, r: 5, c: "#e8eaf6", label: `${axName.toUpperCase()} ${side[0].toUpperCase()} WC`, dim },
         { key: `${axName}-${side}-cp`, pt: store.cp, r: 3, c: "#00ff88", label: `${axName.toUpperCase()} ${side[0].toUpperCase()} CP`, dim },
@@ -831,7 +884,7 @@ function Model3DTab({ dynamics }) {
       );
 
       // Axle label anchor
-      const anchor = projectPoint3D(rotatePoint3D({ x: axleOffset, y: 0, z: 0 }, rot), view);
+      const anchor = projectPoint3D(rotatePoint3D({ x: axleOffset, y: 0, z: 0 }, rot), localView);
       allPoints.push({ key: `${axName}-anchor-${side}`, pt: anchor, r: 0, c: "#000", label: "", dim: 0 });
     });
   };
@@ -989,7 +1042,7 @@ function Model3DTab({ dynamics }) {
 // SCHEMATIC TAB — SVG kinematics + hardpoint table + live KPIs
 // ═══════════════════════════════════════════════════════════════════════════
 
-function SchematicTab({ dynamics, frame }) {
+function SchematicTab({ dynamics = [], frame }) {
   const [axle, setAxle] = useState("front");
   const [paused, setPaused] = useState(false);
   const [animT, setAnimT] = useState(0);
@@ -1139,8 +1192,8 @@ function KinematicsTab() {
             <YAxis {...ax()} label={{ value: "Camber [°]", fontSize: 7, fill: C.dm, angle: -90, position: "insideLeft" }} />
             <Tooltip {...tt()} />
             <ReferenceLine x={0} stroke={C.b2} strokeDasharray="3 3" />
-            <Line isAnimationActive={false} data={frontSweep} dataKey="camber" stroke={C.cy} dot={false} isAnimationActive={true} animationDuration={900} strokeWidth={2} name="Front" />
-            <Line isAnimationActive={false} data={rearSweep} dataKey="camber" stroke={C.am} dot={false} isAnimationActive={true} animationDuration={900} strokeWidth={2} name="Rear" />
+            <Line data={frontSweep} dataKey="camber" stroke={C.cy} dot={false} strokeWidth={2} name="Front" />
+            <Line data={rearSweep} dataKey="camber" stroke={C.am} dot={false} strokeWidth={2} name="Rear" />
             <Legend wrapperStyle={{ fontSize: 8, fontFamily: C.dt }} />
           </LineChart>
         </ResponsiveContainer>
@@ -1156,8 +1209,8 @@ function KinematicsTab() {
             <Tooltip {...tt()} />
             <ReferenceLine x={0} stroke={C.b2} strokeDasharray="3 3" />
             <ReferenceLine y={0} stroke={C.b2} strokeDasharray="3 3" />
-            <Line isAnimationActive={false} data={frontSweep} dataKey="toe" stroke={C.cy} dot={false} isAnimationActive={true} animationDuration={900} strokeWidth={2} name="Front" />
-            <Line isAnimationActive={false} data={rearSweep} dataKey="toe" stroke={C.am} dot={false} isAnimationActive={true} animationDuration={900} strokeWidth={2} name="Rear" />
+            <Line data={frontSweep} dataKey="toe" stroke={C.cy} dot={false} strokeWidth={2} name="Front" />
+            <Line data={rearSweep} dataKey="toe" stroke={C.am} dot={false} strokeWidth={2} name="Rear" />
             <Legend wrapperStyle={{ fontSize: 8, fontFamily: C.dt }} />
           </LineChart>
         </ResponsiveContainer>
@@ -1172,8 +1225,8 @@ function KinematicsTab() {
             <YAxis {...ax()} />
             <Tooltip {...tt()} />
             <ReferenceLine x={0} stroke={C.b2} strokeDasharray="3 3" />
-            <Line isAnimationActive={false} data={frontSweep} dataKey="rcH" stroke={C.cy} dot={false} isAnimationActive={true} animationDuration={900} strokeWidth={2} name="Front RC" />
-            <Line isAnimationActive={false} data={rearSweep} dataKey="rcH" stroke={C.am} dot={false} isAnimationActive={true} animationDuration={900} strokeWidth={2} name="Rear RC" />
+            <Line data={frontSweep} dataKey="rcH" stroke={C.cy} dot={false} strokeWidth={2} name="Front RC" />
+            <Line data={rearSweep} dataKey="rcH" stroke={C.am} dot={false} strokeWidth={2} name="Rear RC" />
             <Legend wrapperStyle={{ fontSize: 8, fontFamily: C.dt }} />
           </LineChart>
         </ResponsiveContainer>
@@ -1188,8 +1241,8 @@ function KinematicsTab() {
             <YAxis domain={["auto", "auto"]} {...ax()} />
             <Tooltip {...tt()} />
             <ReferenceLine x={0} stroke={C.b2} strokeDasharray="3 3" />
-            <Line isAnimationActive={false} data={frontSweep} dataKey="mr" stroke={C.cy} dot={false} isAnimationActive={true} animationDuration={900} strokeWidth={2} name="Front MR" />
-            <Line isAnimationActive={false} data={rearSweep} dataKey="mr" stroke={C.am} dot={false} isAnimationActive={true} animationDuration={900} strokeWidth={2} name="Rear MR" />
+            <Line data={frontSweep} dataKey="mr" stroke={C.cy} dot={false} strokeWidth={2} name="Front MR" />
+            <Line data={rearSweep} dataKey="mr" stroke={C.am} dot={false} strokeWidth={2} name="Rear MR" />
             <Legend wrapperStyle={{ fontSize: 8, fontFamily: C.dt }} />
           </LineChart>
         </ResponsiveContainer>
@@ -1204,8 +1257,8 @@ function KinematicsTab() {
             <YAxis {...ax()} />
             <Tooltip {...tt()} />
             <ReferenceLine x={0} stroke={C.b2} strokeDasharray="3 3" />
-            <Line isAnimationActive={false} dataKey="caster" stroke={C.gn} dot={false} isAnimationActive={true} animationDuration={900} strokeWidth={2} name="Castor [°]" />
-            <Line isAnimationActive={false} dataKey="kpi" stroke="#a78bfa" dot={false} isAnimationActive={true} animationDuration={900} strokeWidth={2} name="KPI [°]" />
+            <Line dataKey="caster" stroke={C.gn} dot={false} strokeWidth={2} name="Castor [°]" />
+            <Line dataKey="kpi" stroke="#a78bfa" dot={false} strokeWidth={2} name="KPI [°]" />
             <Legend wrapperStyle={{ fontSize: 8, fontFamily: C.dt }} />
           </LineChart>
         </ResponsiveContainer>
@@ -1220,9 +1273,9 @@ function KinematicsTab() {
             <YAxis {...ax()} />
             <Tooltip {...tt()} />
             <ReferenceLine x={0} stroke={C.b2} strokeDasharray="3 3" />
-            <Line isAnimationActive={false} data={frontSweep} dataKey="trackChange" stroke={C.cy} dot={false} isAnimationActive={true} animationDuration={900} strokeWidth={2} name="Front ΔTrack" />
-            <Line isAnimationActive={false} data={rearSweep} dataKey="trackChange" stroke={C.am} dot={false} isAnimationActive={true} animationDuration={900} strokeWidth={2} name="Rear ΔTrack" />
-            <Line isAnimationActive={false} data={frontSweep} dataKey="scrub" stroke={C.gn} dot={false} isAnimationActive={true} animationDuration={900} strokeWidth={1.5} strokeDasharray="4 2" name="Front Scrub" />
+            <Line data={frontSweep} dataKey="trackChange" stroke={C.cy} dot={false} strokeWidth={2} name="Front ΔTrack" />
+            <Line data={rearSweep} dataKey="trackChange" stroke={C.am} dot={false} strokeWidth={2} name="Rear ΔTrack" />
+            <Line data={frontSweep} dataKey="scrub" stroke={C.gn} dot={false} strokeWidth={1.5} strokeDasharray="4 2" name="Front Scrub" />
             <Legend wrapperStyle={{ fontSize: 8, fontFamily: C.dt }} />
           </LineChart>
         </ResponsiveContainer>
@@ -1254,10 +1307,10 @@ function DynamicsTab({ dynamics }) {
             <XAxis dataKey="t" {...ax()} />
             <YAxis {...ax()} />
             <Tooltip {...tt()} />
-            <Line isAnimationActive={false} dataKey="Fz_FL" stroke={CL.fl} dot={false} isAnimationActive={true} animationDuration={900} strokeWidth={1.5} name="FL" />
-            <Line isAnimationActive={false} dataKey="Fz_FR" stroke={CL.fr} dot={false} isAnimationActive={true} animationDuration={900} strokeWidth={1.5} name="FR" />
-            <Line isAnimationActive={false} dataKey="Fz_RL" stroke={CL.rl} dot={false} isAnimationActive={true} animationDuration={900} strokeWidth={1.5} name="RL" />
-            <Line isAnimationActive={false} dataKey="Fz_RR" stroke={CL.rr} dot={false} isAnimationActive={true} animationDuration={900} strokeWidth={1.5} name="RR" />
+            <Line dataKey="Fz_FL" stroke={CL.fl} dot={false} strokeWidth={1.5} name="FL" />
+            <Line dataKey="Fz_FR" stroke={CL.fr} dot={false} strokeWidth={1.5} name="FR" />
+            <Line dataKey="Fz_RL" stroke={CL.rl} dot={false} strokeWidth={1.5} name="RL" />
+            <Line dataKey="Fz_RR" stroke={CL.rr} dot={false} strokeWidth={1.5} name="RR" />
             <Legend wrapperStyle={{ fontSize: 8, fontFamily: C.dt }} />
           </LineChart>
         </ResponsiveContainer>
@@ -1271,10 +1324,10 @@ function DynamicsTab({ dynamics }) {
             <YAxis {...ax()} />
             <Tooltip {...tt()} />
             <ReferenceLine y={0} stroke={C.b2} />
-            <Line isAnimationActive={false} dataKey="zFL" stroke={CL.fl} dot={false} isAnimationActive={true} animationDuration={900} strokeWidth={1.5} name="FL" />
-            <Line isAnimationActive={false} dataKey="zFR" stroke={CL.fr} dot={false} isAnimationActive={true} animationDuration={900} strokeWidth={1.5} name="FR" />
-            <Line isAnimationActive={false} dataKey="zRL" stroke={CL.rl} dot={false} isAnimationActive={true} animationDuration={900} strokeWidth={1.5} name="RL" />
-            <Line isAnimationActive={false} dataKey="zRR" stroke={CL.rr} dot={false} isAnimationActive={true} animationDuration={900} strokeWidth={1.5} name="RR" />
+            <Line dataKey="zFL" stroke={CL.fl} dot={false} strokeWidth={1.5} name="FL" />
+            <Line dataKey="zFR" stroke={CL.fr} dot={false} strokeWidth={1.5} name="FR" />
+            <Line dataKey="zRL" stroke={CL.rl} dot={false} strokeWidth={1.5} name="RL" />
+            <Line dataKey="zRR" stroke={CL.rr} dot={false} strokeWidth={1.5} name="RR" />
             <Legend wrapperStyle={{ fontSize: 8, fontFamily: C.dt }} />
           </LineChart>
         </ResponsiveContainer>
@@ -1288,10 +1341,10 @@ function DynamicsTab({ dynamics }) {
             <YAxis {...ax()} />
             <Tooltip {...tt()} />
             <ReferenceLine y={0} stroke={C.b2} />
-            <Line isAnimationActive={false} dataKey="Fd_FL" stroke={CL.fl} dot={false} isAnimationActive={true} animationDuration={900} strokeWidth={1.5} name="FL" />
-            <Line isAnimationActive={false} dataKey="Fd_FR" stroke={CL.fr} dot={false} isAnimationActive={true} animationDuration={900} strokeWidth={1.5} name="FR" />
-            <Line isAnimationActive={false} dataKey="Fd_RL" stroke={CL.rl} dot={false} isAnimationActive={true} animationDuration={900} strokeWidth={1.5} name="RL" />
-            <Line isAnimationActive={false} dataKey="Fd_RR" stroke={CL.rr} dot={false} isAnimationActive={true} animationDuration={900} strokeWidth={1.5} name="RR" />
+            <Line dataKey="Fd_FL" stroke={CL.fl} dot={false} strokeWidth={1.5} name="FL" />
+            <Line dataKey="Fd_FR" stroke={CL.fr} dot={false} strokeWidth={1.5} name="FR" />
+            <Line dataKey="Fd_RL" stroke={CL.rl} dot={false} strokeWidth={1.5} name="RL" />
+            <Line dataKey="Fd_RR" stroke={CL.rr} dot={false} strokeWidth={1.5} name="RR" />
             <Legend wrapperStyle={{ fontSize: 8, fontFamily: C.dt }} />
           </LineChart>
         </ResponsiveContainer>
@@ -1304,10 +1357,10 @@ function DynamicsTab({ dynamics }) {
             <XAxis dataKey="t" {...ax()} />
             <YAxis {...ax()} />
             <Tooltip {...tt()} />
-            <Area isAnimationActive={false} dataKey="Pd_FL" stroke={CL.fl} fill={CL.fl} fillOpacity={0.15} isAnimationActive={true} animationDuration={900} strokeWidth={1.5} name="FL" />
-            <Area isAnimationActive={false} dataKey="Pd_FR" stroke={CL.fr} fill={CL.fr} fillOpacity={0.15} isAnimationActive={true} animationDuration={900} strokeWidth={1.5} name="FR" />
-            <Area isAnimationActive={false} dataKey="Pd_RL" stroke={CL.rl} fill={CL.rl} fillOpacity={0.15} isAnimationActive={true} animationDuration={900} strokeWidth={1.5} name="RL" />
-            <Area isAnimationActive={false} dataKey="Pd_RR" stroke={CL.rr} fill={CL.rr} fillOpacity={0.15} isAnimationActive={true} animationDuration={900} strokeWidth={1.5} name="RR" />
+            <Area dataKey="Pd_FL" stroke={CL.fl} fill={CL.fl} fillOpacity={0.15} strokeWidth={1.5} name="FL" />
+            <Area dataKey="Pd_FR" stroke={CL.fr} fill={CL.fr} fillOpacity={0.15} strokeWidth={1.5} name="FR" />
+            <Area dataKey="Pd_RL" stroke={CL.rl} fill={CL.rl} fillOpacity={0.15} strokeWidth={1.5} name="RL" />
+            <Area dataKey="Pd_RR" stroke={CL.rr} fill={CL.rr} fillOpacity={0.15} strokeWidth={1.5} name="RR" />
             <Legend wrapperStyle={{ fontSize: 8, fontFamily: C.dt }} />
           </AreaChart>
         </ResponsiveContainer>
@@ -1321,8 +1374,8 @@ function DynamicsTab({ dynamics }) {
             <YAxis {...ax()} />
             <Tooltip {...tt()} />
             <ReferenceLine y={0} stroke={C.b2} />
-            <Line isAnimationActive={false} dataKey="roll" stroke={C.am} dot={false} isAnimationActive={true} animationDuration={900} strokeWidth={2} isAnimationActive={true} animationDuration={900} name="Roll [°]" />
-            <Line isAnimationActive={false} dataKey="pitch" stroke={C.cy} dot={false} isAnimationActive={true} animationDuration={900} strokeWidth={2} isAnimationActive={true} animationDuration={900} name="Pitch [°]" />
+            <Line dataKey="roll" stroke={C.am} dot={false} strokeWidth={2} name="Roll [°]" />
+            <Line dataKey="pitch" stroke={C.cy} dot={false} strokeWidth={2} name="Pitch [°]" />
             <Legend wrapperStyle={{ fontSize: 8, fontFamily: C.dt }} />
           </LineChart>
         </ResponsiveContainer>
@@ -1336,8 +1389,8 @@ function DynamicsTab({ dynamics }) {
             <YAxis yAxisId="l" {...ax()} />
             <YAxis yAxisId="r" orientation="right" {...ax()} />
             <Tooltip {...tt()} />
-            <Line isAnimationActive={false} yAxisId="l" dataKey="LLTD" stroke={C.cy} dot={false} isAnimationActive={true} animationDuration={900} strokeWidth={2} name="LLTD [%]" />
-            <Line isAnimationActive={false} yAxisId="r" dataKey="rollGrad" stroke={C.am} dot={false} isAnimationActive={true} animationDuration={900} strokeWidth={2} name="Roll Grad [°/G]" />
+            <Line yAxisId="l" dataKey="LLTD" stroke={C.cy} dot={false} strokeWidth={2} name="LLTD [%]" />
+            <Line yAxisId="r" dataKey="rollGrad" stroke={C.am} dot={false} strokeWidth={2} name="Roll Grad [°/G]" />
             <ReferenceLine yAxisId="l" y={50} stroke={C.b2} strokeDasharray="3 3" label={{ value: "50%", fontSize: 7, fill: C.dm }} />
             <Legend wrapperStyle={{ fontSize: 8, fontFamily: C.dt }} />
           </ComposedChart>
@@ -1351,10 +1404,10 @@ function DynamicsTab({ dynamics }) {
             <XAxis dataKey="t" {...ax()} />
             <YAxis {...ax()} />
             <Tooltip {...tt()} />
-            <Line isAnimationActive={false} dataKey="camFL" stroke={CL.fl} dot={false} isAnimationActive={true} animationDuration={900} strokeWidth={1.5} name="FL" />
-            <Line isAnimationActive={false} dataKey="camFR" stroke={CL.fr} dot={false} isAnimationActive={true} animationDuration={900} strokeWidth={1.5} name="FR" />
-            <Line isAnimationActive={false} dataKey="camRL" stroke={CL.rl} dot={false} isAnimationActive={true} animationDuration={900} strokeWidth={1.5} name="RL" />
-            <Line isAnimationActive={false} dataKey="camRR" stroke={CL.rr} dot={false} isAnimationActive={true} animationDuration={900} strokeWidth={1.5} name="RR" />
+            <Line dataKey="camFL" stroke={CL.fl} dot={false} strokeWidth={1.5} name="FL" />
+            <Line dataKey="camFR" stroke={CL.fr} dot={false} strokeWidth={1.5} name="FR" />
+            <Line dataKey="camRL" stroke={CL.rl} dot={false} strokeWidth={1.5} name="RL" />
+            <Line dataKey="camRR" stroke={CL.rr} dot={false} strokeWidth={1.5} name="RR" />
             <Legend wrapperStyle={{ fontSize: 8, fontFamily: C.dt }} />
           </LineChart>
         </ResponsiveContainer>
@@ -1367,8 +1420,8 @@ function DynamicsTab({ dynamics }) {
             <XAxis dataKey="t" {...ax()} />
             <YAxis {...ax()} />
             <Tooltip {...tt()} />
-            <Line isAnimationActive={false} dataKey="rcF" stroke={C.cy} dot={false} isAnimationActive={true} animationDuration={900} strokeWidth={2} name="Front RC [mm]" />
-            <Line isAnimationActive={false} dataKey="rcR" stroke={C.am} dot={false} isAnimationActive={true} animationDuration={900} strokeWidth={2} name="Rear RC [mm]" />
+            <Line dataKey="rcF" stroke={C.cy} dot={false} strokeWidth={2} name="Front RC [mm]" />
+            <Line dataKey="rcR" stroke={C.am} dot={false} strokeWidth={2} name="Rear RC [mm]" />
             <Legend wrapperStyle={{ fontSize: 8, fontFamily: C.dt }} />
           </LineChart>
         </ResponsiveContainer>
@@ -1390,16 +1443,21 @@ function AntiGeomTab() {
     { param: "Anti-Lift", value: VG.antiLift * 100, target: 20, color: "#a78bfa", note: "anti-squat under braking" },
   ];
 
+  const pitchSupport = (VG.antiSquat + VG.antiSquatF + VG.antiDiveF + VG.antiDiveR + VG.antiLift) / 5 * 100;
+  const accelBias = (VG.antiSquat + VG.antiSquatF) * 100;
+  const brakeBias = (VG.antiDiveF + VG.antiDiveR) * 100;
+  const balanceDelta = Math.abs(accelBias - brakeBias);
+
   const metrics = [
-    { label: "Effective pitch support", value: `${((VG.antiSquat + VG.antiSquatF + VG.antiDiveF + VG.antiDiveR + VG.antiLift) / 5 * 100).toFixed(0)}%`, c: C.cy },
-    { label: "Front rear split", value: `${Math.round((VG.antiDiveF / Math.max(0.01, VG.antiSquat + VG.antiSquatF)) * 100)} : 100`, c: C.am },
+    { label: "Effective pitch support", value: `${pitchSupport.toFixed(0)}%`, c: C.cy },
+    { label: "Accel / brake balance", value: `${accelBias.toFixed(0)} / ${brakeBias.toFixed(0)}`, c: C.am },
     { label: "Pitch centre height", value: `${Math.round(VG.hCG * ((VG.antiDiveF + VG.antiSquat) / 2))} mm`, c: C.gn },
-    { label: "Ride pitch damping", value: `${Math.round((VG.antiSquat + VG.antiDiveF) * 50)} points`, c: "#a78bfa" },
+    { label: "Coupling mismatch", value: `${balanceDelta.toFixed(0)} pts`, c: "#a78bfa" },
   ];
 
-  const svgW = 760, svgH = 340;
-  const scale = 0.32;
-  const oX = 120, oY = svgH - 52;
+  const svgW = 820, svgH = 380;
+  const scale = 0.34;
+  const oX = 120, oY = svgH - 58;
   const toS = (x, z) => ({ x: oX + x * scale, y: oY - z * scale });
 
   const frontCP = toS(VG.lf, 0);
@@ -1411,6 +1469,7 @@ function AntiGeomTab() {
   const pc = toS(0, pcZ);
   const frontPC = toS(VG.lf, adZ);
   const rearPC = toS(-VG.lr, asZ);
+  const targetBand = { min: 18, max: 40 };
 
   return (
     <div style={{ display: "grid", gridTemplateColumns: "1.2fr 0.8fr", gap: 10 }}>
@@ -1429,8 +1488,13 @@ function AntiGeomTab() {
               <stop offset="0%" stopColor={C.cy} stopOpacity="0.05" />
               <stop offset="100%" stopColor={C.am} stopOpacity="0.2" />
             </linearGradient>
+            <linearGradient id="antiBand" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stopColor={C.gn} stopOpacity="0.18" />
+              <stop offset="100%" stopColor={C.am} stopOpacity="0.06" />
+            </linearGradient>
           </defs>
           <rect x="0" y="0" width={svgW} height={svgH} fill="url(#antiGlow)" opacity="0.4" />
+          <rect x="0" y={oY - targetBand.max * scale} width={svgW} height={(targetBand.max - targetBand.min) * scale} fill="url(#antiBand)" opacity="0.35" />
           <line x1="24" y1={oY} x2={svgW - 24} y2={oY} stroke={C.b2} strokeWidth="1" strokeDasharray="4 3" />
           <line x1={frontCP.x} y1={oY} x2={rearCP.x} y2={oY} stroke={C.dm} strokeWidth="2" />
           <circle cx={frontCP.x} cy={oY} r="18" fill="none" stroke={C.dm} strokeWidth="1.4" opacity="0.35" />
@@ -1438,10 +1502,10 @@ function AntiGeomTab() {
           <text x={frontCP.x} y={oY + 30} textAnchor="middle" fill={C.dm} fontSize="7" fontFamily="monospace">FRONT AXLE</text>
           <text x={rearCP.x} y={oY + 30} textAnchor="middle" fill={C.dm} fontSize="7" fontFamily="monospace">REAR AXLE</text>
 
-          <line x1={frontCP.x} y1={oY} x2={frontPC.x} y2={frontPC.y} stroke={C.am} strokeWidth="1.8" strokeDasharray="7 3" />
-          <line x1={rearCP.x} y1={oY} x2={rearPC.x} y2={rearPC.y} stroke={C.cy} strokeWidth="1.8" strokeDasharray="7 3" />
-          <circle cx={pc.x} cy={pc.y} r="7" fill="none" stroke="#ff6090" strokeWidth="1.8" />
-          <circle cx={pc.x} cy={pc.y} r="3" fill="#ff6090" />
+          <line x1={frontCP.x} y1={oY} x2={frontPC.x} y2={frontPC.y} stroke={C.am} strokeWidth="2.1" strokeDasharray="7 3" />
+          <line x1={rearCP.x} y1={oY} x2={rearPC.x} y2={rearPC.y} stroke={C.cy} strokeWidth="2.1" strokeDasharray="7 3" />
+          <circle cx={pc.x} cy={pc.y} r="8" fill="none" stroke="#ff6090" strokeWidth="1.8" />
+          <circle cx={pc.x} cy={pc.y} r="3.5" fill="#ff6090" />
           <text x={pc.x + 10} y={pc.y + 4} fill="#ff6090" fontSize="8" fontFamily="monospace" fontWeight="700">
             Pitch Centre {pcZ.toFixed(0)}mm
           </text>
@@ -1449,8 +1513,12 @@ function AntiGeomTab() {
           <circle cx={cgP.x} cy={cgP.y} r="5" fill={C.red} opacity="0.7" />
           <text x={cgP.x + 10} y={cgP.y + 4} fill={C.red} fontSize="7" fontFamily="monospace" fontWeight="700">CG</text>
 
+          <path d={`M ${frontCP.x} ${oY} L ${frontPC.x} ${frontPC.y} L ${pc.x} ${pc.y}`} fill="none" stroke={C.am} strokeWidth="1" opacity="0.35" strokeDasharray="2 4" />
+          <path d={`M ${rearCP.x} ${oY} L ${rearPC.x} ${rearPC.y} L ${pc.x} ${pc.y}`} fill="none" stroke={C.cy} strokeWidth="1" opacity="0.35" strokeDasharray="2 4" />
+
           <text x="12" y="18" fill={C.w} fontSize="9" fontFamily="monospace" fontWeight="700">SIDE VIEW — PITCH GEOMETRY</text>
           <text x="12" y="32" fill={C.dm} fontSize="7" fontFamily="monospace">Solid lines show the load path; dashed lines show the anti-geometry lever arms.</text>
+          <text x="12" y="46" fill={C.dm} fontSize="7" fontFamily="monospace">Green band marks the target support window; the pitch centre should sit inside it under accel/brake.</text>
         </svg>
       </div>
 
@@ -1465,6 +1533,10 @@ function AntiGeomTab() {
               <span style={{ color: m.c, fontWeight: 700 }}>{m.value}</span>
             </div>
           ))}
+          <div style={{ marginTop: 8, display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6 }}>
+            <div style={{ fontSize: 7, color: C.dm, fontFamily: C.dt }}>Acceleration support is mostly rear-biased; front anti-squat is intentionally conservative.</div>
+            <div style={{ fontSize: 7, color: C.dm, fontFamily: C.dt }}>Braking support is front-biased but not excessive, preserving pitch compliance and grip transfer.</div>
+          </div>
         </div>
 
         <div style={{ ...GL, padding: "10px 12px" }}>
@@ -1503,7 +1575,6 @@ function AntiGeomTab() {
     </div>
   );
 }
-
 // ═══════════════════════════════════════════════════════════════════════════
 // COMPLIANCE TAB
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1542,8 +1613,8 @@ function ComplianceTab() {
             <Tooltip {...tt()} />
             <ReferenceLine x={0} stroke={C.b2} strokeDasharray="3 3" />
             <ReferenceLine y={0} stroke={C.b2} strokeDasharray="3 3" />
-            <Line isAnimationActive={false} dataKey="toe_f" stroke={C.cy} dot={false} isAnimationActive={true} animationDuration={900} strokeWidth={2} name="Front Comp. Steer" />
-            <Line isAnimationActive={false} dataKey="toe_r" stroke={C.am} dot={false} isAnimationActive={true} animationDuration={900} strokeWidth={2} name="Rear Comp. Steer" />
+            <Line dataKey="toe_f" stroke={C.cy} dot={false} strokeWidth={2} name="Front Comp. Steer" />
+            <Line dataKey="toe_r" stroke={C.am} dot={false} strokeWidth={2} name="Rear Comp. Steer" />
             <Legend wrapperStyle={{ fontSize: 8, fontFamily: C.dt }} />
           </LineChart>
         </ResponsiveContainer>
@@ -1557,8 +1628,8 @@ function ComplianceTab() {
             <YAxis {...ax()} />
             <Tooltip {...tt()} />
             <ReferenceLine x={0} stroke={C.b2} strokeDasharray="3 3" />
-            <Line isAnimationActive={false} dataKey="camber_f" stroke={C.cy} dot={false} isAnimationActive={true} animationDuration={900} strokeWidth={2} name="Front" />
-            <Line isAnimationActive={false} dataKey="camber_r" stroke={C.am} dot={false} isAnimationActive={true} animationDuration={900} strokeWidth={2} name="Rear" />
+            <Line dataKey="camber_f" stroke={C.cy} dot={false} strokeWidth={2} name="Front" />
+            <Line dataKey="camber_r" stroke={C.am} dot={false} strokeWidth={2} name="Rear" />
             <Legend wrapperStyle={{ fontSize: 8, fontFamily: C.dt }} />
           </LineChart>
         </ResponsiveContainer>
@@ -1644,7 +1715,7 @@ function ModalTab() {
             <Tooltip {...tt()} />
             <ReferenceLine y={0} stroke={C.b2} strokeDasharray="3 3" />
             {modes.map(m => (
-              <Line isAnimationActive={false} key={m.mode} dataKey={m.mode} stroke={m.color} dot={false} isAnimationActive={true} animationDuration={900} strokeWidth={1.5} name={m.mode} />
+              <Line key={m.mode} dataKey={m.mode} stroke={m.color} dot={false} strokeWidth={1.5} name={m.mode} />
             ))}
             <Legend wrapperStyle={{ fontSize: 7, fontFamily: C.dt }} />
           </LineChart>
