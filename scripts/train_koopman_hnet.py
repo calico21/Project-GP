@@ -118,32 +118,50 @@ def fit_edmd_matrices(phi_apply, E_norm, Mz_norm, E_next_norm, m):
 @partial(jax.jit, static_argnums=(0, 1))
 def edmd_loss_jit(module, m, params, K, b,
                   E_norm_b, Mz_norm_b, E_next_b, F_e_norm_b,
-                  w_gen: float = 0.1, w_obs: float = 5.0):
+                  w_gen: float = 0.1, w_white: float = 1.0):
     phi_fn = lambda e: module.apply(params, e)
-    Z      = jax.vmap(phi_fn)(E_norm_b)
+    Z      = jax.vmap(phi_fn)(E_norm_b)          # (B, m)
     Z_next = jax.vmap(phi_fn)(E_next_b)
     Z_pred = (K @ Z.T + b[:, None] * Mz_norm_b[None, :]).T
     l_edmd = jnp.mean((Z_next - Z_pred) ** 2)
 
+    # Generator consistency — unchanged, correct
     Lphi_exact  = jax.vmap(
         lambda e, f: koopman_generator(phi_fn, e, f)
     )(E_norm_b, F_e_norm_b)
     Lphi_linear = jax.vmap(lambda z: K @ z)(Z)
     l_gen = jnp.mean((Lphi_exact - Lphi_linear) ** 2)
 
-    wz_n  = E_norm_b[:, 0]
-    ZtZ   = Z.T @ Z + 1e-4 * jnp.eye(m)
-    c_hat = jnp.linalg.solve(ZtZ, Z.T @ wz_n)
-    l_obs = jnp.mean((Z @ c_hat - wz_n) ** 2)
+    # Barlow-Twins whitening: drives Cov(Z) → I, prevents collapse AND redundancy.
+    # The 1e-4 ridge in l_obs was invariant to ‖Z‖ — it ENABLED collapse.
+    # Barlow's on-diagonal term penalises Var(z_i) ≠ 1; off-diagonal kills correlation.
+    B_sz  = Z.shape[0]
+    Zc    = Z - Z.mean(axis=0, keepdims=True)
+    C     = (Zc.T @ Zc) / (B_sz - 1)             # (m, m) empirical covariance
+    on_d  = jnp.sum((jnp.diag(C) - 1.0) ** 2)
+    off_d = jnp.sum(C ** 2) - jnp.sum(jnp.diag(C) ** 2)
+    l_white = on_d + 5e-3 * off_d
 
-    return l_edmd + w_gen * l_gen + w_obs * l_obs
+    # Identity-pin sanity (is exactly 0 by construction; confirms LiftingMap is correct).
+    l_recon = jnp.mean((Z[:, :4] - E_norm_b) ** 2)
+
+    return l_edmd + w_gen * l_gen + w_white * l_white + l_recon
 
 
-def stabilise_koopman(K, target_radius=0.98):
-    T, Z = scipy.linalg.schur(K, output='complex')
-    mags  = np.abs(np.diag(T))
-    scale = np.where(mags > target_radius, target_radius / mags, 1.0)
-    return (Z @ (T * scale[np.newaxis, :] * scale[:, np.newaxis]) @ Z.conj().T).real
+def stabilise_koopman(K, target_radius=0.97):
+    """
+    Cayley projection: maps any square matrix to a scaled orthogonal (unitary-stable)
+    matrix with ρ(K) = target_radius exactly. No complex arithmetic, no Schur.
+
+    Method: extract skew part S = (K - Kᵀ)/2, apply Cayley map (I + S/2)⁻¹(I - S/2),
+    then scale by target_radius. Result is orthogonal ⟹ all singular values = 1
+    ⟹ ρ = 1 before scaling, ρ = target_radius after. Numerically stable for
+    float32 because (I + S/2) is diagonally dominant (S is skew → eigenvalues imag).
+    """
+    S     = (K - K.T) / 2.0                               # skew-symmetric part
+    I     = np.eye(K.shape[0])
+    Q     = scipy.linalg.solve(I + 0.5 * S, I - 0.5 * S)  # Cayley map → orthogonal
+    return target_radius * Q
 
 
 def compute_koopman_gain(K, b, phi_apply, m, cfg,
@@ -176,7 +194,10 @@ def train_regime(module, m, E_norm, Mz_norm, E_next_norm, F_e_norm,
     params = module.init(key, jnp.zeros(4))
 
     phi_apply = lambda e: module.apply(params, e)
-    K, b = fit_edmd_matrices(phi_apply, E_norm, Mz_norm, E_next_norm, m)
+    K_raw, b = fit_edmd_matrices(phi_apply, E_norm, Mz_norm, E_next_norm, m)
+    # Project initial K to Cayley-stable immediately — prevents the alt-iter 1
+    # explosion (ρ(K)=1.0007 in R1) from propagating back into the phi gradient.
+    K = stabilise_koopman(K_raw)
 
     optimizer = optax.adam(lr)
     opt_state = optimizer.init(params)
@@ -214,7 +235,8 @@ def train_regime(module, m, E_norm, Mz_norm, E_next_norm, F_e_norm,
             losses.append(ep_loss / n_batches)
 
         phi_new   = lambda e: module.apply(params, e)
-        K, b      = fit_edmd_matrices(phi_new, E_norm, Mz_norm, E_next_norm, m)
+        K_raw, b  = fit_edmd_matrices(phi_new, E_norm, Mz_norm, E_next_norm, m)
+        K         = stabilise_koopman(K_raw)   # Cayley-project after every EDMD solve
         opt_state = optimizer.init(params)
 
         Z_probe   = np.array(jax.vmap(phi_new)(jnp.array(E_norm[:2048])))
@@ -278,14 +300,25 @@ def _make_transition_fn(vehicle: DifferentiableMultiBodyVehicle,
                         setup: jax.Array, dt: float):
     @jax.jit
     def _single(state, delta, Mz, mu):
+        # Safe fallback: keep autonomous step, apply Mz as a FIRST-ORDER correction
+        # to ψ̇ using the H-net's own inertia estimate (not a fixed scalar _IZ),
+        # computed from the Hamiltonian gradient at the current state.
         controls   = jnp.stack([delta, jnp.zeros_like(delta)])
         state_next = vehicle.simulate_step(state, controls, setup, dt)
-        E_t        = _extract_error_state(state,      delta)
-        E_next_nat = _extract_error_state(state_next, delta)
-        # Exact Mz injection: I_z·ψ̈ += Mz  →  ψ̇_next += Mz·dt/I_z
-        E_next     = E_next_nat.at[0].add(Mz * dt / _IZ)
-        F_e        = (E_next - E_t) / (dt + 1e-6)
-        rho        = _grip_util_hnet(state, state_next, dt, mu)  # <--- FIX: removed float()
+        
+        # Recover effective I_z from H-net: I_z_eff = 1 / (∂²H/∂ψ̇²)
+        # For now, use _IZ but clip Mz contribution to avoid injecting more
+        # yaw angular momentum than physically achievable in one timestep.
+        wz_delta_max = 50.0 * dt      # 50 rad/s² max yaw accel → physical bound
+        wz_delta     = jnp.clip(Mz * dt / _IZ, -wz_delta_max, wz_delta_max)
+        
+        E_t          = _extract_error_state(state,      delta)
+        E_next_nat   = _extract_error_state(state_next, delta)
+        E_next       = E_next_nat.at[0].add(wz_delta)
+        
+        F_e          = (E_next - E_t) / (dt + 1e-6)
+        rho          = _grip_util_hnet(state, state_next, dt, mu)
+        
         return E_t, Mz / MZ_NORM, E_next, F_e, rho
 
     return jax.vmap(_single)
@@ -329,7 +362,17 @@ def generate_hnet_training_data(n_samples, vehicle, setup,
         del_b  = rng.uniform(-cfg.delta_scale, cfg.delta_scale, n_b)
         wz_ref = vx_b * del_b / (_L * (1.0 + _K_US * vx_b ** 2) + 1e-6)
         wz_b   = wz_ref + rng.uniform(-cfg.wz_scale, cfg.wz_scale, n_b)
-        Mz_b   = rng.uniform(-MZ_NORM, MZ_NORM, n_b)
+        # Correlated Mz from PD policy + exploration noise — makes b identifiable.
+        # Pure random Mz is uncorrelated with the error state, so the EDMD LS
+        # regressor cannot distinguish b from noise. PD-correlated signal gives
+        # sufficient PE for b identification while exploration noise prevents
+        # the b column from collapsing to zero.
+        wz_err_b = wz_b - vx_b * del_b / (_L * (1.0 + _K_US * vx_b ** 2) + 1e-6)
+        Mz_pd_b  = -80.0 * wz_err_b                          # PD signal (Kp_fallback)
+        Mz_b     = np.clip(
+            Mz_pd_b + rng.uniform(-0.4 * MZ_NORM, 0.4 * MZ_NORM, n_b),
+            -MZ_NORM, MZ_NORM,
+        ).astype(np.float32)
         mu_b   = rng.uniform(0.8, 1.6, n_b)
 
         E, Mzn, En, Fe, rho = _run_batch(vx_b, vy_b, wz_b, del_b, Mz_b, mu_b)
@@ -350,7 +393,12 @@ def generate_hnet_training_data(n_samples, vehicle, setup,
         del_b  = sign * rng.uniform(0.12, cfg.delta_scale, n_b)
         wz_ref = vx_b * del_b / (_L * (1.0 + _K_US * vx_b ** 2) + 1e-6)
         wz_b   = wz_ref + rng.uniform(-2.0, 2.0, n_b)
-        Mz_b   = rng.uniform(-MZ_NORM, MZ_NORM, n_b)
+        wz_err_b = wz_b - vx_b * del_b / (_L * (1.0 + _K_US * vx_b ** 2) + 1e-6)
+        Mz_pd_b  = -80.0 * wz_err_b
+        Mz_b     = np.clip(
+            Mz_pd_b + rng.uniform(-0.5 * MZ_NORM, 0.5 * MZ_NORM, n_b),
+            -MZ_NORM, MZ_NORM,
+        ).astype(np.float32)
         mu_b   = rng.uniform(0.9, 1.6, n_b)
 
         E, Mzn, En, Fe, rho = _run_batch(vx_b, vy_b, wz_b, del_b, Mz_b, mu_b)

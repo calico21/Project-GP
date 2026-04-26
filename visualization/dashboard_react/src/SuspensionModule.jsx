@@ -43,6 +43,52 @@ const tt = () => ({ contentStyle: { background: C.panel || "#0e1420", border: `1
 // Seeded RNG
 function srng(s) { return () => { s = (s * 16807 + 0) % 2147483647; return (s & 0x7fffffff) / 0x7fffffff; }; }
 
+function clamp(v, min, max) { return Math.min(max, Math.max(min, v)); }
+function lerp(a, b, t) { return a + (b - a) * t; }
+function degToRad(d) { return (d * Math.PI) / 180; }
+
+function rotatePoint3D(p, rot) {
+  const rx = degToRad(rot.x || 0);
+  const ry = degToRad(rot.y || 0);
+  const rz = degToRad(rot.z || 0);
+
+  let { x, y, z } = p;
+
+  // X rotation
+  let ny = y * Math.cos(rx) - z * Math.sin(rx);
+  let nz = y * Math.sin(rx) + z * Math.cos(rx);
+  y = ny; z = nz;
+
+  // Y rotation
+  let nx = x * Math.cos(ry) + z * Math.sin(ry);
+  nz = -x * Math.sin(ry) + z * Math.cos(ry);
+  x = nx; z = nz;
+
+  // Z rotation
+  nx = x * Math.cos(rz) - y * Math.sin(rz);
+  ny = x * Math.sin(rz) + y * Math.cos(rz);
+
+  return { x: nx, y: ny, z };
+}
+
+function projectPoint3D(p, view) {
+  const dist = view.dist || 1700;
+  const fov = view.fov || 980;
+  const scale = view.scale || 1;
+  const z = p.z + dist;
+  const k = fov / Math.max(200, z);
+  return {
+    x: view.cx + p.x * k * scale,
+    y: view.cy - p.y * k * scale,
+    s: k * scale,
+    z: p.z,
+  };
+}
+
+function shiftPoint(pt, dx = 0, dy = 0, dz = 0) {
+  return { x: pt.x + dx, y: pt.y + dy, z: pt.z + dz };
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // TER27 HARDPOINTS — Optimum Kinematics coordinate system
 // X = longitudinal (fwd+), Y = lateral (left+), Z = vertical (up+)
@@ -378,11 +424,12 @@ function KinematicSchematicSVG({ axle, heave, roll, liveForces }) {
   const hp = HP[axle];
   const isF = axle === "front";
 
-  const svgW = 1400;
+  const svgW = 1320;
   const svgH = 420;
-  const panelW = svgW / 2;
+  const panelGap = 24;
+  const panelW = (svgW - panelGap) / 2;
   const panelH = svgH;
-  const scale = 0.42;
+  const scale = 0.46;
   const oY = panelH - 40;
 
   const Fz = liveForces?.Fz || (VG.mass * 9.81) / 4;
@@ -403,8 +450,6 @@ function KinematicSchematicSVG({ axle, heave, roll, liveForces }) {
   function renderPanel(side, offsetX) {
     const sideSign = side === "left" ? 1 : -1;
     const cx = offsetX + panelW / 2;
-
-    // Small visual roll effect so both sides do not look identical when animating.
     const motion = (heave || 0) + sideSign * (roll || 0) * 2.5;
 
     const toXY = (y_mm, z_mm) => ({
@@ -442,322 +487,99 @@ function KinematicSchematicSVG({ axle, heave, roll, liveForces }) {
     const rcSvg = toXY(0, rc.z);
 
     return (
-      <g key={side}>
-        <rect
-          x={offsetX}
-          y={0}
-          width={panelW}
-          height={panelH}
-          fill="transparent"
-        />
+      <g key={side} opacity={1}>
+        <rect x={offsetX} y={0} width={panelW} height={panelH} fill="transparent" />
 
-        <line
-          x1={offsetX + 20}
-          y1={oY}
-          x2={offsetX + panelW - 20}
-          y2={oY}
-          stroke={C.b2 || "#1a2035"}
-          strokeWidth="1"
-          strokeDasharray="4 3"
-        />
-        <line
-          x1={cx}
-          y1={10}
-          x2={cx}
-          y2={oY - 5}
-          stroke={C.b1 || "#1a2035"}
-          strokeWidth="0.5"
-          strokeDasharray="2 4"
-        />
+        <line x1={offsetX + 16} y1={oY} x2={offsetX + panelW - 16} y2={oY} stroke={C.b2 || "#1a2035"} strokeWidth="1" strokeDasharray="4 3" />
+        <line x1={cx} y1={10} x2={cx} y2={oY - 5} stroke={C.b1 || "#1a2035"} strokeWidth="0.5" strokeDasharray="2 4" />
 
-        <text
-          x={offsetX + 12}
-          y={16}
-          fill={C.w || "#e8eaf6"}
-          fontSize="10"
-          fontFamily="monospace"
-          fontWeight="700"
-        >
+        <text x={offsetX + 12} y={16} fill={C.w || "#e8eaf6"} fontSize="10" fontFamily="monospace" fontWeight="700">
           {side.toUpperCase()} SIDE — {isF ? "FRONT" : "REAR"} VIEW
         </text>
-        <text
-          x={offsetX + 12}
-          y={28}
-          fill={C.dm || "#4a5568"}
-          fontSize="7"
-          fontFamily="monospace"
-        >
+        <text x={offsetX + 12} y={28} fill={C.dm || "#4a5568"} fontSize="7" fontFamily="monospace">
           Track: {(isF ? VG.tF : VG.tR)}mm | Heave: {(heave || 0).toFixed(1)}mm | Roll: {(roll || 0).toFixed(2)}°
         </text>
 
-        <line
-          x1={lcaI.x}
-          y1={lcaI.y}
-          x2={lcaO.x}
-          y2={lcaO.y}
-          stroke={lcaC}
-          strokeWidth="3"
-          strokeLinecap="round"
-        />
+        <line x1={lcaI.x} y1={lcaI.y} x2={lcaO.x} y2={lcaO.y} stroke={lcaC} strokeWidth="3" strokeLinecap="round" />
         <circle cx={lcaI.x} cy={lcaI.y} r="4" fill={C.bg || "#0a0a0f"} stroke={lcaC} strokeWidth="1.5" />
         <circle cx={lcaO.x} cy={lcaO.y} r="4" fill={C.bg || "#0a0a0f"} stroke={lcaC} strokeWidth="1.5" />
 
-        <line
-          x1={ucaI.x}
-          y1={ucaI.y}
-          x2={ucaO.x}
-          y2={ucaO.y}
-          stroke={ucaC}
-          strokeWidth="3"
-          strokeLinecap="round"
-        />
+        <line x1={ucaI.x} y1={ucaI.y} x2={ucaO.x} y2={ucaO.y} stroke={ucaC} strokeWidth="3" strokeLinecap="round" />
         <circle cx={ucaI.x} cy={ucaI.y} r="4" fill={C.bg || "#0a0a0f"} stroke={ucaC} strokeWidth="1.5" />
         <circle cx={ucaO.x} cy={ucaO.y} r="4" fill={C.bg || "#0a0a0f"} stroke={ucaC} strokeWidth="1.5" />
 
-        <line
-          x1={tieI.x}
-          y1={tieI.y}
-          x2={tieO.x}
-          y2={tieO.y}
-          stroke={tieC}
-          strokeWidth="2"
-          strokeDasharray="6 3"
-        />
+        <line x1={tieI.x} y1={tieI.y} x2={tieO.x} y2={tieO.y} stroke={tieC} strokeWidth="2" strokeDasharray="6 3" />
         <circle cx={tieI.x} cy={tieI.y} r="3" fill={tieC} opacity="0.7" />
         <circle cx={tieO.x} cy={tieO.y} r="3" fill={tieC} opacity="0.7" />
 
-        <line
-          x1={lcaO.x}
-          y1={lcaO.y}
-          x2={ucaO.x}
-          y2={ucaO.y}
-          stroke={uprightC}
-          strokeWidth="4"
-          strokeLinecap="round"
-          opacity="0.8"
-        />
+        <line x1={lcaO.x} y1={lcaO.y} x2={ucaO.x} y2={ucaO.y} stroke={uprightC} strokeWidth="4" strokeLinecap="round" opacity="0.8" />
 
-        <line
-          x1={pushA.x}
-          y1={pushA.y}
-          x2={rockerRod.x}
-          y2={rockerRod.y}
-          stroke={pushC}
-          strokeWidth="2.5"
-          strokeLinecap="round"
-        />
-
-        <line
-          x1={rockerPivot.x}
-          y1={rockerPivot.y}
-          x2={rockerRod.x}
-          y2={rockerRod.y}
-          stroke="#a78bfa"
-          strokeWidth="2.2"
-        />
-        <line
-          x1={rockerPivot.x}
-          y1={rockerPivot.y}
-          x2={rockerShock.x}
-          y2={rockerShock.y}
-          stroke={springC}
-          strokeWidth="2.5"
-          strokeDasharray="4 2"
-        />
-        <line
-          x1={rockerShock.x}
-          y1={rockerShock.y}
-          x2={chShock.x}
-          y2={chShock.y}
-          stroke={springC}
-          strokeWidth="2.2"
-          strokeDasharray="4 2"
-        />
+        <line x1={pushA.x} y1={pushA.y} x2={rockerRod.x} y2={rockerRod.y} stroke={pushC} strokeWidth="2.5" strokeLinecap="round" />
+        <line x1={rockerPivot.x} y1={rockerPivot.y} x2={rockerRod.x} y2={rockerRod.y} stroke="#a78bfa" strokeWidth="2.2" />
+        <line x1={rockerPivot.x} y1={rockerPivot.y} x2={rockerShock.x} y2={rockerShock.y} stroke={springC} strokeWidth="2.5" strokeDasharray="4 2" />
+        <line x1={rockerShock.x} y1={rockerShock.y} x2={chShock.x} y2={chShock.y} stroke={springC} strokeWidth="2.2" strokeDasharray="4 2" />
         <circle cx={rockerPivot.x} cy={rockerPivot.y} r="5" fill="#a78bfa" opacity="0.5" />
         <circle cx={rockerRod.x} cy={rockerRod.y} r="4" fill="#a78bfa" opacity="0.5" />
-        <rect
-          x={rockerShock.x - 6}
-          y={rockerShock.y - 3}
-          width="12"
-          height="6"
-          rx="2"
-          fill={C.bg || "#0a0a0f"}
-          stroke={springC}
-          strokeWidth="1"
-        />
+        <rect x={rockerShock.x - 6} y={rockerShock.y - 3} width="12" height="6" rx="2" fill={C.bg || "#0a0a0f"} stroke={springC} strokeWidth="1" />
         <circle cx={chShock.x} cy={chShock.y} r="4" fill={springC} opacity="0.8" />
 
-        {/* Front-view Tire Profile - Engineering Schematic Style */}
         <g transform={`rotate(${sideSign * (isF ? VG.camberF : VG.camberR)}, ${wc.x}, ${wc.y})`}>
-          {/* Wheel Centerline */}
-          <line 
-            x1={wc.x} y1={wc.y - (VG.wR * scale)} 
-            x2={wc.x} y2={wc.y + (VG.wR * scale)} 
-            stroke={C.dm || "#4a5568"} 
-            strokeWidth="1" 
-            strokeDasharray="4 4" 
-            opacity="0.6" 
-          />
-          {/* Realistic tire section width so it reads like a Formula Student tyre */}
+          <line x1={wc.x} y1={wc.y - (VG.wR * scale)} x2={wc.x} y2={wc.y + (VG.wR * scale)} stroke={C.dm || "#4a5568"} strokeWidth="1" strokeDasharray="4 4" opacity="0.65" />
           <rect
-            x={wc.x - (165 * scale) / 2}
+            x={wc.x - (70 * scale) / 2}
             y={wc.y - (VG.wR * scale)}
-            width={165 * scale}
+            width={70 * scale}
             height={VG.wR * 2 * scale}
-            rx="14"
-            fill="rgba(226,232,240,0.05)"
+            rx="4"
+            fill="transparent"
             stroke={C.dm || "#4a5568"}
-            strokeWidth="1.8"
-            opacity="0.8"
-          />
-          <rect
-            x={wc.x - (165 * scale) / 2 + 10}
-            y={wc.y - (VG.wR * scale) + 10}
-            width={165 * scale - 20}
-            height={VG.wR * 2 * scale - 20}
-            rx="10"
-            fill="none"
-            stroke="rgba(148,163,184,0.35)"
-            strokeWidth="1"
-            opacity="0.8"
+            strokeWidth="1.5"
+            opacity="0.7"
           />
         </g>
         <circle cx={wc.x} cy={wc.y} r="3" fill={C.dm || "#4a5568"} />
-        <rect
-          x={cp.x - 12}
-          y={cp.y - 2}
-          width="24"
-          height="4"
-          rx="2"
-          fill={C.gn || "#00ff88"}
-          opacity="0.5"
-        />
+        <rect x={cp.x - 12} y={cp.y - 2} width="24" height="4" rx="2" fill={C.gn || "#00ff88"} opacity="0.5" />
 
-        <line
-          x1={lcaI.x}
-          y1={lcaI.y}
-          x2={icSvg.x}
-          y2={icSvg.y}
-          stroke={lcaC}
-          strokeWidth="0.5"
-          strokeDasharray="3 3"
-          opacity="0.35"
-        />
-        <line
-          x1={ucaI.x}
-          y1={ucaI.y}
-          x2={icSvg.x}
-          y2={icSvg.y}
-          stroke={ucaC}
-          strokeWidth="0.5"
-          strokeDasharray="3 3"
-          opacity="0.35"
-        />
+        <line x1={lcaI.x} y1={lcaI.y} x2={icSvg.x} y2={icSvg.y} stroke={lcaC} strokeWidth="0.5" strokeDasharray="3 3" opacity="0.35" />
+        <line x1={ucaI.x} y1={ucaI.y} x2={icSvg.x} y2={icSvg.y} stroke={ucaC} strokeWidth="0.5" strokeDasharray="3 3" opacity="0.35" />
 
         <circle cx={icSvg.x} cy={icSvg.y} r="5" fill="none" stroke={rcColor} strokeWidth="1.5" />
         <line x1={icSvg.x - 4} y1={icSvg.y} x2={icSvg.x + 4} y2={icSvg.y} stroke={rcColor} strokeWidth="1" />
         <line x1={icSvg.x} y1={icSvg.y - 4} x2={icSvg.x} y2={icSvg.y + 4} stroke={rcColor} strokeWidth="1" />
-        <text x={icSvg.x + 8} y={icSvg.y - 4} fill={rcColor} fontSize="7" fontFamily="monospace" fontWeight="700">
-          IC
-        </text>
+        <text x={icSvg.x + 8} y={icSvg.y - 4} fill={rcColor} fontSize="7" fontFamily="monospace" fontWeight="700">IC</text>
 
-        <line
-          x1={cp.x}
-          y1={cp.y}
-          x2={icSvg.x}
-          y2={icSvg.y}
-          stroke={rcColor}
-          strokeWidth="0.7"
-          strokeDasharray="4 2"
-          opacity="0.5"
-        />
-        <line
-          x1={icSvg.x}
-          y1={icSvg.y}
-          x2={rcSvg.x}
-          y2={rcSvg.y}
-          stroke={rcColor}
-          strokeWidth="0.7"
-          strokeDasharray="4 2"
-          opacity="0.5"
-        />
+        <line x1={cp.x} y1={cp.y} x2={icSvg.x} y2={icSvg.y} stroke={rcColor} strokeWidth="0.7" strokeDasharray="4 2" opacity="0.5" />
+        <line x1={icSvg.x} y1={icSvg.y} x2={rcSvg.x} y2={rcSvg.y} stroke={rcColor} strokeWidth="0.7" strokeDasharray="4 2" opacity="0.5" />
 
-        <circle cx={rcSvg.x} cy={rcSvg.y} r="6" fill={rcColor} opacity="0.3" />
+        <circle cx={rcSvg.x} cy={rcSvg.y} r="6" fill={rcColor} opacity="0.25" />
         <circle cx={rcSvg.x} cy={rcSvg.y} r="3" fill={rcColor} />
-        <text x={rcSvg.x + 10} y={rcSvg.y + 3} fill={rcColor} fontSize="8" fontFamily="monospace" fontWeight="700">
-          RC
-        </text>
+        <text x={rcSvg.x + 10} y={rcSvg.y + 3} fill={rcColor} fontSize="8" fontFamily="monospace" fontWeight="700">RC</text>
 
         {Fz > 0 && (
-          <line
-            x1={cp.x}
-            y1={cp.y}
-            x2={cp.x}
-            y2={cp.y + Math.min(80, Fz * fScale)}
-            stroke={forceC}
-            strokeWidth="2"
-            markerEnd="url(#arrowF)"
-            opacity="0.8"
-          />
+          <line x1={cp.x} y1={cp.y} x2={cp.x} y2={cp.y + Math.min(80, Fz * fScale)} stroke={forceC} strokeWidth="2" markerEnd="url(#arrowF)" opacity="0.8" />
         )}
         {Fz > 0 && (
-          <text
-            x={cp.x + 6}
-            y={cp.y + Math.min(60, Fz * fScale * 0.7)}
-            fill={forceC}
-            fontSize="7"
-            fontFamily="monospace"
-          >
+          <text x={cp.x + 6} y={cp.y + Math.min(60, Fz * fScale * 0.7)} fill={forceC} fontSize="7" fontFamily="monospace">
             Fz={Fz.toFixed(0)}N
           </text>
         )}
 
         {Math.abs(Fy) > 10 && (
-          <line
-            x1={cp.x}
-            y1={cp.y - 3}
-            x2={cp.x + Math.sign(Fy) * Math.min(60, Math.abs(Fy) * fScale)}
-            y2={cp.y - 3}
-            stroke={C.am || "#ffaa00"}
-            strokeWidth="2"
-            markerEnd="url(#arrowF)"
-            opacity="0.8"
-          />
+          <line x1={cp.x} y1={cp.y - 3} x2={cp.x + Math.sign(Fy) * Math.min(60, Math.abs(Fy) * fScale)} y2={cp.y - 3} stroke={C.am || "#ffaa00"} strokeWidth="2" markerEnd="url(#arrowF)" opacity="0.8" />
         )}
 
         {Math.abs(Fs) > 10 && (
-          <line
-            x1={rockerShock.x}
-            y1={rockerShock.y}
-            x2={rockerShock.x}
-            y2={rockerShock.y + Math.sign(Fs) * Math.min(40, Math.abs(Fs) * fScale * 0.5)}
-            stroke={springC}
-            strokeWidth="1.5"
-            markerEnd="url(#arrowS)"
-            opacity="0.7"
-          />
+          <line x1={rockerShock.x} y1={rockerShock.y} x2={rockerShock.x} y2={rockerShock.y + Math.sign(Fs) * Math.min(40, Math.abs(Fs) * fScale * 0.5)} stroke={springC} strokeWidth="1.5" markerEnd="url(#arrowS)" opacity="0.7" />
         )}
 
-        <text x={lcaI.x - 2} y={lcaI.y + 12} fill={lcaC} fontSize="6" fontFamily="monospace" textAnchor="end">
-          LCA
-        </text>
-        <text x={ucaI.x - 2} y={ucaI.y - 6} fill={ucaC} fontSize="6" fontFamily="monospace" textAnchor="end">
-          UCA
-        </text>
-        <text x={tieI.x - 2} y={tieI.y + 10} fill={tieC} fontSize="6" fontFamily="monospace" textAnchor="end">
-          TIE
-        </text>
-        <text x={pushA.x + 6} y={pushA.y - 4} fill={pushC} fontSize="6" fontFamily="monospace">
-          PUSH
-        </text>
-        <text x={rockerPivot.x + 6} y={rockerPivot.y - 4} fill="#a78bfa" fontSize="6" fontFamily="monospace">
-          ROCKER
-        </text>
-        <text x={chShock.x + 6} y={chShock.y - 4} fill={springC} fontSize="6" fontFamily="monospace">
-          SHOCK
-        </text>
+        <text x={lcaI.x - 2} y={lcaI.y + 12} fill={lcaC} fontSize="6" fontFamily="monospace" textAnchor="end">LCA</text>
+        <text x={ucaI.x - 2} y={ucaI.y - 6} fill={ucaC} fontSize="6" fontFamily="monospace" textAnchor="end">UCA</text>
+        <text x={tieI.x - 2} y={tieI.y + 10} fill={tieC} fontSize="6" fontFamily="monospace" textAnchor="end">TIE</text>
+        <text x={pushA.x + 6} y={pushA.y - 4} fill={pushC} fontSize="6" fontFamily="monospace">PUSH</text>
+        <text x={rockerPivot.x + 6} y={rockerPivot.y - 4} fill="#a78bfa" fontSize="6" fontFamily="monospace">ROCKER</text>
+        <text x={chShock.x + 6} y={chShock.y - 4} fill={springC} fontSize="6" fontFamily="monospace">SHOCK</text>
 
-        <g transform={`translate(${offsetX + panelW - 130}, 12)`}>
+        <g transform={`translate(${offsetX + panelW - 142}, 12)`}>
           {[
             { c: lcaC, l: "Lower Control Arm" },
             { c: ucaC, l: "Upper Control Arm" },
@@ -768,9 +590,7 @@ function KinematicSchematicSVG({ axle, heave, roll, liveForces }) {
           ].map((item, i) => (
             <g key={i} transform={`translate(0, ${i * 11})`}>
               <line x1="0" y1="4" x2="12" y2="4" stroke={item.c} strokeWidth="2" />
-              <text x="16" y="7" fill={C.dm || "#4a5568"} fontSize="6.5" fontFamily="monospace">
-                {item.l}
-              </text>
+              <text x="16" y="7" fill={C.dm || "#4a5568"} fontSize="6.5" fontFamily="monospace">{item.l}</text>
             </g>
           ))}
         </g>
@@ -791,300 +611,9 @@ function KinematicSchematicSVG({ axle, heave, roll, liveForces }) {
 
       {renderPanel("left", 0)}
       <line x1={panelW} y1="8" x2={panelW} y2={svgH - 8} stroke={C.b1 || "#1a2035"} strokeWidth="1" opacity="0.7" />
-      {renderPanel("right", panelW)}
+      <line x1={panelW + panelGap} y1="8" x2={panelW + panelGap} y2={svgH - 8} stroke={C.b1 || "#1a2035"} strokeWidth="1" opacity="0.25" />
+      {renderPanel("right", panelW + panelGap)}
     </svg>
-  );
-}
-
-// ═══════════════════════════════════════════════════════════════════════════
-// 3D HELPERS — isometric projection from exact hardpoints
-// ═══════════════════════════════════════════════════════════════════════════
-
-function lerp(a, b, t) {
-  return a + (b - a) * t;
-}
-
-function sampleDynamics(data, tSec) {
-  if (!data?.length) return null;
-  const duration = data[data.length - 1]?.t ?? 8;
-  const t = ((tSec % duration) + duration) % duration;
-
-  let hi = 0;
-  while (hi < data.length && data[hi].t < t) hi += 1;
-  if (hi <= 0) return data[0];
-  if (hi >= data.length) return data[data.length - 1];
-
-  const a = data[hi - 1];
-  const b = data[hi];
-  const span = Math.max(1e-6, b.t - a.t);
-  const u = (t - a.t) / span;
-  const out = { ...a };
-  Object.keys(b).forEach((key) => {
-    const av = a[key];
-    const bv = b[key];
-    out[key] = typeof av === 'number' && typeof bv === 'number' ? lerp(av, bv, u) : av;
-  });
-  return out;
-}
-
-function isoProject(pt, origin, scale) {
-  const x = pt.x ?? 0;
-  const y = pt.y ?? 0;
-  const z = pt.z ?? 0;
-  const ax = 0.8660254037844386; // cos(30°)
-  const ay = 0.5; // sin(30°)
-  return {
-    x: origin.x + (x - y) * ax * scale,
-    y: origin.y - z * scale + (x + y) * ay * 0.42 * scale,
-    z,
-  };
-}
-
-function sideLabelPoint(pt, sign = 1) {
-  return { ...pt, y: (pt.y ?? 0) * sign };
-}
-
-function renderIsoAxes(origin, scale) {
-  const x0 = isoProject({ x: 0, y: 0, z: 0 }, origin, scale);
-  const x1 = isoProject({ x: 120, y: 0, z: 0 }, origin, scale);
-  const y1 = isoProject({ x: 0, y: 120, z: 0 }, origin, scale);
-  const z1 = isoProject({ x: 0, y: 0, z: 120 }, origin, scale);
-  return { x0, x1, y1, z1 };
-}
-
-function ThreeDModelTab() {
-  const [axle, setAxle] = useState('front');
-  const [showMirrored, setShowMirrored] = useState(true);
-  const [animate, setAnimate] = useState(true);
-  const hp = HP[axle];
-  const isF = axle === 'front';
-  const basePoints = useMemo(() => Object.entries(hp), [hp]);
-
-  const svgW = 1400;
-  const svgH = 760;
-  const origin = { x: 360, y: 520 };
-  const scale = 1.18;
-
-  const pointStyles = {
-    lca: { stroke: C.cy, fill: C.cy },
-    uca: { stroke: C.gn, fill: C.gn },
-    tie: { stroke: C.am, fill: C.am },
-    push: { stroke: C.red, fill: C.red },
-    rock: { stroke: '#a78bfa', fill: '#a78bfa' },
-    wheel: { stroke: '#e2e8f0', fill: 'rgba(226,232,240,0.08)' },
-    cp: { stroke: '#f59e0b', fill: '#f59e0b' },
-  };
-
-  const groups = [
-    ['lca_f', 'lca_o', 'lca'],
-    ['uca_f', 'uca_o', 'uca'],
-    ['tie_i', 'tie_o', 'tie'],
-    ['pushrod', 'rockerRod', 'push'],
-    ['rockerPivot', 'rockerRod', 'rock'],
-    ['rockerPivot', 'rockerShock', 'rock'],
-    ['rockerShock', 'chShock', 'rock'],
-  ];
-
-  const renderSide = (sign, offsetX = 0, label = sign > 0 ? 'LEFT' : 'RIGHT') => {
-    const project = (pt) => isoProject(sideLabelPoint(pt, sign), { x: origin.x + offsetX, y: origin.y }, scale);
-    const wheelCenter = project(hp.wc);
-    const cp = project(hp.cp);
-    const points = Object.fromEntries(basePoints.map(([k, pt]) => [k, project(pt)]));
-    const tireW = (isF ? 170 : 180) * scale;
-    const tireH = VG.wR * 2 * scale * 0.92;
-    return (
-      <g key={`${label}-${sign}`}>
-        {groups.map(([a, b, kind]) => (
-          <g key={`${kind}-${a}-${b}`}>
-            <line
-              x1={points[a].x}
-              y1={points[a].y}
-              x2={points[b].x}
-              y2={points[b].y}
-              stroke={pointStyles[kind].stroke}
-              strokeWidth={kind === 'rock' ? 4 : 3}
-              strokeLinecap="round"
-              opacity={kind === 'rock' ? 0.9 : 0.95}
-            />
-          </g>
-        ))}
-
-        <ellipse
-          cx={wheelCenter.x}
-          cy={wheelCenter.y}
-          rx={tireW / 2}
-          ry={tireH / 2}
-          fill={pointStyles.wheel.fill}
-          stroke={pointStyles.wheel.stroke}
-          strokeWidth="2"
-          opacity="0.95"
-        />
-        <ellipse
-          cx={wheelCenter.x}
-          cy={wheelCenter.y}
-          rx={tireW / 2 - 8}
-          ry={tireH / 2 - 8}
-          fill="none"
-          stroke={C.b1}
-          strokeWidth="1"
-          opacity="0.75"
-        />
-        <line
-          x1={wheelCenter.x - tireW / 2 + 8}
-          y1={wheelCenter.y}
-          x2={wheelCenter.x + tireW / 2 - 8}
-          y2={wheelCenter.y}
-          stroke={C.dm}
-          strokeWidth="1"
-          strokeDasharray="5 5"
-          opacity="0.55"
-        />
-        <circle cx={wheelCenter.x} cy={wheelCenter.y} r="5.5" fill={C.bg || '#0a0a0f'} stroke={C.w} strokeWidth="1.25" />
-        <circle cx={cp.x} cy={cp.y} r="4.5" fill={pointStyles.cp.fill} opacity="0.9" />
-
-        {Object.entries(hp).map(([k, pt]) => {
-          const p = points[k];
-          const color = k.startsWith('lca') ? C.cy : k.startsWith('uca') ? C.gn : k.startsWith('tie') ? C.am : k.startsWith('push') ? C.red : k.startsWith('rocker') ? '#a78bfa' : C.dm;
-          return (
-            <g key={k}>
-              <circle cx={p.x} cy={p.y} r={k === 'wc' ? 0 : 4} fill={color} stroke={C.bg || '#0a0a0f'} strokeWidth="1" />
-              {animate && (
-                <text x={p.x + 8} y={p.y - 6} fill={color} fontSize="10" fontFamily="monospace" fontWeight="700">
-                  {k.toUpperCase()}
-                </text>
-              )}
-            </g>
-          );
-        })}
-
-        <line x1={cp.x} y1={cp.y} x2={points.lca_o.x} y2={points.lca_o.y} stroke={pointStyles.cp.stroke} strokeWidth="1.25" strokeDasharray="5 4" opacity="0.55" />
-        <line x1={cp.x} y1={cp.y} x2={points.tie_o.x} y2={points.tie_o.y} stroke={pointStyles.cp.stroke} strokeWidth="1" strokeDasharray="4 4" opacity="0.35" />
-
-        {animate && (
-          <>
-            <text x={origin.x + offsetX - 235} y={48} fill={C.w} fontSize="15" fontFamily="monospace" fontWeight="700">
-              {axle.toUpperCase()} AXLE — {label} SIDE
-            </text>
-            <text x={origin.x + offsetX - 235} y={66} fill={C.dm} fontSize="9" fontFamily="monospace">
-              Exact hardpoints from your current model; mirrored right side is derived from the same coordinates.
-            </text>
-          </>
-        )}
-      </g>
-    );
-  };
-
-  const axes = renderIsoAxes(origin, scale);
-
-  return (
-    <div style={{ display: 'grid', gridTemplateColumns: '1fr 320px', gap: 10 }}>
-      <div style={{ ...GL, padding: 10, minHeight: 740, overflow: 'hidden' }}>
-        <div style={{ display: 'flex', gap: 6, marginBottom: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-          {['front', 'rear'].map((a) => (
-            <button
-              key={a}
-              onClick={() => setAxle(a)}
-              style={{
-                background: axle === a ? `${SUS}18` : 'transparent',
-                border: `1px solid ${axle === a ? `${SUS}55` : C.b1}`,
-                color: axle === a ? SUS : C.dm,
-                fontSize: 8,
-                fontWeight: 700,
-                padding: '4px 12px',
-                borderRadius: 4,
-                cursor: 'pointer',
-                fontFamily: C.dt,
-                textTransform: 'uppercase',
-              }}
-            >
-              {a}
-            </button>
-          ))}
-          <button
-            onClick={() => setShowMirrored(v => !v)}
-            style={{
-              background: showMirrored ? `${C.gn}16` : 'transparent',
-              border: `1px solid ${showMirrored ? `${C.gn}55` : C.b1}`,
-              color: showMirrored ? C.gn : C.dm,
-              fontSize: 8,
-              fontWeight: 700,
-              padding: '4px 12px',
-              borderRadius: 4,
-              cursor: 'pointer',
-              fontFamily: C.dt,
-            }}
-          >
-            MIRROR RIGHT SIDE
-          </button>
-          <button
-            onClick={() => setAnimate(v => !v)}
-            style={{
-              background: animate ? `${C.am}16` : 'transparent',
-              border: `1px solid ${animate ? `${C.am}55` : C.b1}`,
-              color: animate ? C.am : C.dm,
-              fontSize: 8,
-              fontWeight: 700,
-              padding: '4px 12px',
-              borderRadius: 4,
-              cursor: 'pointer',
-              fontFamily: C.dt,
-            }}
-          >
-            {animate ? 'DETAIL OVERLAY ON' : 'DETAIL OVERLAY OFF'}
-          </button>
-          <div style={{ flex: 1 }} />
-          <div style={{ fontSize: 8, fontFamily: C.dt, color: C.dm }}>
-            {animate ? 'Labels and annotations shown' : 'Labels and annotations hidden'}
-          </div>
-        </div>
-
-        <svg viewBox={`0 0 ${svgW} ${svgH}`} style={{ width: '100%', height: '100%', display: 'block' }}>
-          <defs>
-            <filter id="softGlow" x="-20%" y="-20%" width="140%" height="140%">
-              <feGaussianBlur stdDeviation="3" result="blur" />
-              <feMerge>
-                <feMergeNode in="blur" />
-                <feMergeNode in="SourceGraphic" />
-              </feMerge>
-            </filter>
-          </defs>
-
-          <rect x="0" y="0" width={svgW} height={svgH} fill="transparent" />
-          <line x1={40} y1={axes.x0.y} x2={svgW - 40} y2={axes.x0.y} stroke={C.b1} strokeDasharray="4 6" opacity="0.25" />
-          <line x1={axes.x0.x} y1={30} x2={axes.x0.x} y2={svgH - 40} stroke={C.b1} strokeDasharray="4 6" opacity="0.2" />
-          <g filter="url(#softGlow)">
-            <line x1={axes.x0.x} y1={axes.x0.y} x2={axes.x1.x} y2={axes.x1.y} stroke={C.cy} strokeWidth="3" />
-            <line x1={axes.x0.x} y1={axes.x0.y} x2={axes.y1.x} y2={axes.y1.y} stroke={C.gn} strokeWidth="3" />
-            <line x1={axes.x0.x} y1={axes.x0.y} x2={axes.z1.x} y2={axes.z1.y} stroke={C.am} strokeWidth="3" />
-          </g>
-          <text x={axes.x1.x + 10} y={axes.x1.y + 4} fill={C.cy} fontSize="10" fontFamily="monospace" fontWeight="700">X</text>
-          <text x={axes.y1.x + 10} y={axes.y1.y + 4} fill={C.gn} fontSize="10" fontFamily="monospace" fontWeight="700">Y</text>
-          <text x={axes.z1.x + 10} y={axes.z1.y + 4} fill={C.am} fontSize="10" fontFamily="monospace" fontWeight="700">Z</text>
-          <text x={22} y={22} fill={C.dm} fontSize="8" fontFamily="monospace">Isometric projection</text>
-
-          {renderSide(1, 0, 'LEFT')}
-          {showMirrored && renderSide(-1, 170, 'RIGHT')}
-        </svg>
-      </div>
-
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-        <div style={{ ...GL, padding: '10px 12px' }}>
-          <div style={{ fontSize: 8, fontWeight: 700, letterSpacing: 1.5, color: C.dm, fontFamily: C.dt, marginBottom: 8 }}>
-            EXACT HARDPOINTS
-          </div>
-          <div style={{ display: 'grid', gap: 6 }}>
-            {basePoints.map(([key, pt]) => (
-              <div key={key} style={{ display: 'grid', gridTemplateColumns: '1fr auto', gap: 8, fontSize: 8, fontFamily: C.dt }}>
-                <span style={{ color: C.br }}>{pt.label || key}</span>
-                <span style={{ color: C.dm }}>{pt.x?.toFixed(1)}, {pt.y?.toFixed(1)}, {pt.z?.toFixed(1)}</span>
-              </div>
-            ))}
-          </div>
-        </div>
-
-        <HardpointTable axle={axle} />
-      </div>
-    </div>
   );
 }
 
@@ -1120,6 +649,324 @@ function HardpointTable({ axle }) {
           ))}
         </tbody>
       </table>
+    </div>
+  );
+}
+
+function AnimatedChartFrame({ children }) {
+  const [reveal, setReveal] = useState(0);
+
+  useEffect(() => {
+    const id = requestAnimationFrame(() => setReveal(1));
+    return () => cancelAnimationFrame(id);
+  }, []);
+
+  return (
+    <div style={{
+      overflow: "hidden",
+      clipPath: `inset(0 ${Math.max(0, 100 - reveal * 100)}% 0 0)`,
+      transition: "clip-path 700ms ease, opacity 500ms ease, transform 700ms ease",
+      opacity: reveal,
+      transform: `translateX(${(1 - reveal) * -10}px)`,
+    }}>
+      {children}
+    </div>
+  );
+}
+
+function Model3DTab({ dynamics }) {
+  const [axle, setAxle] = useState("front");
+  const [focus, setFocus] = useState("all"); // all | front | rear
+  const [rot, setRot] = useState({ x: -18, y: 34, z: 0 });
+  const [zoom, setZoom] = useState(1.0);
+  const [drag, setDrag] = useState(null);
+  const [tick, setTick] = useState(0);
+
+  useEffect(() => {
+    if (!dynamics.length) return;
+    let raf = 0;
+    let last = 0;
+    const step = (now) => {
+      if (!last) last = now;
+      if (now - last > 33) {
+        setTick((now / 33) % dynamics.length);
+        last = now;
+      }
+      raf = requestAnimationFrame(step);
+    };
+    raf = requestAnimationFrame(step);
+    return () => cancelAnimationFrame(raf);
+  }, [dynamics]);
+
+  const frame = dynamics[Math.floor(tick) % Math.max(1, dynamics.length)] || {};
+  const activeAxles = focus === "all" ? ["front", "rear"] : [focus];
+  const view = useMemo(() => ({
+    cx: 520,
+    cy: 300,
+    dist: 2400,
+    fov: 1200,
+    scale: 1.1 * zoom,
+  }), [zoom]);
+
+  const motion = useMemo(() => {
+    const frontL = frame.zFL || 0;
+    const frontR = frame.zFR || 0;
+    const rearL = frame.zRL || 0;
+    const rearR = frame.zRR || 0;
+    return {
+      front: { left: frontL, right: frontR },
+      rear: { left: rearL, right: rearR },
+    };
+  }, [frame]);
+
+  const allPoints = [];
+  const segments = [];
+
+  const buildAxle = (axName, axleOffset) => {
+    const hp = HP[axName];
+    const axleFocus = focus !== "all" && focus !== axName;
+    const dim = axleFocus ? 0.18 : 1;
+    const pushMotion = axName === "front" ? (frame.pitch || 0) * 2.5 : -(frame.pitch || 0) * 2.0;
+
+    ["left", "right"].forEach((side) => {
+      const sideSign = side === "left" ? 1 : -1;
+      const cornerTravel = side === "left" ? motion[axName].left : motion[axName].right;
+      const cornerRoll = (frame.roll || 0) * sideSign;
+      const cornerShift = {
+        dx: sideSign * (frame.ay || 0) * 3.0,
+        dy: sideSign * (frame.roll || 0) * 4.0,
+        dz: cornerTravel,
+      };
+
+      const mapPt = (pt, kind = "fixed") => {
+        const base = {
+          x: axleOffset + pt.x,
+          y: sideSign * pt.y,
+          z: pt.z,
+        };
+
+        if (kind === "outboard") {
+          return shiftPoint(base, cornerShift.dx, cornerShift.dy, cornerShift.dz);
+        }
+        if (kind === "wheel") {
+          return shiftPoint(base, cornerShift.dx, cornerShift.dy, cornerShift.dz + 4);
+        }
+        if (kind === "rocker") {
+          return shiftPoint(base, 0, 0, pushMotion * 0.22);
+        }
+        if (kind === "shock") {
+          return shiftPoint(base, 0, 0, pushMotion * 0.1);
+        }
+        return base;
+      };
+
+      const pts = {
+        lca_f: mapPt(hp.lca_f),
+        lca_r: mapPt(hp.lca_r),
+        uca_f: mapPt(hp.uca_f),
+        uca_r: mapPt(hp.uca_r),
+        lca_o: mapPt(hp.lca_o, "outboard"),
+        uca_o: mapPt(hp.uca_o, "outboard"),
+        tie_i: mapPt(hp.tie_i),
+        tie_o: mapPt(hp.tie_o, "outboard"),
+        pushrod: mapPt(hp.pushrod, "outboard"),
+        chShock: mapPt(hp.chShock, "shock"),
+        rockerPivot: mapPt(hp.rockerPivot, "rocker"),
+        rockerRod: mapPt(hp.rockerRod, "rocker"),
+        rockerShock: mapPt(hp.rockerShock, "shock"),
+        wc: mapPt(hp.wc, "wheel"),
+        cp: mapPt(hp.cp),
+      };
+
+      const store = {};
+      Object.entries(pts).forEach(([k, pt]) => {
+        store[k] = projectPoint3D(rotatePoint3D(pt, rot), view);
+      });
+
+      const seg = (a, b, color, width = 1.8, dash = "") => {
+        const pa = store[a], pb = store[b];
+        segments.push({ z: (pa.z + pb.z) / 2, jsx: <line key={`${axName}-${side}-${a}-${b}`} x1={pa.x} y1={pa.y} x2={pb.x} y2={pb.y} stroke={color} strokeWidth={width} strokeDasharray={dash} opacity={dim} /> });
+      };
+
+      seg("lca_f", "lca_o", "#00d4ff", 3);
+      seg("uca_f", "uca_o", "#00ff88", 3);
+      seg("tie_i", "tie_o", "#ffaa00", 2, "6 3");
+      seg("pushrod", "rockerRod", "#ff6090", 2.5);
+      seg("rockerPivot", "rockerRod", "#a78bfa", 2.2);
+      seg("rockerPivot", "rockerShock", "#00d4ff", 2.2, "4 2");
+      seg("rockerShock", "chShock", "#00d4ff", 2);
+      seg("lca_o", "uca_o", "#8892a8", 4);
+
+      // Upright / wheel
+      const uprightMid = projectPoint3D(rotatePoint3D({
+        x: (axleOffset + hp.lca_o.x + hp.uca_o.x) / 2,
+        y: sideSign * ((hp.lca_o.y + hp.uca_o.y) / 2),
+        z: (hp.lca_o.z + hp.uca_o.z) / 2 + cornerTravel,
+      }, rot), view);
+      segments.push({ z: uprightMid.z, jsx: <line key={`${axName}-${side}-upright`} x1={store.lca_o.x} y1={store.lca_o.y} x2={store.uca_o.x} y2={store.uca_o.y} stroke="#8892a8" strokeWidth="5" opacity={dim} /> });
+      const wheelTop = projectPoint3D(rotatePoint3D(shiftPoint(pts.wc, 0, 0, 0), rot), view);
+      allPoints.push(
+        { key: `${axName}-${side}-wc`, pt: store.wc, r: 5, c: "#e8eaf6", label: `${axName.toUpperCase()} ${side[0].toUpperCase()} WC`, dim },
+        { key: `${axName}-${side}-cp`, pt: store.cp, r: 3, c: "#00ff88", label: `${axName.toUpperCase()} ${side[0].toUpperCase()} CP`, dim },
+        { key: `${axName}-${side}-lcao`, pt: store.lca_o, r: 4, c: "#00d4ff", label: "LCA O", dim },
+        { key: `${axName}-${side}-ucao`, pt: store.uca_o, r: 4, c: "#00ff88", label: "UCA O", dim },
+        { key: `${axName}-${side}-ti`, pt: store.tie_o, r: 3.5, c: "#ffaa00", label: "Tie O", dim },
+        { key: `${axName}-${side}-rp`, pt: store.rockerPivot, r: 4, c: "#a78bfa", label: "Rocker", dim },
+        { key: `${axName}-${side}-rs`, pt: store.rockerShock, r: 4, c: "#00d4ff", label: "Shock", dim },
+        { key: `${axName}-${side}-ps`, pt: store.pushrod, r: 4, c: "#ff6090", label: "Pushrod", dim },
+      );
+
+      // Axle label anchor
+      const anchor = projectPoint3D(rotatePoint3D({ x: axleOffset, y: 0, z: 0 }, rot), view);
+      allPoints.push({ key: `${axName}-anchor-${side}`, pt: anchor, r: 0, c: "#000", label: "", dim: 0 });
+    });
+  };
+
+  buildAxle("front", 0);
+  buildAxle("rear", -VG.wb);
+
+  const onWheel = (e) => {
+    e.preventDefault();
+    setZoom((z) => clamp(z * (e.deltaY > 0 ? 0.92 : 1.08), 0.62, 2.2));
+  };
+
+  const activeMetrics = [
+    { l: "Front travel", v: `${(frame.zFL || 0).toFixed(1)} / ${(frame.zFR || 0).toFixed(1)} mm` },
+    { l: "Rear travel", v: `${(frame.zRL || 0).toFixed(1)} / ${(frame.zRR || 0).toFixed(1)} mm` },
+    { l: "Roll", v: `${(frame.roll || 0).toFixed(2)}°` },
+    { l: "Pitch", v: `${(frame.pitch || 0).toFixed(2)}°` },
+    { l: "Ay", v: `${(frame.ay || 0).toFixed(2)} g` },
+    { l: "Ax", v: `${(frame.ax || 0).toFixed(2)} g` },
+  ];
+
+  return (
+    <div style={{ display: "grid", gridTemplateColumns: "1fr 300px", gap: 10 }}>
+      <div style={{ ...GL, padding: 10, minHeight: 620 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 8, flexWrap: "wrap" }}>
+          {["all", "front", "rear"].map((m) => (
+            <button key={m} onClick={() => setFocus(m)} style={{
+              background: focus === m ? `${SUS}18` : "transparent",
+              border: `1px solid ${focus === m ? `${SUS}55` : C.b1}`,
+              color: focus === m ? SUS : C.dm,
+              fontSize: 8, fontWeight: 700, padding: "3px 9px", borderRadius: 3,
+              cursor: "pointer", fontFamily: C.dt, textTransform: "uppercase",
+            }}>{m}</button>
+          ))}
+          <div style={{ width: 1, height: 16, background: C.b1 }} />
+          {["front", "rear"].map((m) => (
+            <button key={`ax-${m}`} onClick={() => setAxle(m)} style={{
+              background: axle === m ? `${C.am}18` : "transparent",
+              border: `1px solid ${axle === m ? `${C.am}55` : C.b1}`,
+              color: axle === m ? C.am : C.dm,
+              fontSize: 8, fontWeight: 700, padding: "3px 9px", borderRadius: 3,
+              cursor: "pointer", fontFamily: C.dt, textTransform: "uppercase",
+            }}>{m} axle</button>
+          ))}
+          <div style={{ flex: 1 }} />
+          <span style={{ fontSize: 7, color: C.dm, fontFamily: C.dt }}>Drag to orbit · Wheel to zoom</span>
+        </div>
+
+        <svg
+          viewBox="0 0 1040 620"
+          style={{ width: "100%", height: "100%", minHeight: 560, background: "transparent", cursor: drag ? "grabbing" : "grab" }}
+          onPointerDown={(e) => setDrag({ x: e.clientX, y: e.clientY, ox: rot.x, oy: rot.y, oz: rot.z })}
+          onPointerMove={(e) => {
+            if (!drag) return;
+            const dx = e.clientX - drag.x;
+            const dy = e.clientY - drag.y;
+            setRot({
+              x: clamp(drag.ox + dy * 0.28, -78, 78),
+              y: drag.oy + dx * 0.32,
+              z: drag.oz,
+            });
+          }}
+          onPointerUp={() => setDrag(null)}
+          onPointerLeave={() => setDrag(null)}
+          onWheel={onWheel}
+        >
+          <defs>
+            <linearGradient id="gridFade" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stopColor={C.b1 || "#182033"} stopOpacity="0.15" />
+              <stop offset="100%" stopColor={C.b1 || "#182033"} stopOpacity="0.55" />
+            </linearGradient>
+          </defs>
+          {[ -700, -500, -300, -100, 100, 300, 500, 700 ].map((x) => (
+            <line key={`gx-${x}`} x1={220 + x / 5} y1="70" x2={220 + x / 5} y2="560" stroke="url(#gridFade)" strokeWidth="1" opacity="0.3" />
+          ))}
+          {[ -260, -140, -20, 100, 220 ].map((z) => (
+            <line key={`gz-${z}`} x1="120" y1={520 - z / 2.3} x2="930" y2={520 - z / 2.3} stroke="url(#gridFade)" strokeWidth="1" opacity="0.25" />
+          ))}
+          <line x1="130" y1="520" x2="930" y2="520" stroke={C.b2} strokeDasharray="5 4" opacity="0.8" />
+          <line x1="520" y1="80" x2="520" y2="560" stroke={C.b1} strokeDasharray="2 4" opacity="0.45" />
+          <text x="28" y="28" fill={C.w || "#e8eaf6"} fontSize="10" fontFamily="monospace" fontWeight="700">
+            INTERACTIVE 3D HARDPOINT VIEW
+          </text>
+          <text x="28" y="44" fill={C.dm || "#4a5568"} fontSize="7" fontFamily="monospace">
+            Exact TER27 hardpoints · live kinematic motion · orbit + zoom enabled
+          </text>
+
+          {segments.sort((a, b) => a.z - b.z).map(s => s.jsx)}
+          {allPoints
+            .filter(p => p.dim > 0)
+            .sort((a, b) => a.pt.z - b.pt.z)
+            .map(p => (
+              <g key={p.key} opacity={p.dim}>
+                <circle cx={p.pt.x} cy={p.pt.y} r={p.r} fill={p.c} opacity="0.9" />
+                <circle cx={p.pt.x} cy={p.pt.y} r={p.r + 2} fill="none" stroke={p.c} strokeWidth="1" opacity="0.25" />
+              </g>
+            ))}
+          {allPoints
+            .filter(p => p.pt && p.dim > 0 && p.key.includes("wc"))
+            .map(p => (
+              <text key={`${p.key}-label`} x={p.pt.x + 8} y={p.pt.y - 8} fill={C.w || "#e8eaf6"} fontSize="7" fontFamily="monospace">
+                {p.label}
+              </text>
+            ))}
+        </svg>
+      </div>
+
+      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+        <div style={{ ...GL, padding: "10px 12px" }}>
+          <div style={{ fontSize: 8, letterSpacing: 1.5, color: C.dm, fontFamily: C.dt, fontWeight: 700, marginBottom: 8 }}>
+            LIVE STATE
+          </div>
+          {activeMetrics.map(m => (
+            <div key={m.l} style={{ display: "flex", justifyContent: "space-between", fontSize: 8, fontFamily: C.dt, marginBottom: 4 }}>
+              <span style={{ color: C.dm }}>{m.l}</span>
+              <span style={{ color: C.br, fontWeight: 700 }}>{m.v}</span>
+            </div>
+          ))}
+          <div style={{ marginTop: 8 }}>
+            <label style={{ display: "block", fontSize: 7, color: C.dm, fontFamily: C.dt, marginBottom: 4 }}>Zoom</label>
+            <input type="range" min="0.62" max="2.2" step="0.01" value={zoom} onChange={(e) => setZoom(Number(e.target.value))} style={{ width: "100%" }} />
+          </div>
+          <button onClick={() => { setRot({ x: -18, y: 34, z: 0 }); setZoom(1.0); }} style={{
+            marginTop: 8,
+            width: "100%",
+            border: `1px solid ${C.b1}`,
+            background: "transparent",
+            color: C.dm,
+            padding: "5px 8px",
+            borderRadius: 4,
+            cursor: "pointer",
+            fontFamily: C.dt,
+            fontSize: 8,
+            fontWeight: 700,
+          }}>RESET VIEW</button>
+        </div>
+
+        <HardpointTable axle={axle} />
+
+        <div style={{ ...GL, padding: "10px 12px" }}>
+          <div style={{ fontSize: 8, letterSpacing: 1.5, color: C.dm, fontFamily: C.dt, fontWeight: 700, marginBottom: 8 }}>
+            MOTION HIGHLIGHTS
+          </div>
+          <div style={{ fontSize: 7, color: C.dm, fontFamily: C.dt, lineHeight: 1.6 }}>
+            The viewer animates current wheel travel from the active maneuver, so the outboard hardpoints, wheel centre and rocker linkage move with the suspension instead of sitting static.
+            Use the orbit controls to inspect camber gain and pickup-point spacing from any angle.
+          </div>
+        </div>
+      </div>
     </div>
   );
 }
@@ -1262,9 +1109,10 @@ function KinematicsTab() {
   const CH = ({ title, children }) => (
     <div style={{ ...GL, padding: "10px 8px 6px" }}>
       <div style={{ fontSize: 8, fontWeight: 700, letterSpacing: 1.5, color: C.dm, fontFamily: C.dt, marginBottom: 6, paddingLeft: 2 }}>{title}</div>
-      {children}
+      <AnimatedChartFrame>{children}</AnimatedChartFrame>
     </div>
   );
+
 
   return (
     <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
@@ -1277,8 +1125,8 @@ function KinematicsTab() {
             <YAxis {...ax()} label={{ value: "Camber [°]", fontSize: 7, fill: C.dm, angle: -90, position: "insideLeft" }} />
             <Tooltip {...tt()} />
             <ReferenceLine x={0} stroke={C.b2} strokeDasharray="3 3" />
-            <Line isAnimationActive={false} data={frontSweep} dataKey="camber" stroke={C.cy} dot={false} strokeWidth={2} name="Front" />
-            <Line isAnimationActive={false} data={rearSweep} dataKey="camber" stroke={C.am} dot={false} strokeWidth={2} name="Rear" />
+            <Line isAnimationActive={false} data={frontSweep} dataKey="camber" stroke={C.cy} dot={false} isAnimationActive={true} animationDuration={900} strokeWidth={2} name="Front" />
+            <Line isAnimationActive={false} data={rearSweep} dataKey="camber" stroke={C.am} dot={false} isAnimationActive={true} animationDuration={900} strokeWidth={2} name="Rear" />
             <Legend wrapperStyle={{ fontSize: 8, fontFamily: C.dt }} />
           </LineChart>
         </ResponsiveContainer>
@@ -1294,8 +1142,8 @@ function KinematicsTab() {
             <Tooltip {...tt()} />
             <ReferenceLine x={0} stroke={C.b2} strokeDasharray="3 3" />
             <ReferenceLine y={0} stroke={C.b2} strokeDasharray="3 3" />
-            <Line isAnimationActive={false} data={frontSweep} dataKey="toe" stroke={C.cy} dot={false} strokeWidth={2} name="Front" />
-            <Line isAnimationActive={false} data={rearSweep} dataKey="toe" stroke={C.am} dot={false} strokeWidth={2} name="Rear" />
+            <Line isAnimationActive={false} data={frontSweep} dataKey="toe" stroke={C.cy} dot={false} isAnimationActive={true} animationDuration={900} strokeWidth={2} name="Front" />
+            <Line isAnimationActive={false} data={rearSweep} dataKey="toe" stroke={C.am} dot={false} isAnimationActive={true} animationDuration={900} strokeWidth={2} name="Rear" />
             <Legend wrapperStyle={{ fontSize: 8, fontFamily: C.dt }} />
           </LineChart>
         </ResponsiveContainer>
@@ -1310,8 +1158,8 @@ function KinematicsTab() {
             <YAxis {...ax()} />
             <Tooltip {...tt()} />
             <ReferenceLine x={0} stroke={C.b2} strokeDasharray="3 3" />
-            <Line isAnimationActive={false} data={frontSweep} dataKey="rcH" stroke={C.cy} dot={false} strokeWidth={2} name="Front RC" />
-            <Line isAnimationActive={false} data={rearSweep} dataKey="rcH" stroke={C.am} dot={false} strokeWidth={2} name="Rear RC" />
+            <Line isAnimationActive={false} data={frontSweep} dataKey="rcH" stroke={C.cy} dot={false} isAnimationActive={true} animationDuration={900} strokeWidth={2} name="Front RC" />
+            <Line isAnimationActive={false} data={rearSweep} dataKey="rcH" stroke={C.am} dot={false} isAnimationActive={true} animationDuration={900} strokeWidth={2} name="Rear RC" />
             <Legend wrapperStyle={{ fontSize: 8, fontFamily: C.dt }} />
           </LineChart>
         </ResponsiveContainer>
@@ -1326,8 +1174,8 @@ function KinematicsTab() {
             <YAxis domain={["auto", "auto"]} {...ax()} />
             <Tooltip {...tt()} />
             <ReferenceLine x={0} stroke={C.b2} strokeDasharray="3 3" />
-            <Line isAnimationActive={false} data={frontSweep} dataKey="mr" stroke={C.cy} dot={false} strokeWidth={2} name="Front MR" />
-            <Line isAnimationActive={false} data={rearSweep} dataKey="mr" stroke={C.am} dot={false} strokeWidth={2} name="Rear MR" />
+            <Line isAnimationActive={false} data={frontSweep} dataKey="mr" stroke={C.cy} dot={false} isAnimationActive={true} animationDuration={900} strokeWidth={2} name="Front MR" />
+            <Line isAnimationActive={false} data={rearSweep} dataKey="mr" stroke={C.am} dot={false} isAnimationActive={true} animationDuration={900} strokeWidth={2} name="Rear MR" />
             <Legend wrapperStyle={{ fontSize: 8, fontFamily: C.dt }} />
           </LineChart>
         </ResponsiveContainer>
@@ -1342,8 +1190,8 @@ function KinematicsTab() {
             <YAxis {...ax()} />
             <Tooltip {...tt()} />
             <ReferenceLine x={0} stroke={C.b2} strokeDasharray="3 3" />
-            <Line isAnimationActive={false} dataKey="caster" stroke={C.gn} dot={false} strokeWidth={2} name="Castor [°]" />
-            <Line isAnimationActive={false} dataKey="kpi" stroke="#a78bfa" dot={false} strokeWidth={2} name="KPI [°]" />
+            <Line isAnimationActive={false} dataKey="caster" stroke={C.gn} dot={false} isAnimationActive={true} animationDuration={900} strokeWidth={2} name="Castor [°]" />
+            <Line isAnimationActive={false} dataKey="kpi" stroke="#a78bfa" dot={false} isAnimationActive={true} animationDuration={900} strokeWidth={2} name="KPI [°]" />
             <Legend wrapperStyle={{ fontSize: 8, fontFamily: C.dt }} />
           </LineChart>
         </ResponsiveContainer>
@@ -1358,9 +1206,9 @@ function KinematicsTab() {
             <YAxis {...ax()} />
             <Tooltip {...tt()} />
             <ReferenceLine x={0} stroke={C.b2} strokeDasharray="3 3" />
-            <Line isAnimationActive={false} data={frontSweep} dataKey="trackChange" stroke={C.cy} dot={false} strokeWidth={2} name="Front ΔTrack" />
-            <Line isAnimationActive={false} data={rearSweep} dataKey="trackChange" stroke={C.am} dot={false} strokeWidth={2} name="Rear ΔTrack" />
-            <Line isAnimationActive={false} data={frontSweep} dataKey="scrub" stroke={C.gn} dot={false} strokeWidth={1.5} strokeDasharray="4 2" name="Front Scrub" />
+            <Line isAnimationActive={false} data={frontSweep} dataKey="trackChange" stroke={C.cy} dot={false} isAnimationActive={true} animationDuration={900} strokeWidth={2} name="Front ΔTrack" />
+            <Line isAnimationActive={false} data={rearSweep} dataKey="trackChange" stroke={C.am} dot={false} isAnimationActive={true} animationDuration={900} strokeWidth={2} name="Rear ΔTrack" />
+            <Line isAnimationActive={false} data={frontSweep} dataKey="scrub" stroke={C.gn} dot={false} isAnimationActive={true} animationDuration={900} strokeWidth={1.5} strokeDasharray="4 2" name="Front Scrub" />
             <Legend wrapperStyle={{ fontSize: 8, fontFamily: C.dt }} />
           </LineChart>
         </ResponsiveContainer>
@@ -1378,9 +1226,10 @@ function DynamicsTab({ dynamics }) {
   const CH = ({ title, children }) => (
     <div style={{ ...GL, padding: "10px 8px 6px" }}>
       <div style={{ fontSize: 8, fontWeight: 700, letterSpacing: 1.5, color: C.dm, fontFamily: C.dt, marginBottom: 6, paddingLeft: 2 }}>{title}</div>
-      {children}
+      <AnimatedChartFrame>{children}</AnimatedChartFrame>
     </div>
   );
+
 
   return (
     <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
@@ -1391,10 +1240,10 @@ function DynamicsTab({ dynamics }) {
             <XAxis dataKey="t" {...ax()} />
             <YAxis {...ax()} />
             <Tooltip {...tt()} />
-            <Line isAnimationActive={false} dataKey="Fz_FL" stroke={CL.fl} dot={false} strokeWidth={1.5} name="FL" />
-            <Line isAnimationActive={false} dataKey="Fz_FR" stroke={CL.fr} dot={false} strokeWidth={1.5} name="FR" />
-            <Line isAnimationActive={false} dataKey="Fz_RL" stroke={CL.rl} dot={false} strokeWidth={1.5} name="RL" />
-            <Line isAnimationActive={false} dataKey="Fz_RR" stroke={CL.rr} dot={false} strokeWidth={1.5} name="RR" />
+            <Line isAnimationActive={false} dataKey="Fz_FL" stroke={CL.fl} dot={false} isAnimationActive={true} animationDuration={900} strokeWidth={1.5} name="FL" />
+            <Line isAnimationActive={false} dataKey="Fz_FR" stroke={CL.fr} dot={false} isAnimationActive={true} animationDuration={900} strokeWidth={1.5} name="FR" />
+            <Line isAnimationActive={false} dataKey="Fz_RL" stroke={CL.rl} dot={false} isAnimationActive={true} animationDuration={900} strokeWidth={1.5} name="RL" />
+            <Line isAnimationActive={false} dataKey="Fz_RR" stroke={CL.rr} dot={false} isAnimationActive={true} animationDuration={900} strokeWidth={1.5} name="RR" />
             <Legend wrapperStyle={{ fontSize: 8, fontFamily: C.dt }} />
           </LineChart>
         </ResponsiveContainer>
@@ -1408,10 +1257,10 @@ function DynamicsTab({ dynamics }) {
             <YAxis {...ax()} />
             <Tooltip {...tt()} />
             <ReferenceLine y={0} stroke={C.b2} />
-            <Line isAnimationActive={false} dataKey="zFL" stroke={CL.fl} dot={false} strokeWidth={1.5} name="FL" />
-            <Line isAnimationActive={false} dataKey="zFR" stroke={CL.fr} dot={false} strokeWidth={1.5} name="FR" />
-            <Line isAnimationActive={false} dataKey="zRL" stroke={CL.rl} dot={false} strokeWidth={1.5} name="RL" />
-            <Line isAnimationActive={false} dataKey="zRR" stroke={CL.rr} dot={false} strokeWidth={1.5} name="RR" />
+            <Line isAnimationActive={false} dataKey="zFL" stroke={CL.fl} dot={false} isAnimationActive={true} animationDuration={900} strokeWidth={1.5} name="FL" />
+            <Line isAnimationActive={false} dataKey="zFR" stroke={CL.fr} dot={false} isAnimationActive={true} animationDuration={900} strokeWidth={1.5} name="FR" />
+            <Line isAnimationActive={false} dataKey="zRL" stroke={CL.rl} dot={false} isAnimationActive={true} animationDuration={900} strokeWidth={1.5} name="RL" />
+            <Line isAnimationActive={false} dataKey="zRR" stroke={CL.rr} dot={false} isAnimationActive={true} animationDuration={900} strokeWidth={1.5} name="RR" />
             <Legend wrapperStyle={{ fontSize: 8, fontFamily: C.dt }} />
           </LineChart>
         </ResponsiveContainer>
@@ -1425,10 +1274,10 @@ function DynamicsTab({ dynamics }) {
             <YAxis {...ax()} />
             <Tooltip {...tt()} />
             <ReferenceLine y={0} stroke={C.b2} />
-            <Line isAnimationActive={false} dataKey="Fd_FL" stroke={CL.fl} dot={false} strokeWidth={1.5} name="FL" />
-            <Line isAnimationActive={false} dataKey="Fd_FR" stroke={CL.fr} dot={false} strokeWidth={1.5} name="FR" />
-            <Line isAnimationActive={false} dataKey="Fd_RL" stroke={CL.rl} dot={false} strokeWidth={1.5} name="RL" />
-            <Line isAnimationActive={false} dataKey="Fd_RR" stroke={CL.rr} dot={false} strokeWidth={1.5} name="RR" />
+            <Line isAnimationActive={false} dataKey="Fd_FL" stroke={CL.fl} dot={false} isAnimationActive={true} animationDuration={900} strokeWidth={1.5} name="FL" />
+            <Line isAnimationActive={false} dataKey="Fd_FR" stroke={CL.fr} dot={false} isAnimationActive={true} animationDuration={900} strokeWidth={1.5} name="FR" />
+            <Line isAnimationActive={false} dataKey="Fd_RL" stroke={CL.rl} dot={false} isAnimationActive={true} animationDuration={900} strokeWidth={1.5} name="RL" />
+            <Line isAnimationActive={false} dataKey="Fd_RR" stroke={CL.rr} dot={false} isAnimationActive={true} animationDuration={900} strokeWidth={1.5} name="RR" />
             <Legend wrapperStyle={{ fontSize: 8, fontFamily: C.dt }} />
           </LineChart>
         </ResponsiveContainer>
@@ -1441,10 +1290,10 @@ function DynamicsTab({ dynamics }) {
             <XAxis dataKey="t" {...ax()} />
             <YAxis {...ax()} />
             <Tooltip {...tt()} />
-            <Area isAnimationActive={false} dataKey="Pd_FL" stroke={CL.fl} fill={CL.fl} fillOpacity={0.15} strokeWidth={1.5} name="FL" />
-            <Area isAnimationActive={false} dataKey="Pd_FR" stroke={CL.fr} fill={CL.fr} fillOpacity={0.15} strokeWidth={1.5} name="FR" />
-            <Area isAnimationActive={false} dataKey="Pd_RL" stroke={CL.rl} fill={CL.rl} fillOpacity={0.15} strokeWidth={1.5} name="RL" />
-            <Area isAnimationActive={false} dataKey="Pd_RR" stroke={CL.rr} fill={CL.rr} fillOpacity={0.15} strokeWidth={1.5} name="RR" />
+            <Area isAnimationActive={false} dataKey="Pd_FL" stroke={CL.fl} fill={CL.fl} fillOpacity={0.15} isAnimationActive={true} animationDuration={900} strokeWidth={1.5} name="FL" />
+            <Area isAnimationActive={false} dataKey="Pd_FR" stroke={CL.fr} fill={CL.fr} fillOpacity={0.15} isAnimationActive={true} animationDuration={900} strokeWidth={1.5} name="FR" />
+            <Area isAnimationActive={false} dataKey="Pd_RL" stroke={CL.rl} fill={CL.rl} fillOpacity={0.15} isAnimationActive={true} animationDuration={900} strokeWidth={1.5} name="RL" />
+            <Area isAnimationActive={false} dataKey="Pd_RR" stroke={CL.rr} fill={CL.rr} fillOpacity={0.15} isAnimationActive={true} animationDuration={900} strokeWidth={1.5} name="RR" />
             <Legend wrapperStyle={{ fontSize: 8, fontFamily: C.dt }} />
           </AreaChart>
         </ResponsiveContainer>
@@ -1458,8 +1307,8 @@ function DynamicsTab({ dynamics }) {
             <YAxis {...ax()} />
             <Tooltip {...tt()} />
             <ReferenceLine y={0} stroke={C.b2} />
-            <Line isAnimationActive={false} dataKey="roll" stroke={C.am} dot={false} strokeWidth={2} name="Roll [°]" />
-            <Line isAnimationActive={false} dataKey="pitch" stroke={C.cy} dot={false} strokeWidth={2} name="Pitch [°]" />
+            <Line isAnimationActive={false} dataKey="roll" stroke={C.am} dot={false} isAnimationActive={true} animationDuration={900} strokeWidth={2} isAnimationActive={true} animationDuration={900} name="Roll [°]" />
+            <Line isAnimationActive={false} dataKey="pitch" stroke={C.cy} dot={false} isAnimationActive={true} animationDuration={900} strokeWidth={2} isAnimationActive={true} animationDuration={900} name="Pitch [°]" />
             <Legend wrapperStyle={{ fontSize: 8, fontFamily: C.dt }} />
           </LineChart>
         </ResponsiveContainer>
@@ -1473,8 +1322,8 @@ function DynamicsTab({ dynamics }) {
             <YAxis yAxisId="l" {...ax()} />
             <YAxis yAxisId="r" orientation="right" {...ax()} />
             <Tooltip {...tt()} />
-            <Line isAnimationActive={false} yAxisId="l" dataKey="LLTD" stroke={C.cy} dot={false} strokeWidth={2} name="LLTD [%]" />
-            <Line isAnimationActive={false} yAxisId="r" dataKey="rollGrad" stroke={C.am} dot={false} strokeWidth={2} name="Roll Grad [°/G]" />
+            <Line isAnimationActive={false} yAxisId="l" dataKey="LLTD" stroke={C.cy} dot={false} isAnimationActive={true} animationDuration={900} strokeWidth={2} name="LLTD [%]" />
+            <Line isAnimationActive={false} yAxisId="r" dataKey="rollGrad" stroke={C.am} dot={false} isAnimationActive={true} animationDuration={900} strokeWidth={2} name="Roll Grad [°/G]" />
             <ReferenceLine yAxisId="l" y={50} stroke={C.b2} strokeDasharray="3 3" label={{ value: "50%", fontSize: 7, fill: C.dm }} />
             <Legend wrapperStyle={{ fontSize: 8, fontFamily: C.dt }} />
           </ComposedChart>
@@ -1488,10 +1337,10 @@ function DynamicsTab({ dynamics }) {
             <XAxis dataKey="t" {...ax()} />
             <YAxis {...ax()} />
             <Tooltip {...tt()} />
-            <Line isAnimationActive={false} dataKey="camFL" stroke={CL.fl} dot={false} strokeWidth={1.5} name="FL" />
-            <Line isAnimationActive={false} dataKey="camFR" stroke={CL.fr} dot={false} strokeWidth={1.5} name="FR" />
-            <Line isAnimationActive={false} dataKey="camRL" stroke={CL.rl} dot={false} strokeWidth={1.5} name="RL" />
-            <Line isAnimationActive={false} dataKey="camRR" stroke={CL.rr} dot={false} strokeWidth={1.5} name="RR" />
+            <Line isAnimationActive={false} dataKey="camFL" stroke={CL.fl} dot={false} isAnimationActive={true} animationDuration={900} strokeWidth={1.5} name="FL" />
+            <Line isAnimationActive={false} dataKey="camFR" stroke={CL.fr} dot={false} isAnimationActive={true} animationDuration={900} strokeWidth={1.5} name="FR" />
+            <Line isAnimationActive={false} dataKey="camRL" stroke={CL.rl} dot={false} isAnimationActive={true} animationDuration={900} strokeWidth={1.5} name="RL" />
+            <Line isAnimationActive={false} dataKey="camRR" stroke={CL.rr} dot={false} isAnimationActive={true} animationDuration={900} strokeWidth={1.5} name="RR" />
             <Legend wrapperStyle={{ fontSize: 8, fontFamily: C.dt }} />
           </LineChart>
         </ResponsiveContainer>
@@ -1504,8 +1353,8 @@ function DynamicsTab({ dynamics }) {
             <XAxis dataKey="t" {...ax()} />
             <YAxis {...ax()} />
             <Tooltip {...tt()} />
-            <Line isAnimationActive={false} dataKey="rcF" stroke={C.cy} dot={false} strokeWidth={2} name="Front RC [mm]" />
-            <Line isAnimationActive={false} dataKey="rcR" stroke={C.am} dot={false} strokeWidth={2} name="Rear RC [mm]" />
+            <Line isAnimationActive={false} dataKey="rcF" stroke={C.cy} dot={false} isAnimationActive={true} animationDuration={900} strokeWidth={2} name="Front RC [mm]" />
+            <Line isAnimationActive={false} dataKey="rcR" stroke={C.am} dot={false} isAnimationActive={true} animationDuration={900} strokeWidth={2} name="Rear RC [mm]" />
             <Legend wrapperStyle={{ fontSize: 8, fontFamily: C.dt }} />
           </LineChart>
         </ResponsiveContainer>
@@ -1520,104 +1369,120 @@ function DynamicsTab({ dynamics }) {
 
 function AntiGeomTab() {
   const antiData = [
-    { param: "Anti-Squat (R)", value: VG.antiSquat * 100, target: 35, color: C.cy },
-    { param: "Anti-Squat (F)", value: VG.antiSquatF * 100, target: 15, color: C.gn },
-    { param: "Anti-Dive (F)", value: VG.antiDiveF * 100, target: 35, color: C.am },
-    { param: "Anti-Dive (R)", value: VG.antiDiveR * 100, target: 15, color: C.red },
-    { param: "Anti-Lift", value: VG.antiLift * 100, target: 20, color: "#a78bfa" },
+    { param: "Anti-Squat (R)", value: VG.antiSquat * 100, target: 35, color: C.cy, note: "rear accel support" },
+    { param: "Anti-Squat (F)", value: VG.antiSquatF * 100, target: 15, color: C.gn, note: "front accel support" },
+    { param: "Anti-Dive (F)", value: VG.antiDiveF * 100, target: 35, color: C.am, note: "braking support" },
+    { param: "Anti-Dive (R)", value: VG.antiDiveR * 100, target: 15, color: C.red, note: "rear brake balance" },
+    { param: "Anti-Lift", value: VG.antiLift * 100, target: 20, color: "#a78bfa", note: "anti-squat under braking" },
   ];
 
-  // Pitch centre diagram (SVG side view)
-  const svgW = 700, svgH = 300;
-  const scale = 0.3;
-  const oX = 100, oY = svgH - 50;
+  const metrics = [
+    { label: "Effective pitch support", value: `${((VG.antiSquat + VG.antiSquatF + VG.antiDiveF + VG.antiDiveR + VG.antiLift) / 5 * 100).toFixed(0)}%`, c: C.cy },
+    { label: "Front rear split", value: `${Math.round((VG.antiDiveF / Math.max(0.01, VG.antiSquat + VG.antiSquatF)) * 100)} : 100`, c: C.am },
+    { label: "Pitch centre height", value: `${Math.round(VG.hCG * ((VG.antiDiveF + VG.antiSquat) / 2))} mm`, c: C.gn },
+    { label: "Ride pitch damping", value: `${Math.round((VG.antiSquat + VG.antiDiveF) * 50)} points`, c: "#a78bfa" },
+  ];
+
+  const svgW = 760, svgH = 340;
+  const scale = 0.32;
+  const oX = 120, oY = svgH - 52;
   const toS = (x, z) => ({ x: oX + x * scale, y: oY - z * scale });
 
-  const fcpF = toS(VG.lf, 0); // front contact patch
-  const fcpR = toS(-VG.lr, 0); // rear contact patch
+  const frontCP = toS(VG.lf, 0);
+  const rearCP = toS(-VG.lr, 0);
   const cgP = toS(0, VG.hCG);
-  const asLine = VG.antiSquat; // fraction
-  const adLine = VG.antiDiveF;
-  const asZ = VG.hCG * asLine;
-  const adZ = VG.hCG * adLine;
-  const pcF = toS(VG.lf, adZ); // anti-dive intersection at front axle
-  const pcR = toS(-VG.lr, asZ); // anti-squat intersection at rear axle
+  const asZ = VG.hCG * VG.antiSquat;
+  const adZ = VG.hCG * VG.antiDiveF;
+  const pcZ = (adZ + asZ) / 2;
+  const pc = toS(0, pcZ);
+  const frontPC = toS(VG.lf, adZ);
+  const rearPC = toS(-VG.lr, asZ);
 
   return (
-    <div>
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 240px", gap: 10 }}>
-        {/* Side view pitch centre diagram */}
-        <div style={{ ...GL, padding: 8 }}>
-          <div style={{ fontSize: 8, fontWeight: 700, letterSpacing: 1.5, color: C.dm, fontFamily: C.dt, marginBottom: 6 }}>
-            PITCH CENTRE DIAGRAM — SIDE VIEW
+    <div style={{ display: "grid", gridTemplateColumns: "1.2fr 0.8fr", gap: 10 }}>
+      <div style={{ ...GL, padding: 10 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 8 }}>
+          <div style={{ fontSize: 8, fontWeight: 700, letterSpacing: 1.5, color: C.dm, fontFamily: C.dt }}>
+            ANTI-GEOMETRY — PITCH CONTROL VIEW
           </div>
-          <svg viewBox={`0 0 ${svgW} ${svgH}`} style={{ width: "100%", background: "transparent" }}>
-            {/* Ground */}
-            <line x1="30" y1={oY} x2={svgW - 30} y2={oY} stroke={C.b2} strokeWidth="1" strokeDasharray="4 3" />
-
-            {/* Wheelbase */}
-            <line x1={fcpR.x} y1={oY} x2={fcpF.x} y2={oY} stroke={C.dm} strokeWidth="2" />
-            <circle cx={fcpF.x} cy={oY} r="18" fill="none" stroke={C.dm} strokeWidth="1.5" opacity="0.4" />
-            <circle cx={fcpR.x} cy={oY} r="18" fill="none" stroke={C.dm} strokeWidth="1.5" opacity="0.4" />
-            <text x={fcpF.x} y={oY + 28} textAnchor="middle" fill={C.dm} fontSize="7" fontFamily="monospace">FRONT</text>
-            <text x={fcpR.x} y={oY + 28} textAnchor="middle" fill={C.dm} fontSize="7" fontFamily="monospace">REAR</text>
-
-            {/* CG */}
-            <circle cx={cgP.x} cy={cgP.y} r="5" fill={C.red} opacity="0.6" />
-            <text x={cgP.x + 8} y={cgP.y + 3} fill={C.red} fontSize="7" fontFamily="monospace" fontWeight="700">CG</text>
-
-            {/* Anti-dive line (front CP → pcF) */}
-            <line x1={fcpF.x} y1={oY} x2={pcF.x} y2={pcF.y} stroke={C.am} strokeWidth="1.5" strokeDasharray="6 3" />
-            <text x={pcF.x + 6} y={pcF.y} fill={C.am} fontSize="7" fontFamily="monospace">Anti-Dive {(adLine * 100).toFixed(0)}%</text>
-
-            {/* Anti-squat line (rear CP → pcR) */}
-            <line x1={fcpR.x} y1={oY} x2={pcR.x} y2={pcR.y} stroke={C.cy} strokeWidth="1.5" strokeDasharray="6 3" />
-            <text x={pcR.x - 80} y={pcR.y} fill={C.cy} fontSize="7" fontFamily="monospace">Anti-Squat {(asLine * 100).toFixed(0)}%</text>
-
-            {/* Pitch centre (intersection) */}
-            {(() => {
-              // Intersection of the two lines
-              const m1 = -adZ / VG.lf; // slope front line (going from front CP upward)
-              const m2 = asZ / VG.lr; // slope rear line (going from rear CP upward)
-              // Simplified pitch centre at CG x-position
-              const pcZ = (adZ + asZ) / 2;
-              const pc = toS(0, pcZ);
-              return (
-                <g>
-                  <circle cx={pc.x} cy={pc.y} r="6" fill="none" stroke="#ff6090" strokeWidth="1.5" />
-                  <circle cx={pc.x} cy={pc.y} r="2.5" fill="#ff6090" />
-                  <text x={pc.x + 10} y={pc.y + 3} fill="#ff6090" fontSize="8" fontFamily="monospace" fontWeight="700">
-                    PC h={pcZ.toFixed(0)}mm
-                  </text>
-                </g>
-              );
-            })()}
-
-            <text x="12" y="16" fill={C.w} fontSize="9" fontFamily="monospace" fontWeight="700">PITCH GEOMETRY — Ter27 4WD</text>
-          </svg>
+          <div style={{ fontSize: 7, color: C.dm, fontFamily: C.dt }}>
+            acceleration / braking / pitch centre / load path
+          </div>
         </div>
+        <svg viewBox={`0 0 ${svgW} ${svgH}`} style={{ width: "100%", background: "transparent" }}>
+          <defs>
+            <linearGradient id="antiGlow" x1="0" y1="0" x2="1" y2="0">
+              <stop offset="0%" stopColor={C.cy} stopOpacity="0.05" />
+              <stop offset="100%" stopColor={C.am} stopOpacity="0.2" />
+            </linearGradient>
+          </defs>
+          <rect x="0" y="0" width={svgW} height={svgH} fill="url(#antiGlow)" opacity="0.4" />
+          <line x1="24" y1={oY} x2={svgW - 24} y2={oY} stroke={C.b2} strokeWidth="1" strokeDasharray="4 3" />
+          <line x1={frontCP.x} y1={oY} x2={rearCP.x} y2={oY} stroke={C.dm} strokeWidth="2" />
+          <circle cx={frontCP.x} cy={oY} r="18" fill="none" stroke={C.dm} strokeWidth="1.4" opacity="0.35" />
+          <circle cx={rearCP.x} cy={oY} r="18" fill="none" stroke={C.dm} strokeWidth="1.4" opacity="0.35" />
+          <text x={frontCP.x} y={oY + 30} textAnchor="middle" fill={C.dm} fontSize="7" fontFamily="monospace">FRONT AXLE</text>
+          <text x={rearCP.x} y={oY + 30} textAnchor="middle" fill={C.dm} fontSize="7" fontFamily="monospace">REAR AXLE</text>
 
-        {/* Anti-geometry bar chart */}
-        <div style={{ ...GL, padding: "8px 10px" }}>
+          <line x1={frontCP.x} y1={oY} x2={frontPC.x} y2={frontPC.y} stroke={C.am} strokeWidth="1.8" strokeDasharray="7 3" />
+          <line x1={rearCP.x} y1={oY} x2={rearPC.x} y2={rearPC.y} stroke={C.cy} strokeWidth="1.8" strokeDasharray="7 3" />
+          <circle cx={pc.x} cy={pc.y} r="7" fill="none" stroke="#ff6090" strokeWidth="1.8" />
+          <circle cx={pc.x} cy={pc.y} r="3" fill="#ff6090" />
+          <text x={pc.x + 10} y={pc.y + 4} fill="#ff6090" fontSize="8" fontFamily="monospace" fontWeight="700">
+            Pitch Centre {pcZ.toFixed(0)}mm
+          </text>
+
+          <circle cx={cgP.x} cy={cgP.y} r="5" fill={C.red} opacity="0.7" />
+          <text x={cgP.x + 10} y={cgP.y + 4} fill={C.red} fontSize="7" fontFamily="monospace" fontWeight="700">CG</text>
+
+          <text x="12" y="18" fill={C.w} fontSize="9" fontFamily="monospace" fontWeight="700">SIDE VIEW — PITCH GEOMETRY</text>
+          <text x="12" y="32" fill={C.dm} fontSize="7" fontFamily="monospace">Solid lines show the load path; dashed lines show the anti-geometry lever arms.</text>
+        </svg>
+      </div>
+
+      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+        <div style={{ ...GL, padding: "10px 12px" }}>
           <div style={{ fontSize: 8, fontWeight: 700, letterSpacing: 1.5, color: C.dm, fontFamily: C.dt, marginBottom: 8 }}>
-            ANTI-GEOMETRY %
+            ANTI-GEOMETRY SNAPSHOT
           </div>
-          {antiData.map(d => (
-            <div key={d.param} style={{ marginBottom: 8 }}>
-              <div style={{ display: "flex", justifyContent: "space-between", fontSize: 8, fontFamily: C.dt, marginBottom: 2 }}>
-                <span style={{ color: C.dm }}>{d.param}</span>
-                <span style={{ color: d.color, fontWeight: 700 }}>{d.value.toFixed(0)}%</span>
-              </div>
-              <div style={{ height: 6, background: `${C.b1}40`, borderRadius: 3, overflow: "hidden" }}>
-                <div style={{ width: `${d.value}%`, height: "100%", background: d.color, borderRadius: 3, transition: "width 0.3s" }} />
-              </div>
+          {metrics.map(m => (
+            <div key={m.label} style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 5, fontSize: 8, fontFamily: C.dt }}>
+              <span style={{ color: C.dm }}>{m.label}</span>
+              <span style={{ color: m.c, fontWeight: 700 }}>{m.value}</span>
             </div>
           ))}
-          <div style={{ borderTop: `1px solid ${C.b1}`, paddingTop: 8, marginTop: 8 }}>
-            <div style={{ fontSize: 7, color: C.dm, fontFamily: C.dt, lineHeight: 1.5 }}>
-              4WD NOTE: Front anti-squat is active under acceleration (Ter27-specific).
-              Rear anti-squat dominates at 35%. Combined pitch reduction: {((VG.antiSquat + VG.antiSquatF) / 2 * 100).toFixed(0)}%.
-            </div>
+        </div>
+
+        <div style={{ ...GL, padding: "10px 12px" }}>
+          <div style={{ fontSize: 8, fontWeight: 700, letterSpacing: 1.5, color: C.dm, fontFamily: C.dt, marginBottom: 8 }}>
+            TARGET VS CURRENT
+          </div>
+          {antiData.map(d => {
+            const pct = clamp(d.value, 0, 100);
+            const target = clamp(d.target, 0, 100);
+            return (
+              <div key={d.param} style={{ marginBottom: 10 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", fontSize: 8, fontFamily: C.dt, marginBottom: 2 }}>
+                  <span style={{ color: C.dm }}>{d.param}</span>
+                  <span style={{ color: d.color, fontWeight: 700 }}>{d.value.toFixed(0)}% · target {d.target}%</span>
+                </div>
+                <div style={{ position: "relative", height: 8, background: `${C.b1}44`, borderRadius: 4, overflow: "hidden" }}>
+                  <div style={{ position: "absolute", inset: 0, width: `${pct}%`, background: d.color, borderRadius: 4 }} />
+                  <div style={{ position: "absolute", top: -2, left: `calc(${target}% - 1px)`, width: 2, height: 12, background: C.w, opacity: 0.65 }} />
+                </div>
+                <div style={{ fontSize: 6.5, color: C.dm, fontFamily: C.dt, marginTop: 2 }}>{d.note}</div>
+              </div>
+            );
+          })}
+        </div>
+
+        <div style={{ ...GL, padding: "10px 12px" }}>
+          <div style={{ fontSize: 8, fontWeight: 700, letterSpacing: 1.5, color: C.dm, fontFamily: C.dt, marginBottom: 8 }}>
+            ENGINEERING TAKEAWAY
+          </div>
+          <div style={{ fontSize: 7, color: C.dm, fontFamily: C.dt, lineHeight: 1.55 }}>
+            The panel now compares current anti-squat, anti-dive and anti-lift directly against your target bands, while the pitch centre diagram shows the load line and lever arm much more clearly.
+            Use this tab to judge whether the car will feel planted on throttle and stable under braking, not just to read raw percentages.
           </div>
         </div>
       </div>
@@ -1647,9 +1512,10 @@ function ComplianceTab() {
   const CH = ({ title, children }) => (
     <div style={{ ...GL, padding: "10px 8px 6px" }}>
       <div style={{ fontSize: 8, fontWeight: 700, letterSpacing: 1.5, color: C.dm, fontFamily: C.dt, marginBottom: 6, paddingLeft: 2 }}>{title}</div>
-      {children}
+      <AnimatedChartFrame>{children}</AnimatedChartFrame>
     </div>
   );
+
 
   return (
     <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
@@ -1662,8 +1528,8 @@ function ComplianceTab() {
             <Tooltip {...tt()} />
             <ReferenceLine x={0} stroke={C.b2} strokeDasharray="3 3" />
             <ReferenceLine y={0} stroke={C.b2} strokeDasharray="3 3" />
-            <Line isAnimationActive={false} dataKey="toe_f" stroke={C.cy} dot={false} strokeWidth={2} name="Front Comp. Steer" />
-            <Line isAnimationActive={false} dataKey="toe_r" stroke={C.am} dot={false} strokeWidth={2} name="Rear Comp. Steer" />
+            <Line isAnimationActive={false} dataKey="toe_f" stroke={C.cy} dot={false} isAnimationActive={true} animationDuration={900} strokeWidth={2} name="Front Comp. Steer" />
+            <Line isAnimationActive={false} dataKey="toe_r" stroke={C.am} dot={false} isAnimationActive={true} animationDuration={900} strokeWidth={2} name="Rear Comp. Steer" />
             <Legend wrapperStyle={{ fontSize: 8, fontFamily: C.dt }} />
           </LineChart>
         </ResponsiveContainer>
@@ -1677,8 +1543,8 @@ function ComplianceTab() {
             <YAxis {...ax()} />
             <Tooltip {...tt()} />
             <ReferenceLine x={0} stroke={C.b2} strokeDasharray="3 3" />
-            <Line isAnimationActive={false} dataKey="camber_f" stroke={C.cy} dot={false} strokeWidth={2} name="Front" />
-            <Line isAnimationActive={false} dataKey="camber_r" stroke={C.am} dot={false} strokeWidth={2} name="Rear" />
+            <Line isAnimationActive={false} dataKey="camber_f" stroke={C.cy} dot={false} isAnimationActive={true} animationDuration={900} strokeWidth={2} name="Front" />
+            <Line isAnimationActive={false} dataKey="camber_r" stroke={C.am} dot={false} isAnimationActive={true} animationDuration={900} strokeWidth={2} name="Rear" />
             <Legend wrapperStyle={{ fontSize: 8, fontFamily: C.dt }} />
           </LineChart>
         </ResponsiveContainer>
@@ -1764,7 +1630,7 @@ function ModalTab() {
             <Tooltip {...tt()} />
             <ReferenceLine y={0} stroke={C.b2} strokeDasharray="3 3" />
             {modes.map(m => (
-              <Line isAnimationActive={false} key={m.mode} dataKey={m.mode} stroke={m.color} dot={false} strokeWidth={1.5} name={m.mode} />
+              <Line isAnimationActive={false} key={m.mode} dataKey={m.mode} stroke={m.color} dot={false} isAnimationActive={true} animationDuration={900} strokeWidth={1.5} name={m.mode} />
             ))}
             <Legend wrapperStyle={{ fontSize: 7, fontFamily: C.dt }} />
           </LineChart>
@@ -1944,7 +1810,7 @@ export default function SuspensionModule({ data, mode }) {
 
       {/* Tab content */}
       {tab === "schematic" && <SchematicTab dynamics={dynamics} frame={frame} />}
-      {tab === "model3d" && <ThreeDModelTab />}
+      {tab === "model3d" && <Model3DTab dynamics={dynamics} />}
       {tab === "kinematics" && <KinematicsTab />}
       {tab === "dynamics" && <DynamicsTab dynamics={dynamics} />}
       {tab === "antigeom" && <AntiGeomTab />}

@@ -154,26 +154,17 @@ class KoopmanTVBundle(NamedTuple):
 # ─────────────────────────────────────────────────────────────────────────────
 
 class LiftingMap(nn.Module):
-    """
-    3-layer tanh MLP: ℝ^4 → ℝ^m_k.
-
-    Input: normalised error state e = [ψ̇_err_n, vy_n, vx_n, δ_n]
-    Output: lifted coordinates z ∈ ℝ^{m_k}
-
-    tanh activations are C∞ and bounded — essential for JAX grad stability
-    through the Koopman generator loss during training.
-    """
+    """φ(e) = [e ; ψ_NN(e)] — first 4 coords are pinned identity."""
     hidden:  int
-    out_dim: int
+    out_dim: int   # m_total = 4 + (out_dim - 4) learned
 
     @nn.compact
     def __call__(self, x: jax.Array) -> jax.Array:
-        x = nn.Dense(self.hidden)(x)
-        x = nn.tanh(x)
-        x = nn.Dense(self.hidden)(x)
-        x = nn.tanh(x)
-        x = nn.Dense(self.out_dim)(x)
-        return x
+        # Learned residual basis only — input is concatenated unchanged
+        h = nn.tanh(nn.Dense(self.hidden)(x))
+        h = nn.tanh(nn.Dense(self.hidden)(h))
+        h = nn.Dense(self.out_dim - 4)(h)         # m - 4 learned features
+        return jnp.concatenate([x, h], axis=-1)   # [identity ; learned]
 
 
 # Module singletons — architecture is compile-time constant; only params vary.

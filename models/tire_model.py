@@ -200,11 +200,6 @@ class SparseGPMatern52(nn.Module):
 
     @nn.compact
     def __call__(self, x_star: jax.Array) -> jax.Array:
-        log_ls = self.param('log_lengthscale',
-                            lambda key, _: jnp.log(jnp.array([0.2, 0.15, 0.1, 400.0, 15.0])),
-                            (5,))
-        ls = jnp.exp(log_ls)
-
         log_var = self.param('log_variance',
                              jax.nn.initializers.constant(jnp.log(0.08)), ())
         prior_var = jnp.exp(log_var)
@@ -217,15 +212,51 @@ class SparseGPMatern52(nn.Module):
                              (self.num_inducing, 5))
         Z = jnp.tanh(Z_raw) * Z_scale + Z_shift
 
-        # ── Kernel function — additive eps inside sqrt (already C∞, unchanged) ──
-        # d = sqrt(sum(...) + 1e-8): gradient = x/(2*sqrt(x+eps)) → 0 as x→0 ✓
-        def matern52(x1, x2):
-            d = jnp.sqrt(jnp.sum(((x1 - x2) / (ls + 1e-8)) ** 2) + 1e-8)
-            s = jnp.sqrt(5.0) * d
-            return prior_var * (1.0 + s + (5.0 / 3.0) * d ** 2) * jnp.exp(-s)
+        # ── Spectral Mixture kernel parameters (Q=4 mixtures) ─────────────
+        # Each mixture q has:  w_q (weight), μ_q (frequency), σ_q (bandwidth) — all per-dim.
+        # Initialised so that the SM kernel degrades gracefully to ≈ Matérn 5/2
+        # at the default hyperparameter values (Wilson & Adams 2013, Thm 1).
+        Q_mix = 4
+        log_w_q  = self.param('log_w_q',
+                               jax.nn.initializers.zeros, (Q_mix,))          # (Q,)
+        log_mu_q = self.param('log_mu_q',
+                               jax.nn.initializers.normal(0.3), (Q_mix, 5))  # (Q, D)
+        log_sig_q = self.param('log_sig_q',
+                                jax.nn.initializers.constant(jnp.log(jnp.array(
+                                    # σ_q is frequency bandwidth in the SM kernel.
+                                    # Small σ_q → wide Gaussian envelope in space → RBF-like.
+                                    # Init near 0.05 for all dims: envelope decays over ~3 units
+                                    # of normalised distance, covering the full inducing point range.
+                                    # Physical dims (Fz=400, Vx=15) must be normalised:
+                                    # σ_q_Fz = 0.05/Z_scale_Fz = 0.05/400 = 1.25e-4
+                                    # σ_q_Vx = 0.05/Z_scale_Vx = 0.05/10  = 5e-3
+                                    [0.05, 0.05, 0.05, 1.25e-4, 5e-3]
+                                ).reshape(1, 5).repeat(Q_mix, axis=0))),
+                                (Q_mix, 5))
+        w_q   = jax.nn.softmax(log_w_q)              # (Q,) sums to 1, positive
+        mu_q  = jnp.exp(log_mu_q)                    # (Q, D) positive frequencies
+        sig_q = jnp.exp(log_sig_q)                   # (Q, D) positive bandwidths
 
-        # NEW — replace with this:
-        k_ZZ = jax.vmap(lambda z1: jax.vmap(lambda z2: matern52(z1, z2))(Z))(Z)
+        def sm_kernel(x1, x2):
+            """
+            Spectral Mixture kernel: k(τ) = Σ_q w_q · exp(-2π²τᵀdiag(σ_q²)τ) · cos(2πτᵀμ_q)
+
+            τ = x1 - x2  (D-dim lag vector, NOT normalised by ls — SM learns its own ls via σ_q)
+            Reduces to stationary RBF when Q=1 and μ_q=0. Universal approximator
+            of stationary covariance functions (Bochner's theorem, Wilson 2013).
+            """
+            tau = x1 - x2                                                    # (D,)
+            def mixture_component(w, mu, sig):
+                # Gaussian envelope: exp(-2π²‖τ/sig‖²)
+                envelope = jnp.exp(-2.0 * jnp.pi ** 2 * jnp.sum((tau * sig) ** 2))
+                # Cosine carrier: cos(2π τᵀ μ)
+                carrier  = jnp.cos(2.0 * jnp.pi * jnp.dot(tau, mu))
+                return w * envelope * carrier
+            # vmap over Q mixtures, then sum — (Q,) → scalar
+            components = jax.vmap(mixture_component)(w_q, mu_q, sig_q)
+            return prior_var * jnp.sum(components)
+
+        k_ZZ = jax.vmap(lambda z1: jax.vmap(lambda z2: sm_kernel(z1, z2))(Z))(Z)
 
         # GP-vX3: Cholesky + stop_gradient on L only.
         #
@@ -261,7 +292,7 @@ class SparseGPMatern52(nn.Module):
         # The backward of solve_triangular w.r.t. k_xZ remains active.
         L   = jax.lax.stop_gradient(jnp.linalg.cholesky(K_ZZ_reg))
 
-        k_xZ  = jax.vmap(lambda z: matern52(x_star, z))(Z)   # gradient flows ✓
+        k_xZ  = jax.vmap(lambda z: sm_kernel(x_star, z))(Z)  # gradient flows ✓
         v     = jax.scipy.linalg.solve_triangular(L, k_xZ, lower=True)
         red   = jnp.sum(v ** 2)                               # = k_xZ^T K^{-1} k_xZ
 
