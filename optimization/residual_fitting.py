@@ -191,7 +191,7 @@ def train_neural_residuals():
     print(f"   [Neural Physics] H density scale: {h_scale:.2f} J/m²  "
           f"| R target scale: {r_scale:.4f}")
 
-    NUM_EPOCHS = 6000   # 2500→6000: P4 convergence requires more iterations
+    NUM_EPOCHS = 2500   # 2500→6000: P4 convergence requires more iterations
     h_schedule = optax.cosine_decay_schedule(init_value=1e-3, decay_steps=NUM_EPOCHS, alpha=0.005)
     h_tx       = optax.adamw(learning_rate=h_schedule, weight_decay=1e-4)
 
@@ -263,8 +263,8 @@ def train_neural_residuals():
     # Loss: H(q,p,s1) ≠ H(q,p,s2) when |target(s1)-target(s2)| is large.
     # This forces FiLM to modulate the network output based on setup.
     _rng_film = jax.random.PRNGKey(7777)
-    _idx_a    = jax.random.randint(_rng_film, (512,), 0, len(q_data))
-    _idx_b    = jax.random.randint(jax.random.fold_in(_rng_film, 1), (512,), 0, len(q_data))
+    _idx_a    = jax.random.randint(_rng_film, (2048,), 0, len(q_data))
+    _idx_b    = jax.random.randint(jax.random.fold_in(_rng_film, 1), (2048,), 0, len(q_data))
     _q_film   = q_data[_idx_a];    _p_film   = p_data[_idx_a]
     _s_film_a = setup_data[_idx_a]; _s_film_b = setup_data[_idx_b]
     _t_film_a = target_H_norm[_idx_a]; _t_film_b = target_H_norm[_idx_b]
@@ -291,7 +291,7 @@ def train_neural_residuals():
                 return ((Ha - Hb) - (t_a_ - t_b_)) ** 2
             l_film = jnp.mean(jax.vmap(film_pair)(q_f, p_f, s_a, s_b, t_a, t_b))
 
-            return l_main + 2.0 * l_film   # 2× weight on FiLM contrastive
+            return l_main + 5.0 * l_film   # 5× weight: FiLM must respond to setup
 
         loss, grads = jax.value_and_grad(film_loss)(params)
         updates, new_state = h_tx.update(grads, opt_state, params)
@@ -372,8 +372,9 @@ def train_neural_residuals():
         from config.tire_coeffs import tire_coeffs as TP_DICT
         _veh = DifferentiableMultiBodyVehicle(VP_DICT, TP_DICT)
         _sp  = build_default_setup_28(VP_DICT).at[1].set(38000.).at[21].set(0.28)
-        _x0  = jnp.zeros(46).at[14].set(10.0)
-        _x1  = _veh.simulate_step(_x0, jnp.array([0.0, 0.0]), _sp, dt=0.01)
+        _x0  = DifferentiableMultiBodyVehicle.make_initial_state(T_env=25.0, vx0=10.0)
+        _x1  = _veh.simulate_step(
+            _x0, jnp.zeros(6), _sp, dt=0.01)  # 6-element control for 108-DOF model
         _dKE = 0.5 * VP_DICT.get('total_mass', 230.0) * (float(_x1[14])**2 - float(_x0[14])**2)
         budget_J = 0.10
         if abs(_dKE) < budget_J:
