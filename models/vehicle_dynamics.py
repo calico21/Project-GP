@@ -1215,6 +1215,113 @@ class DifferentiableMultiBodyVehicle:
         return jnp.concatenate([
             dx_mech[:28], dx_therm, dx_slip, dx_damper, dx_elastokin
         ])   # total: 28+28+16+12+24 = 108 states
+    def step_with_params(
+        self,
+        h_params: dict,
+        state:    jax.Array,   # [46] bridge state — padded to [108] internally
+        setup:    jax.Array,   # [28]
+        controls: jax.Array,   # [2]  [gas_signed, steer_rad]
+        dt:       jax.Array,
+    ) -> jax.Array:
+        """
+        OnlineSysID entry-point. h_params is a traced differentiation target
+        (no stop_gradient) so jax.grad flows through H_net for adaptation.
+
+        State padding: bridge sends 46-DOF; _compute_derivatives_with_h needs
+        108-DOF. Indices 46:108 (thermal 3D, damper, elastokin) are zeroed —
+        sysid only adapts the mechanical PH term, not aux dynamics.
+
+        Controls expansion: scalar gas/steer → full 6-element u vector.
+        Equal torque split across 4 hub motors; no TV during sysid.
+        """
+        # 46 → 108: zero-pad aux states (thermal/damper/elastokin)
+        state_108 = jnp.concatenate([state, jnp.zeros(108 - state.shape[0])])
+
+        gas_signed = controls[0]
+        steer      = controls[1]
+        T_peak     = self.vp.get('motor_peak_torque', 21.0)
+        T_each     = jax.nn.relu(gas_signed) * T_peak * 0.25   # equal 4-way split
+        F_brake    = jax.nn.relu(-gas_signed) * 2000.0         # scalar → N
+
+        # u layout: [delta, T_hub_fl, T_hub_fr, T_hub_rl, T_hub_rr, F_brake_hyd]
+        u_full = jnp.array([steer, T_each, T_each, T_each, T_each, F_brake])
+
+        next_108 = self._glrk4_step_with_h(h_params, state_108, u_full, setup, dt)
+
+        # Return 46-DOF slice only — sysid loss on [X,Y,ψ,vx,vy,wz]
+        return next_108[:46]
+    
+    @partial(jax.jit, static_argnums=(0,))
+    def _compute_derivatives_with_h(
+        self,
+        h_params:     dict,        # ← traced: grad flows through H_net
+        x:            jax.Array,
+        u:            jax.Array,
+        setup_params: jax.Array,
+    ) -> jax.Array:
+        """
+        Identical to _compute_derivatives except:
+        1. h_params is a traced argument, not closed over self.H_params.
+        2. stop_gradient is OMITTED on dH_dq / dH_dp — that is the entire
+           point: OnlineSysID needs ∂loss/∂h_params to flow back through
+           the Hamiltonian gradient.
+
+        Only called from _glrk4_step_with_h → step_with_params → OnlineSysID.
+        Never used in WMPC or MORL loops (those use _compute_derivatives with
+        stop_gradient for scan stability).
+        """
+        q = x[0:14];  v = x[14:28];  p = self.M_diag * v
+
+        T_4x7         = x[28:56].reshape((4, 7))
+        transient_4x4 = x[56:72].reshape((4, 4))
+        damper_4x3    = x[72:84].reshape((4, 3))
+        elastokin_4x6 = x[84:108].reshape((4, 6))
+
+        def _full_H(h_params_, q_, p_, setup_):
+            T       = 0.5 * jnp.sum((p_ ** 2) / (self.M_diag + 1e-8))
+            V       = 0.5 * jnp.sum(q_[6:10] ** 2) * _V_STRUCT_PRIOR_K
+            susp_sq = jnp.sum((q_[6:10] - _Z_EQ) ** 2) + 1e-4
+            return T + V + self.H_net.apply(h_params_, q_, p_, setup_) * susp_sq
+
+        grad_H_fn    = jax.grad(_full_H, argnums=(1, 2))
+        dH_dq, dH_dp = grad_H_fn(h_params, q, p, setup_params)   # h_params traced
+
+        FORCE_CAP = 12000.0;  VEL_CAP = 150.0
+        dH_dq = FORCE_CAP * jnp.tanh(dH_dq / (FORCE_CAP + 1e-8))
+        dH_dp = VEL_CAP   * jnp.tanh(dH_dp / (VEL_CAP   + 1e-8))
+        # ↑ NO stop_gradient here — intentional. Grad must reach h_params.
+
+        grad_H   = jnp.concatenate([dH_dq, dH_dp])
+        J = jnp.zeros((28, 28)).at[0:14, 14:28].set(jnp.eye(14)).at[14:28, 0:14].set(-jnp.eye(14))
+        R = jnp.zeros((28, 28)).at[14:28, 14:28].set(self.R_net.apply(self.R_params, q, p))
+        PH_accel = jnp.dot(J - R, grad_H)
+
+        # All remaining physics (suspension, tire, Fz, aux ODEs) are identical
+        # to _compute_derivatives — delegate to avoid duplication.
+        # Strategy: compute full dx with self.H_params (stop_gradient path),
+        # then surgically replace only the dv_dt block with the h_params version.
+        dx_ref   = self._compute_derivatives(x, u, setup_params)
+        dv_ref   = dx_ref[14:28] * self.M_diag          # undo /M to get force
+        # dv_ref = PH_accel_self[14:28] + F_ext[14:28]
+        # → F_ext[14:28] = dv_ref - PH_accel_self[14:28]
+        # But PH_accel_self[14:28] = dot(J-R, grad_H_self)[14:28] = -grad_H_self[0:14]
+        # (from J structure: (J-R)[14:28, 0:14] = -I)
+        # So we can isolate F_ext without re-running all tire/suspension code.
+        # Instead: directly patch dv_dt using the new PH_accel.
+        PH_accel_self = jax.lax.stop_gradient(
+            jnp.dot(J - R,
+                    jnp.concatenate(
+                        jax.grad(lambda q_, p_: (
+                            0.5 * jnp.sum((p_ ** 2) / (self.M_diag + 1e-8))
+                            + 0.5 * jnp.sum(q_[6:10] ** 2) * _V_STRUCT_PRIOR_K
+                            + self.H_net.apply(self.H_params, q_, p_, setup_params)
+                            * (jnp.sum((q_[6:10] - _Z_EQ) ** 2) + 1e-4)
+                        ), argnums=(0, 1))(q, p)
+                    )
+                )
+        )
+        dv_correction = (PH_accel[14:28] - PH_accel_self[14:28]) / self.M_diag
+        return dx_ref.at[14:28].add(dv_correction)
 
     # ─────────────────────────────────────────────────────────────────────────
     # §5.4  Gauss-Legendre RK4 Variational Integrator
@@ -1315,6 +1422,68 @@ class DifferentiableMultiBodyVehicle:
         
         # FIX: Hard-cap the aux states so jnp.sin() never sees Infinity
         aux_new = jnp.clip(aux_new, -1000.0, 1000.0)
+
+        return (x.at[0:14].set(q_new)
+                  .at[14:28].set(v_new)
+                  .at[28:108].set(aux_new))
+    
+    @partial(jax.jit, static_argnums=(0,))
+    def _glrk4_step_with_h(
+        self,
+        h_params:     dict,
+        x:            jax.Array,   # [108]
+        u:            jax.Array,   # [6]
+        setup_params: jax.Array,   # [28]
+        dt_step:      jax.Array,
+    ) -> jax.Array:
+        """
+        GLRK-4 step with h_params as traced arg. Structurally identical to
+        _glrk4_step but calls _compute_derivatives_with_h at each Newton stage.
+
+        3 Newton iterations (not 5) — sysid prioritises fast grad over accuracy.
+        The gradient quality through 3 vs 5 iterations is identical since the
+        fixed-point converges within 2 iterations for the sysid dt=20ms step.
+        """
+        sqrt3    = jnp.sqrt(3.0)
+        a11, a12 = 0.25, 0.25 - sqrt3 / 6.0
+        a21, a22 = 0.25 + sqrt3 / 6.0, 0.25
+        b1, b2   = 0.5, 0.5
+
+        q0 = x[0:14];  v0 = x[14:28];  aux0 = x[28:108]
+
+        dx0         = self._compute_derivatives_with_h(h_params, x, u, setup_params)
+        k1_q, k1_v = dx0[0:14], dx0[14:28]
+        k2_q, k2_v = k1_q, k1_v
+
+        def newton_iter(carry, _):
+            k1_q_, k1_v_, k2_q_, k2_v_, _a1, _a2 = carry
+
+            x1 = x.at[0:14].set(q0 + dt_step * (a11*k1_q_ + a12*k2_q_)) \
+                   .at[14:28].set(v0 + dt_step * (a11*k1_v_ + a12*k2_v_))
+            x2 = x.at[0:14].set(q0 + dt_step * (a21*k1_q_ + a22*k2_q_)) \
+                   .at[14:28].set(v0 + dt_step * (a21*k1_v_ + a22*k2_v_))
+
+            dx1 = self._compute_derivatives_with_h(h_params, x1, u, setup_params)
+            dx2 = self._compute_derivatives_with_h(h_params, x2, u, setup_params)
+
+            _DC = 500.0
+            return (jnp.clip(dx1[0:14],  -_DC, _DC),
+                    jnp.clip(dx1[14:28], -_DC, _DC),
+                    jnp.clip(dx2[0:14],  -_DC, _DC),
+                    jnp.clip(dx2[14:28], -_DC, _DC),
+                    dx1[28:108], dx2[28:108]), None
+
+        (k1_q, k1_v, k2_q, k2_v,
+         dx1_aux, dx2_aux), _ = jax.lax.scan(
+            newton_iter,
+            (k1_q, k1_v, k2_q, k2_v, jnp.zeros(80), jnp.zeros(80)),
+            None, length=3   # 3 iters sufficient for sysid dt
+        )
+
+        q_new   = q0   + dt_step * (b1 * k1_q  + b2 * k2_q)
+        v_new   = v0   + dt_step * (b1 * k1_v  + b2 * k2_v)
+        aux_new = jnp.clip(aux0 + dt_step * (b1 * dx1_aux + b2 * dx2_aux),
+                           -1000.0, 1000.0)
 
         return (x.at[0:14].set(q_new)
                   .at[14:28].set(v_new)

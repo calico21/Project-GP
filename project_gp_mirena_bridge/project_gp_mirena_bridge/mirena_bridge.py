@@ -188,8 +188,10 @@ class MirenaBridge(Node):
         # SOCP warm-start: numpy array (avoids device-host transfer overhead)
         self._prev_socp_sol: Optional[np.ndarray] = None
         from powertrain.powertrain_manager import make_powertrain_manager
-        from config.vehicles.ter26 import vehicle_params as _vp
+        from config.vehicles.ter27 import vehicle_params as _vp
         self._pt_config, self._pt_state = make_powertrain_manager(_vp)
+        self._vp_mass = float(_vp.get('total_mass', 230.0))  # ← add this
+
         # Wheel speeds are published asynchronously — cache between state frames
         self._ws_cache     = np.zeros(4, dtype=np.float32)
         self._ws_lock      = threading.Lock()
@@ -452,7 +454,14 @@ class MirenaBridge(Node):
         omega_w = state[jnp.array([S.WSPIN_FL, S.WSPIN_FR, S.WSPIN_RL, S.WSPIN_RR])]
         alpha_t = state[jnp.array([38, 40, 42, 44])]
         T_tire  = jnp.array([state[28], state[31], state[35], state[33]])
-        Fz      = jnp.array([750., 750., 750., 750.])
+        _Fz_nom = self._vp_mass * 9.81 / 4.0
+        k_f = float(getattr(self._pt_config, 'k_spring_f', 35_000.0))
+        k_r = float(getattr(self._pt_config, 'k_spring_r', 38_000.0))
+        z_s = np.asarray(frame.state_46d[6:10])
+        Fz  = jnp.array([
+            _Fz_nom + k_f * z_s[0], _Fz_nom + k_f * z_s[1],
+            _Fz_nom + k_r * z_s[2], _Fz_nom + k_r * z_s[3],
+        ]).clip(100.0, 4000.0)
         Fy      = jnp.zeros(4)
         mu_est   = jnp.array(1.4)
         gp_sigma = jnp.array(0.05)
@@ -499,34 +508,37 @@ class MirenaBridge(Node):
         self._ctrl_pub.publish(msg)
 
     # ─── SysID initialisation ─────────────────────────────────────────────────
-
     def _init_sysid(self) -> None:
-        """
-        Initialise OnlineSysID once Project-GP forward_fn is available.
+        import orbax.checkpoint as ocp
+        from models.vehicle_dynamics import DifferentiableMultiBodyVehicle
+        from simulator.sim_config import VP_DICT, TP_DICT, DEFAULT_SETUP_28
 
-        Alex: replace the lambda stub with your actual forward step.
-        The forward_fn must be pure JAX: (params, state_46d, control_2d) → state_46d
-        and must be differentiable w.r.t. params (H_net weights).
+        # ── Load trained H_net weights ─────────────────────────────────────────
+        # DifferentiableMultiBodyVehicle loads h_net.bytes automatically in __init__
+        vehicle   = DifferentiableMultiBodyVehicle(VP_DICT, TP_DICT)
+        h_params  = vehicle.H_params   # already loaded from checkpoint (or random init)
+        setup_arr = jnp.array(DEFAULT_SETUP_28)
+        self.get_logger().info("OnlineSysID: H_net params loaded via DifferentiableMultiBodyVehicle.")
 
-        Example:
-            from project_gp.physics.integrator import port_hamiltonian_step
-            forward_fn = port_hamiltonian_step
-
-        For now, a no-op lambda is used so the rest of the bridge runs cleanly.
-        """
-        # STUB: replace with real forward function
-        def _stub_forward(params, state_46d: jnp.ndarray, ctrl_2d: jnp.ndarray):
-            return state_46d  # no-op: s_{t+1} = s_t
-
-        # STUB: replace with real H_net params pytree
-        _stub_params = {"dummy": jnp.zeros(1)}
+        # forward_fn: (params, s[46], u[2]) → s_next[46]
+        # ctrl_2d = [gas_signed, steer_rad]; unpack to throttle/brake/delta
+        @jax.jit
+        def forward_fn(params: dict, state_46d: jnp.ndarray, ctrl_2d: jnp.ndarray):
+            # ctrl_2d = [gas_signed, steer_rad] — step_with_params unpacks internally
+            return vehicle.step_with_params(
+                h_params = params,
+                state    = state_46d,
+                setup    = setup_arr,
+                controls = ctrl_2d,
+                dt       = jnp.array(1.0 / 50.0),
+            )
 
         self._sysid = OnlineSysID(
-            forward_fn  = _stub_forward,
-            init_params = _stub_params,
+            forward_fn  = forward_fn,
+            init_params = h_params,
         )
         self._sysid.start()
-        self.get_logger().info("OnlineSysID initialised (stub forward_fn).")
+        self.get_logger().info("OnlineSysID: wired to DifferentiableMultiBodyVehicle.")
 
 
 # ─── Entry point ─────────────────────────────────────────────────────────────
