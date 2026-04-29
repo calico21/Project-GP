@@ -213,7 +213,10 @@ def train_neural_residuals():
                 p_dot_grad = jnp.dot(p_s, grad_H_p)
                 # softplus penalty: zero when p·∇H ≥ 0, positive when violated
                 # λ_P4=100 makes this ~50× MSE weight at a 0.1 J violation
-                l_p4 = 100.0 * jax.nn.softplus(-p_dot_grad * 0.01)
+                # In per_sample AND in film_pair's per_sample:
+                l_p4 = 1.0 * jax.nn.softplus(-jnp.dot(p_s, grad_H_p) * 0.01)
+                # was 100.0 — P4 is structurally guaranteed by ICNN architecture,
+                # this penalty is redundant and was dominating at 69.3 vs MSE 2.7
                 return l_mse + l_p4
 
             return jnp.mean(jax.vmap(per_sample)(q, p, setup, target_norm))

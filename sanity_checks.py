@@ -420,8 +420,8 @@ def test_differential_yaw_moment():
     # Traction budget: at 15 m/s, Fz_rear ≈ 300*9.81*0.8525/(2*1.55) ≈ 806 N/corner.
     # μ=1.4 → Fx_max ≈ 1130 N → T_max ≈ 230 Nm. Use 40 Nm (17% utilization)
     # to stay firmly in the linear Pacejka region and avoid spin-induced coupling.
-    T_DRIVE   = 40.0   # [Nm] symmetric baseline — well within traction limit
-    T_ASYM    = 20.0   # [Nm] asymmetry — right wheels get +20 Nm more
+    T_DRIVE   = 15.0   # was 40.0 — at 15 m/s, Fx_max ≈ 1130N → T_max ≈ 230 Nm
+    T_ASYM    =  8.0   # was 20.0
 
     vx_init = 15.0
     omega_init = vx_init / veh.R_wheel   # ≈ 73.4 rad/s — wheels rolling freely

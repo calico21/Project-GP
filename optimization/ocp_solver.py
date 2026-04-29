@@ -144,13 +144,19 @@ class DiffWMPCSolver:
         self._al_lambda     = None   # Lagrange multipliers (N,)
         self._al_rho        = 10.0    # starts permissive, grows per schedule below
         self._al_rho_scale  = 2.0
-        self._AL_RHO_SCHEDULE = [200.0, 800.0, 2000.0, 5000.0, 5000.0]
-        # Rationale: violation_0 ≈ 0.3 after warm-start fix → ρ=200 gives
-        # AL penalty gradient ~120 vs time-cost gradient ~1. Ratio ≥ 100 needed
-        # to dominate from the first iter. Previous 10/40 were 10-40× too small.
+        self._AL_RHO_SCHEDULE = [2.0, 10.0, 50.0, 200.0, 500.0]
+        # Rationale (GP-vX5 FIX): previous schedule [200,800,2000,5000,5000]
+        # produced AL penalty gradient ~12800× the lap-time gradient from iter 1.
+        # L-BFGS-B spent all iterations satisfying the constraint with zero
+        # lap-time progress → nit=0, ABNORMAL at iter 5 (λ_max=1844, ρ=5000).
+        # New schedule: gradual tightening so the optimizer finds a near-optimal
+        # trajectory first, then progressively enforces the friction constraint.
 
         # Cost weights
         self.w_time    = 1.0
+        self.w_center  = 0.005 # centreline guidance: at n=1m, cost≈0.16≈1.5×time_cost
+                                # CRITICAL: must stay << time_cost. At w=2.0 it was 580×
+                                # the time cost → optimizer zeroed velocity to keep n=0.
         self.w_effort  = 5e-5
         self.w_friction = 25.0
         self.alpha_fric = 10.0
@@ -615,18 +621,48 @@ class DiffWMPCSolver:
                            + _cw_entropy_cost(U_opt[:, 1]))
 
         effort_cost   = (jnp.sum(w_steer * U_opt[:, 0] ** 2) * 1e-3
-                         + jnp.sum(w_accel * U_opt[:, 1] ** 2) * self.w_effort
+                         # Force effort: normalized to [-1,1] before squaring.
+                         # BUG FIX (GP-vX5): previous formula used
+                         #   jnp.sum(w_accel * F²) × w_effort
+                         # with w_accel=5e-5 per step and w_effort=5e-5, giving
+                         # effective weight 2.5e-9 per F². At F=6000N (warm-start
+                         # braking) over N=32 steps: effort_cost=2.88 vs time_cost≈0.11.
+                         # The gradient toward F=0 dominated by 26×, causing L-BFGS-B
+                         # to drain force to zero in 6 steps → 558s lap time.
+                         # Fix: normalize F by F_max → effort weight = w_effort × (F/F_max)²
+                         # At F=6000N: 5e-5 × (6000/8000)² × 32 = 9e-4 ≈ 0.8% of time_cost.
+                         + self.w_effort * jnp.sum((U_opt[:, 1] / 8000.0) ** 2)
                          + self.w_l1_detail * l1_detail_cost
                          + 1e-3 * cw_entropy_cost)   # CW entropy weight: small, exploratory
 
-        # ── 3. Stochastic tube barrier (soft log-barrier) ─────────────────────
-        eps         = 0.05
+        # ── 3. Track limits — smooth quadratic violation penalty ─────────────
+        # CRITICAL FIX (GP-vX5): the log-barrier −ε·log(softplus(dist·50)/50+1e-5)
+        # has ∇→0 when dist<<0 (car outside track). This is correct interior-point
+        # behaviour but catastrophically wrong here: the warm start trajectory
+        # routinely places the car outside the track boundary, and the optimizer
+        # sees zero gradient → zero recovery signal → car never returns on track.
+        #
+        # Replacement: softplus-smoothed squared violation.
+        # ψ(v) = w · softplus(v · sharpness)² / sharpness²
+        # where v = (|n_mean| + tube_radius) − w_track  [violation ≥ 0]
+        # ∂ψ/∂n = 2w · softplus(v·s)/s² · sigmoid(v·s) · ∂v/∂n
+        # This gradient is PROPORTIONAL to the violation magnitude — larger
+        # violations produce stronger restoring forces everywhere.
+        sp_sharp    = 20.0   # softplus sharpness [1/m]
+        w_barrier   = 80.0   # quadratic penalty weight
         tube_radius = self.kappa_safe * jnp.sqrt(jnp.maximum(n_var, 1e-6))
-        dist_left   = track_w_left  - (n_mean + tube_radius)
-        dist_right  = track_w_right + (n_mean - tube_radius)
-        safe_left   = jax.nn.softplus(dist_left  * 50.0) / 50.0 + 1e-5
-        safe_right  = jax.nn.softplus(dist_right * 50.0) / 50.0 + 1e-5
-        barrier_cost = jnp.sum(-eps * jnp.log(safe_left) - eps * jnp.log(safe_right))
+        viol_left   = jax.nn.softplus(
+            ( n_mean + tube_radius - track_w_left ) * sp_sharp) / sp_sharp
+        viol_right  = jax.nn.softplus(
+            (-n_mean + tube_radius - track_w_right) * sp_sharp) / sp_sharp
+        barrier_cost = w_barrier * jnp.sum(viol_left ** 2 + viol_right ** 2)
+
+        # ── 3b. Centreline cost ───────────────────────────────────────────────
+        # Quadratic penalty on n_mean: gives gradient signal even when the car
+        # is far inside the track (where the boundary violation is zero).
+        # Without this, the optimizer has no incentive to stay near the centre
+        # in straights, and the warm start can drift freely until it hits a wall.
+        center_cost = self.w_center * jnp.sum(n_mean ** 2)
 
         # ── 4. Terminal speed cost  ───────────────────────────────────────────
         v_terminal  = x_traj[-1, STATE_VX]
@@ -667,9 +703,20 @@ class DiffWMPCSolver:
         # This keeps the solver in the high-grip linear region (Batch 4 logic)
         margin_penalty = jnp.sum(jax.nn.softplus((0.20 * alpha_peak_est - alpha_margin) * 20.0))
 
+        # ── 6b. Forward progress floor ────────────────────────────────────────
+        # Without this, zero velocity is a fully feasible solution:
+        #   · friction constraint: a_lat=a_lon=0 → g_circle=-1 → λ_max stays 0
+        #   · center_cost: car doesn't move → n_mean stays ≈ 0
+        #   · time_cost: penalized by 1/s_dot_safe but gradient through physics
+        #     is small enough to not escape the basin in few L-BFGS-B steps.
+        # Softplus-squared onset at v_min is C∞ and gradient-safe in scan backward.
+        v_min_fwd  = 3.0   # [m/s] — well below any useful racing speed
+        v_min_cost = 15.0 * jnp.mean(
+            jax.nn.softplus(v_min_fwd - vx_traj) ** 2)
+
         # Add to the final return (weighted by ~5.0 to make it influential)
-        return (time_cost + effort_cost + barrier_cost + 
-                term_cost + al_friction + 5.0 * margin_penalty)
+        return (time_cost + effort_cost + barrier_cost + center_cost +
+                term_cost + al_friction + 5.0 * margin_penalty + v_min_cost)
 
     # ─────────────────────────────────────────────────────────────────────────────
     # §6a  Physics-based warm start  (replaces _build_quintic_warmstart for init)
@@ -728,7 +775,15 @@ class DiffWMPCSolver:
         track_psi:    jax.Array,     # (N,) heading    [rad]
         x0:           jax.Array,     # (46,) initial state — concrete, not traced
         setup_params: jax.Array,     # (28,) suspension setup
+        track_x:      'jax.Array | None' = None,   # (N,) centreline x [m] — optional
+        track_y:      'jax.Array | None' = None,   # (N,) centreline y [m] — optional
     ) -> jax.Array:                   # (N, 2) in [steer_rad, force_N]
+        """
+        Forward-simulation warm start with closed-loop P-velocity-controller.
+        track_x / track_y are optional; if provided, lateral error feedback is
+        used to keep the warm-start trajectory on the centreline.  live_monitor.py
+        calls with 4 positional args (no track_x/track_y) — this remains valid.
+        """
         """
         Forward-simulation warm start with closed-loop P-velocity-controller.
 
@@ -756,6 +811,9 @@ class DiffWMPCSolver:
             self.V_limit * 0.92,   # 8% safety margin below friction limit
         )
         steer_ref = jnp.clip(track_k.ravel() * wb, -0.45, 0.45)
+        Kp_lat    = 0.25   # lateral error → steer correction [rad/m]
+                           # Tuned so that 1 m lateral offset → 0.25 rad steer
+                           # at 10 m/s, which is the right order of magnitude.
 
         state      = x0
         steer_hist = []
@@ -764,7 +822,20 @@ class DiffWMPCSolver:
         for i in range(self.N):
             v_curr  = float(state[STATE_VX])
             v_tgt_i = float(v_target[i])
-            steer_i = float(steer_ref[i])
+
+            # Lateral error feedback: close the loop on centreline position.
+            # Only active when track_x/track_y were provided (i.e., from solve()).
+            # live_monitor.py calls without these → fallback to pure kinematic steer.
+            if track_x is not None and track_y is not None:
+                x_car     = float(state[STATE_X])
+                y_car     = float(state[STATE_Y])
+                psi_ref_i = float(track_psi[i])
+                n_err     = (-math.sin(psi_ref_i) * (x_car - float(track_x[i]))
+                             + math.cos(psi_ref_i) * (y_car - float(track_y[i])))
+                steer_fb  = -Kp_lat * n_err / max(v_curr, 1.0)
+                steer_i   = float(jnp.clip(steer_ref[i] + steer_fb, -0.45, 0.45))
+            else:
+                steer_i = float(steer_ref[i])
 
             v_err = v_curr - v_tgt_i
             # Friction-circle longitudinal budget: sqrt((μmg)² − F_lat²)
@@ -919,7 +990,8 @@ class DiffWMPCSolver:
             print("[Diff-WMPC] Warm-starting from previous solution (shifted).")
         else:
             try:
-                U_warm         = self._build_physics_warmstart(track_k, track_psi, x0, setup_params)
+                U_warm         = self._build_physics_warmstart(track_k, track_psi, x0, setup_params,
+                                                                track_x=track_x, track_y=track_y)
                 wc_kin         = self._db4_dwt(U_warm)
                 flat_init      = wc_kin.flatten()
                 wc_kin_flat_np = np.array(flat_init, dtype=np.float64)
@@ -941,33 +1013,46 @@ class DiffWMPCSolver:
         al_rho    = self._al_rho
 
         # ── Outer AL loop: typically 3-5 iterations to converge ───────────────
+        # CRITICAL FIX (GP-vX5): defining objective_wrapper + jit(...) INSIDE
+        # the for loop creates a new Python function object every iteration.
+        # JAX's JIT cache keys on the Python callable's id, so it retraces and
+        # recompiles XLA from scratch each time (~2 min per AL iter).
+        # Fix: define a STABLE function with al_lambda/al_rho as explicit JAX
+        # arguments. JAX traces once; changing argument values never retriggers.
         n_al_iters = 3 if self.dev_mode else 5
-        opt_coeffs   = jnp.array(flat_init)
+        opt_coeffs = jnp.array(flat_init)
+
+        def _stable_objective(flat_coeffs, _al_lambda, _al_rho):
+            coeffs      = flat_coeffs.reshape((self.N, 2))
+            coeffs_safe = jnp.clip(coeffs, -25000.0, 25000.0)
+            coeff_reg   = 5e-5 * jnp.sum((coeffs_safe - wc_kin) ** 2)
+            loss = self._loss_fn(
+                coeffs_safe, x0, setup_params,
+                track_k, track_x, track_y, track_psi,
+                track_w_left, track_w_right,
+                w_mu, w_steer, w_accel,
+                _al_lambda, _al_rho,
+                jnp.array(alpha_peak_est, dtype=jnp.float32),
+            )
+            return loss + coeff_reg
+
+        val_grad_fn = jit(value_and_grad(_stable_objective))
+        # Single warm-up: trigger XLA compile before the AL clock starts.
+        # All subsequent calls in the loop are cache hits (~5 ms each).
+        _init_rho_jax = jnp.array(self._AL_RHO_SCHEDULE[0], dtype=jnp.float32)
+        jax.block_until_ready(val_grad_fn(opt_coeffs, al_lambda, _init_rho_jax))
+        print("[Diff-WMPC] JIT compiled — starting AL loop.")
 
         for al_iter in range(n_al_iters):
-            al_rho = self._AL_RHO_SCHEDULE[al_iter]  
-            def objective_wrapper(flat_coeffs):
-                coeffs      = flat_coeffs.reshape((self.N, 2))
-                coeffs_safe = jnp.clip(coeffs, -25000.0, 25000.0)
-                coeff_reg   = 5e-5 * jnp.sum((coeffs_safe - wc_kin) ** 2)
-                loss = self._loss_fn(
-                    coeffs_safe, x0, setup_params,
-                    track_k, track_x, track_y, track_psi,
-                    track_w_left, track_w_right,
-                    w_mu, w_steer, w_accel,
-                    al_lambda, jnp.array(al_rho),
-                    alpha_peak_est, # <-- ADD THIS
-                )
-                return loss + coeff_reg
-
-            val_grad_fn = jit(value_and_grad(objective_wrapper))
+            al_rho     = self._AL_RHO_SCHEDULE[al_iter]
+            al_rho_jax = jnp.array(al_rho, dtype=jnp.float32)
             nan_count   = [0]
             total_calls = [0]
 
             def scipy_obj(x_np):
                 total_calls[0] += 1
-                x_jax              = jnp.array(x_np)
-                loss_jax, grad_jax = val_grad_fn(x_jax)
+                x_jax              = jnp.array(x_np, dtype=jnp.float32)
+                loss_jax, grad_jax = val_grad_fn(x_jax, al_lambda, al_rho_jax)
 
                 if not (bool(jnp.isfinite(loss_jax)) and
                         bool(jnp.all(jnp.isfinite(grad_jax)))):
@@ -994,6 +1079,14 @@ class DiffWMPCSolver:
                     return loss_fb, grad_fb
 
                 grad_np = np.array(grad_jax, dtype=np.float64)
+                # Gradient norm clipping: at large λ the AL term can produce
+                # |∇| ~ O(10⁶), causing L-BFGS-B's first step to overshoot
+                # catastrophically → all 30 Wolfe line-search evals fail →
+                # nit=0, ABNORMAL. Clip to 500 which is ~100× the typical
+                # time-cost gradient magnitude and preserves the descent direction.
+                g_norm = np.linalg.norm(grad_np)
+                if g_norm > 500.0:
+                    grad_np = grad_np * (500.0 / g_norm)
                 return float(loss_jax), grad_np
 
             print(f"[Diff-WMPC] AL iter {al_iter+1}/{n_al_iters} — "

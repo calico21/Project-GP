@@ -192,7 +192,7 @@ class PassiveHNet(nn.Module):
     k_hidden:   tuple[int, ...] = (64, 64, 32)
     v_hidden:   tuple[int, ...] = (64, 64, 32)
     psi_hidden: tuple[int, ...] = (64, 32)
-    h_cap:      float        = 50_000.0
+    h_cap:      float        = 15_000.0   # was 50_000
 
     @nn.compact
     def __call__(self, q: jax.Array, p: jax.Array, setup: jax.Array) -> jax.Array:
