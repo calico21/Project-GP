@@ -144,7 +144,10 @@ class DiffWMPCSolver:
         self._al_lambda     = None   # Lagrange multipliers (N,)
         self._al_rho        = 10.0    # starts permissive, grows per schedule below
         self._al_rho_scale  = 2.0
-        self._AL_RHO_SCHEDULE    = [10.0, 40.0, 150.0, 500.0, 500.0]  # indexed by al_iter
+        self._AL_RHO_SCHEDULE = [200.0, 800.0, 2000.0, 5000.0, 5000.0]
+        # Rationale: violation_0 ≈ 0.3 after warm-start fix → ρ=200 gives
+        # AL penalty gradient ~120 vs time-cost gradient ~1. Ratio ≥ 100 needed
+        # to dominate from the first iter. Previous 10/40 were 10-40× too small.
 
         # Cost weights
         self.w_time    = 1.0
@@ -462,14 +465,22 @@ class DiffWMPCSolver:
             x, var_n, var_alpha = carry
             u_raw, k_c, x_ref, y_ref, psi_ref = step_data
 
-            u = jnp.array([
-                jnp.clip(u_raw[0], -0.45, 0.45),
-                jnp.clip(u_raw[1] * lmuy_scale, -8000.0, 8000.0),
-            ])
-            u_with_wind = u.at[0].add(wind_yaw * 0.01)
+            # ── CRITICAL FIX: expand 2-channel optimizer → 6-channel physics ──
+            # _compute_derivatives expects u = [δ, T_fl, T_fr, T_rl, T_rr, F_brake]
+            # Previous code passed u = [δ, force] (2 elements). JAX clips OOB
+            # indices to u[1], so ALL 4 hub motors AND hydraulic brake received
+            # the raw total force → 4× torque amplification + parasitic braking.
+            steer_cmd = jnp.clip(u_raw[0], -0.45, 0.45) + wind_yaw * 0.01
+            force_cmd = jnp.clip(u_raw[1] * lmuy_scale, -8000.0, 8000.0)
+
+            R_w = 0.2045  # wheel radius [m]
+            T_motor = jax.nn.relu(force_cmd) * R_w / 4.0   # drive: N → Nm per motor
+            F_brake = jax.nn.relu(-force_cmd)                # brake: positive = braking
+
+            u_6 = jnp.array([steer_cmd, T_motor, T_motor, T_motor, T_motor, F_brake])
 
             def substep_fn(x_s, _):
-                return self._vehicle.simulate_step(x_s, u_with_wind, setup_params,
+                return self._vehicle.simulate_step(x_s, u_6, setup_params,
                                                    dt=dt_sub, n_substeps=1), None
 
             x_next, _ = jax.lax.scan(substep_fn, x, None, length=self.n_substeps)
@@ -645,8 +656,9 @@ class DiffWMPCSolver:
         wz = x_traj[:, 19] # yaw rate index
         delta = U_opt[:, 0] # steering channel
         
-        # Current slip angle at front axle
-        alpha_current = delta - (vy + lf * wz) / jnp.maximum(vx, 1.0)
+        dpsi     = jnp.diff(x_traj[:, STATE_YAW], prepend=x0[STATE_YAW])
+        wz_safe  = dpsi / self.dt_control           # (N,) — no magic index
+        alpha_current = delta - (vy + lf * wz_safe) / jnp.maximum(vx, 1.0)
         
         # Grip margin at each horizon step:
         alpha_margin = alpha_peak_est - jnp.abs(alpha_current)
@@ -755,18 +767,37 @@ class DiffWMPCSolver:
             steer_i = float(steer_ref[i])
 
             v_err = v_curr - v_tgt_i
+            # Friction-circle longitudinal budget: sqrt((μmg)² − F_lat²)
+            # F_lat ≈ m·v²·|κ| at current step
+            m_veh      = float(self.vp.get('m', 235.0))
+            F_lat_curr = m_veh * v_tgt_i ** 2 * float(jnp.abs(track_k[i]))
+            F_fric_tot = self.mu_friction * 9.81 * m_veh          # μmg [N]
+            F_lon_max  = float(jnp.sqrt(jnp.maximum(
+                F_fric_tot ** 2 - F_lat_curr ** 2, 0.0)))         # combined-slip budget
             if v_err > 0.0:
-                # Over target: brake. Negative u[1] = braking force in physics.
-                F_ctrl = float(jnp.clip(-Kp * v_err, -8000.0, 0.0))
+                F_ctrl = float(jnp.clip(-Kp * v_err, -F_lon_max, 0.0))
             else:
-                # Under target: gentle throttle capped to avoid oscillation.
-                F_ctrl = float(jnp.clip(-Kp * v_err * 0.3, 0.0, 600.0))
+                F_ctrl = float(jnp.clip(-Kp * v_err * 0.3, 0.0, min(600.0, F_lon_max)))
 
-            u_i   = jnp.array([steer_i, F_ctrl])
+            # Expand to 6-element control (same fix as _simulate_trajectory)
+            R_w   = 0.2045
+            T_m_i = max(F_ctrl, 0.0) * R_w / 4.0
+            F_b_i = max(-F_ctrl, 0.0)
+            u_i   = jnp.array([steer_i, T_m_i, T_m_i, T_m_i, T_m_i, F_b_i])
             state = self._vehicle.simulate_step(
                 state, u_i, setup_params,
                 dt=self.dt_control, n_substeps=self.n_substeps,
             )
+
+            # Mirror the saturation in _simulate_trajectory so the warm-start
+            # is feasible before the optimizer even starts.
+            vx_raw   = float(state[STATE_VX])
+            v_target_i = float(v_target[i])
+            # Hard cap: physics friction limit × 1.05 margin
+            v_ceil   = min(v_target_i * 1.05, self.V_limit)
+            vx_safe  = min(vx_raw, v_ceil)
+            state    = state.at[STATE_VX].set(max(vx_safe, 0.5))
+
             steer_hist.append(steer_i)
             force_hist.append(F_ctrl)
 
@@ -799,6 +830,19 @@ class DiffWMPCSolver:
         # ── Interpolate track arrays to horizon length ───────────────────────
         s_orig = np.linspace(0, 1, len(track_k))
         s_wav  = np.linspace(0, 1, self.N)
+        # ocp_solver.py  solve()  ← replace the resampling block
+
+        # Estimate how far the car will travel over the horizon
+        k0_abs       = abs(float(np.mean(track_k[:max(1, len(track_k)//8)]))) + 1e-4
+        v_est        = min(math.sqrt((self.mu_friction * 9.81) / k0_abs), self.V_limit)
+        horizon_dist = v_est * self.N * self.dt_control         # ≈ metres ahead
+
+        track_total_len = float(track_s[-1]) if track_s[-1] > 1.0 else 1.0  # handle normalised s
+        # Fraction of the lap covered by this horizon
+        frac = min(horizon_dist / track_total_len, 1.0)
+
+        s_orig = np.linspace(0, 1, len(track_k))
+        s_wav  = np.linspace(0, frac, self.N)   # ← was np.linspace(0, 1, self.N)
 
         def interp(arr):
             return jnp.array(np.interp(s_wav, s_orig, arr))
@@ -843,9 +887,13 @@ class DiffWMPCSolver:
         x0    = x0.at[STATE_Y  ].set(track_y[0])
         x0    = x0.at[STATE_YAW].set(track_psi[0])
         
-        # Initialize tire temperatures to warm operating point
-        x0    = x0.at[28:38].set(jnp.array([85., 85., 85., 85., 80.,  # front
-                                            85., 85., 85., 85., 80.]))  # rear
+        # Initialize all 28 thermal nodes (x[28:56]) to warm operating conditions.
+        # State layout: 4 corners × 7 nodes = [inner, mid, outer, bulk, carcass, gas, contact]
+        # x[28:38] (old 10-node) only partially covered 2 corners and left
+        # most nodes at make_initial_state default of T_env+5 = 30°C.
+        # Thermal grip factor at 30°C: exp(-0.0008*(30-85)²) ≈ 0.089 — 9% of peak grip.
+        _T_corner_warm = jnp.array([85., 85., 85., 80., 75., 30., 40.])
+        x0 = x0.at[28:56].set(jnp.tile(_T_corner_warm, 4))
         # BUG B FIX: suspension DOFs must start at static equilibrium, not zero.
         # At z=0: F_spring=0 N, F_grav≈588 N on unsprung → a_z≈66 m/s² upward →
         # overshoots bumpstop gap (25 mm) within first oscillation cycle →
@@ -864,16 +912,17 @@ class DiffWMPCSolver:
         # The physics warm start encodes braking in Newtons, produces a feasible
         # starting trajectory, and gives flat_init with ||flat_init|| >> 0.
         if self._prev_solution is not None:
-            prev_shifted = jnp.roll(self._prev_solution, -1, axis=0)
-            flat_init    = self._db4_dwt(prev_shifted).flatten()
+            prev_shifted    = jnp.roll(self._prev_solution, -1, axis=0)
+            wc_kin          = self._db4_dwt(prev_shifted)          # ← ADD
+            flat_init       = wc_kin.flatten()
+            wc_kin_flat_np  = np.array(flat_init, dtype=np.float64)  # ← ADD
             print("[Diff-WMPC] Warm-starting from previous solution (shifted).")
         else:
             try:
-                U_warm    = self._build_physics_warmstart(
-                    track_k, track_psi, x0, setup_params)
-                wc_kin    = self._db4_dwt(U_warm)
-                flat_init = wc_kin.flatten()   # no * 0.3 — warm start already
-                                                # physically calibrated in Newton units
+                U_warm         = self._build_physics_warmstart(track_k, track_psi, x0, setup_params)
+                wc_kin         = self._db4_dwt(U_warm)
+                flat_init      = wc_kin.flatten()
+                wc_kin_flat_np = np.array(flat_init, dtype=np.float64)
                 print(f"[Diff-WMPC] Physics P-ctrl warm start "
                       f"(N={self.N}, Kp=6000 N/(m/s)).")
             except Exception as _ws_err:
@@ -958,7 +1007,9 @@ class DiffWMPCSolver:
                 method='L-BFGS-B',
                 jac=True,
                 options={
-                    'maxiter': 2000 if not self.dev_mode else 500,
+                    'maxiter': 600 if al_iter < 2 else (2000 if not self.dev_mode else 500),
+                    # First 2 iters: probe phase — 600 iters is enough to find the feasible basin.
+                    # Later iters: full budget once trajectory is near-feasible and NaN rate is low.
                     'maxls':   30,
                     'ftol':    1e-30,   # was 1e-9 — FACTR was firing after nit=1
                                         # because AL quadratic penalty curvature
@@ -1021,12 +1072,11 @@ class DiffWMPCSolver:
         self._al_lambda = al_lambda
         self._al_rho    = al_rho
 
-        if not res.success:
-            print(f"[Diff-WMPC] L-BFGS-B note: {res.message} "
-                  f"(nit={res.nit}, nfev={res.nfev})")
-        else:
-            print(f"[Diff-WMPC] L-BFGS-B converged: {res.message} "
-                  f"(nit={res.nit}, nfev={res.nfev})")
+        nan_rate_iter = nan_count[0] / max(total_calls[0], 1)
+        print(f"[Diff-WMPC] AL iter {al_iter+1} result: "
+                f"nit={res.nit}  nfev={res.nfev}  "
+                f"NaN={nan_count[0]}/{total_calls[0]} ({nan_rate_iter:.0%})  "
+                f"{'CONVERGED' if res.success else res.message[:40]}")
 
         # ── Final trajectory extraction ───────────────────────────────────────
         wc_final = opt_coeffs.reshape((self.N, 2))

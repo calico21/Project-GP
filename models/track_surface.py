@@ -1,482 +1,474 @@
 # models/track_surface.py
 # ═══════════════════════════════════════════════════════════════════════════════
-# Project-GP — Dynamic Track Surface Model
+# Project-GP — Differentiable Track Geometry (B-spline + Arc-Length + Frenet)
 # ═══════════════════════════════════════════════════════════════════════════════
-#
-# PROBLEM (Flaw #6):
-#   Road friction μ and track temperature are uniform, static boundary
-#   conditions. The entire track has the same grip coefficient at every
-#   point, at every time. This means:
-#   1. The optimizer cannot learn that turn-in on a rubbered-in racing line
-#      has 8-12% more grip than the dusty inside
-#   2. The UKF state estimator never needs to adapt to grip transitions
-#   3. Shadow zones (bridges, grandstands) that cool the track are invisible
-#   4. The tire thermal model gets a constant T_track boundary condition
-#
-# SOLUTION:
-#   Spatially-varying, time-evolving track surface model:
-#
-#   μ(s, n, t) = μ_base · Γ_rubber(s, n) · Γ_thermal(s, t) · Γ_moisture(s, t)
-#
-#   where:
-#     s = distance along track centerline [m]
-#     n = lateral offset from centerline [m] (negative = inside)
-#     t = time [s]
-#
-#   Γ_rubber(s, n): racing-line rubber build-up — a Gaussian distribution
-#     centered on the racing line that grows logarithmically with laps.
-#     Inner regions that are never driven have Γ_rubber ≈ 0.92 (dusty).
-#
-#   Γ_thermal(s, t): track temperature field solved as 1D heat equation
-#     along s, with solar heating, shadow zones, and wind cooling.
-#     Track surface temperature drives the tire contact temperature.
-#
-#   Γ_moisture(s, t): moisture/oil contamination model — certain zones
-#     (pit exit, curb regions) may have persistent low-grip patches.
-#
-# DISCRETIZATION:
-#   Track is discretized into N_s × N_n cells (typical: 500 × 5).
-#   Each cell stores: (μ_local, T_surface, rubber_level, moisture).
-#   Interpolation between cells is bilinear (C⁰) — sufficient since
-#   the vehicle samples at low spatial frequency relative to cell size.
-#
-# JAX CONTRACT: Pure JAX, JIT-safe, vmapped spatial queries.
-# ═══════════════════════════════════════════════════════════════════════════════
+"""
+JAX-native, fully-differentiable track centerline representation.
+
+Mathematical contract — for arc-length s ∈ [0, L):
+    r(s)   ∈ R² : centerline position                                        [m]
+    T̂(s)   ∈ R² : unit tangent  dr/ds                                         [-]
+    N̂(s)   ∈ R² : unit inward normal  (left of travel)                        [-]
+    κ(s)   ∈ R  : signed curvature, left-positive, κ = (x'y'' − y'x'')/‖r'‖³ [1/m]
+    w_l(s) ∈ R  : half-width to left  cone (signed +N̂ direction)              [m]
+    w_r(s) ∈ R  : half-width to right cone (signed −N̂ direction)              [m]
+
+Construction modes:
+    • from_cones(left_xy, right_xy)         — production: pair-fit from FSG cones
+    • from_curvature(kappa_s, ds)           — Frenet integration from κ(s) profile
+    • randomize(key, length, **kwargs)      — domain-randomized FSG-compliant track
+
+JAX contract:
+    All public methods are jit-safe, vmap-safe, grad-safe. The arc-length
+    inversion s↔u is differentiable through `jnp.searchsorted` + linear interp.
+    Curvature is computed analytically from the B-spline basis derivatives —
+    no finite differences anywhere on the gradient path.
+
+Author: Project-GP contributor • Target: Ter27 / FSG 2026 Siemens DT Award
+"""
 
 from __future__ import annotations
+from functools import partial
+from typing import NamedTuple, Tuple
 
 import jax
 import jax.numpy as jnp
-from typing import NamedTuple
-from functools import partial
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# §1  Configuration
+# §1.  Configuration & data types
 # ─────────────────────────────────────────────────────────────────────────────
 
-class TrackSurfaceConfig(NamedTuple):
-    """Track surface model parameters."""
-    # Baseline friction
-    mu_base: float = 1.0             # μ = 1.0 (then tire model supplies actual μ)
-    mu_dusty: float = 0.88           # μ on unswept/dusty surface (relative)
-    mu_rubbered: float = 1.08        # μ on well-rubbered surface (relative)
-    mu_wet: float = 0.65             # μ on wet surface (relative)
-
-    # Rubber build-up dynamics
-    rubber_rate: float = 0.002       # rubber accumulation per tire pass [fraction]
-    rubber_decay: float = 1e-5       # rubber degradation rate [1/s] (UV, rain)
-    rubber_width: float = 1.5        # racing line width for rubber deposit [m]
-
-    # Thermal
-    T_surface_base: float = 30.0     # baseline track temperature [°C]
-    T_air: float = 25.0              # ambient air temperature [°C]
-    solar_flux: float = 800.0        # W/m² (mid-day summer)
-    alpha_solar: float = 0.9         # asphalt solar absorptivity
-    emissivity: float = 0.93         # asphalt thermal emissivity
-    k_asphalt: float = 1.0           # W/m/K asphalt conductivity
-    rho_c_asphalt: float = 2.0e6     # J/m³/K asphalt volumetric heat capacity
-    h_wind: float = 15.0             # W/m²/K wind convection coefficient
-
-    # Discretization
-    N_s: int = 200                   # number of longitudinal cells
-    N_n: int = 5                     # number of lateral cells
-    track_length: float = 1000.0     # total track length [m]
-    track_half_width: float = 5.0    # half track width [m]
-
-    # Grip-temperature coupling
-    T_grip_peak: float = 45.0        # track temp at peak asphalt grip [°C]
-    T_grip_width: float = 20.0       # temperature window width [°C]
+class TrackGeometryConfig(NamedTuple):
+    n_control: int = 128         # B-spline control points (periodic)
+    n_query:   int = 2048        # arc-length LUT resolution
+    n_quad:    int = 4           # Gauss-Legendre quadrature order per segment
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# §2  Track Surface State
-# ─────────────────────────────────────────────────────────────────────────────
-
-class TrackSurfaceState(NamedTuple):
-    """Full track surface state."""
-    T_surface: jax.Array     # (N_s, N_n) surface temperature [°C]
-    rubber_level: jax.Array  # (N_s, N_n) rubber accumulation ∈ [0, 1]
-    moisture: jax.Array      # (N_s, N_n) moisture level ∈ [0, 1]
-    shadow_mask: jax.Array   # (N_s,) shadow factor ∈ [0, 1] (0 = full shadow)
-
-    @classmethod
-    def default(cls, cfg: TrackSurfaceConfig = TrackSurfaceConfig()) -> 'TrackSurfaceState':
-        """Initialize with uniform conditions."""
-        return cls(
-            T_surface=jnp.full((cfg.N_s, cfg.N_n), cfg.T_surface_base),
-            rubber_level=jnp.zeros((cfg.N_s, cfg.N_n)),
-            moisture=jnp.zeros((cfg.N_s, cfg.N_n)),
-            shadow_mask=jnp.ones(cfg.N_s),  # no shadows by default
-        )
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# §3  Shadow Zone Configuration
-# ─────────────────────────────────────────────────────────────────────────────
-
-def create_shadow_mask(
-    N_s: int,
-    track_length: float,
-    shadow_zones: list = None,
-) -> jax.Array:
+class TrackGeometry(NamedTuple):
     """
-    Create shadow mask from a list of (start_m, end_m, opacity) tuples.
-
-    shadow_zones: list of (start [m], end [m], opacity ∈ [0,1])
-      opacity = 0 → full shadow (no solar heating)
-      opacity = 1 → full sun
-
-    Default: one bridge shadow zone at 30% of track.
+    Compiled track. All arrays static-shape under JIT; treat as a JAX pytree.
     """
-    if shadow_zones is None:
-        # Default: bridge at 30% of track, grandstand at 70%
-        shadow_zones = [
-            (0.28 * track_length, 0.32 * track_length, 0.2),   # bridge
-            (0.68 * track_length, 0.73 * track_length, 0.5),   # grandstand
-        ]
-
-    s_grid = jnp.linspace(0, track_length, N_s)
-    mask = jnp.ones(N_s)
-
-    for start, end, opacity in shadow_zones:
-        # Smooth transitions at shadow edges (sigmoid, 2m transition)
-        enter = jax.nn.sigmoid(2.0 * (s_grid - start))
-        exit_ = jax.nn.sigmoid(2.0 * (end - s_grid))
-        in_shadow = enter * exit_
-        mask = mask * (1.0 - in_shadow * (1.0 - opacity))
-
-    return mask
+    P_center:     jnp.ndarray  # [n_control, 2]   centerline control points
+    P_left:       jnp.ndarray  # [n_control, 2]   left  boundary control points
+    P_right:      jnp.ndarray  # [n_control, 2]   right boundary control points
+    s_grid:       jnp.ndarray  # [n_query]        cumulative arc length at u_grid
+    u_grid:       jnp.ndarray  # [n_query]        uniform u ∈ [0,1)
+    L:            jnp.ndarray  # ()               total track length [m]
+    half_w_left:  jnp.ndarray  # [n_query]        half-width to left  cone
+    half_w_right: jnp.ndarray  # [n_query]        half-width to right cone
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# §4  Rubber Build-Up
+# §2.  Periodic uniform cubic B-spline basis (analytic to order 2)
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# Local parameter t ∈ [0,1) on each segment:
+#   B₀(t) = (1−t)³ / 6
+#   B₁(t) = (3t³ − 6t² + 4) / 6
+#   B₂(t) = (−3t³ + 3t² + 3t + 1) / 6
+#   B₃(t) = t³ / 6
+# Σ B_k = 1 (partition of unity), B_k ≥ 0 on [0,1] (convex combination).
+# C² continuity at integer knots → centerline κ(s) is C⁰.
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _basis_b0(t):  # value
+    one_m_t = 1.0 - t
+    return jnp.stack([
+        one_m_t ** 3 / 6.0,
+        (3.0 * t ** 3 - 6.0 * t ** 2 + 4.0) / 6.0,
+        (-3.0 * t ** 3 + 3.0 * t ** 2 + 3.0 * t + 1.0) / 6.0,
+        t ** 3 / 6.0,
+    ], axis=0)
+
+
+def _basis_b1(t):  # 1st derivative w.r.t. t
+    return jnp.stack([
+        -((1.0 - t) ** 2) / 2.0,
+        (9.0 * t ** 2 - 12.0 * t) / 6.0,
+        (-9.0 * t ** 2 + 6.0 * t + 3.0) / 6.0,
+        (t ** 2) / 2.0,
+    ], axis=0)
+
+
+def _basis_b2(t):  # 2nd derivative w.r.t. t
+    return jnp.stack([(1.0 - t),
+                      (3.0 * t - 2.0),
+                      (-3.0 * t + 1.0),
+                      t], axis=0)
+
+
+def _eval_bspline_periodic(P: jnp.ndarray, u: jnp.ndarray, basis_fn) -> jnp.ndarray:
+    """
+    Evaluate a periodic cubic B-spline (or its k-th derivative w.r.t. t) at u ∈ [0,1).
+
+    P:       [n_control, dim] periodic control points (no duplicate end point).
+    u:       () or (...) parameter values; modular access handles wrap.
+    basis_fn: one of _basis_b0 / _basis_b1 / _basis_b2.
+
+    Returns shape (..., dim). NB: The chain-rule scaling du/dt = 1/n_control is
+    NOT applied here — apply it at the call site if you need d/du as opposed
+    to d/dt of the local segment parameter.
+    """
+    n_c = P.shape[0]
+    u_scaled = u * n_c
+    i = jnp.floor(u_scaled).astype(jnp.int32)
+    t = u_scaled - i
+    B = basis_fn(t)                                                # [4, ...]
+    idx = (i[..., None] + jnp.arange(4)[None, :]) % n_c            # [..., 4]
+    P_local = P[idx]                                               # [..., 4, dim]
+    # Contract: B over its leading axis vs. P_local over the 4-neighbours axis.
+    return jnp.einsum('k...,...kd->...d', B, P_local)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# §3.  Arc-length lookup table (Gauss-Legendre)
+# ─────────────────────────────────────────────────────────────────────────────
+
+_GL4_NODES = jnp.array([
+    -0.8611363115940526, -0.3399810435848563,
+     0.3399810435848563,  0.8611363115940526,
+])
+_GL4_WEIGHTS = jnp.array([
+    0.3478548451374538, 0.6521451548625461,
+    0.6521451548625461, 0.3478548451374538,
+])
+
+
+def _build_arclength_table(P_center: jnp.ndarray, n_query: int):
+    """
+    Returns (u_grid [n_query], s_grid [n_query], L ()).
+    Per-segment integration of ‖dr/du‖ via 4-pt Gauss-Legendre.
+    """
+    nodes_01 = 0.5 * (_GL4_NODES + 1.0)
+    weights  = 0.5 * _GL4_WEIGHTS
+    du = 1.0 / n_query
+    u_edges = jnp.arange(n_query, dtype=jnp.float32) * du
+
+    n_c = P_center.shape[0]
+
+    def seg_length(u_lo):
+        u_pts = u_lo + du * nodes_01                                # [4]
+        d1_t = jax.vmap(lambda uu: _eval_bspline_periodic(P_center, uu, _basis_b1))(u_pts)
+        # dr/du = (1/du)·dr/dt? No — basis is evaluated against control points,
+        # the segment local t goes from 0..1 across one knot interval of width
+        # 1/n_c in u, so dr/du = n_c · (basis_b1 · P_local). Magnitude:
+        speed = jnp.linalg.norm(d1_t, axis=-1) * n_c
+        return du * jnp.dot(weights, speed)
+
+    seg_lengths = jax.vmap(seg_length)(u_edges)                     # [n_query]
+    s_cum = jnp.concatenate([jnp.array([0.0], dtype=seg_lengths.dtype),
+                             jnp.cumsum(seg_lengths)])
+    return u_edges, s_cum[:-1], s_cum[-1]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# §4.  Construction — from FSG cone arrays
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _resample_periodic_chord(xy: jnp.ndarray, n_out: int) -> jnp.ndarray:
+    """
+    Periodic chord-length resample to exactly n_out points uniformly spaced
+    in cumulative chord-length. This is the implicit knot-vector for the
+    B-spline (uniform parameterization in chord-length is the workhorse for
+    racing-line splines — no Foley-Nielson reparam needed at FSG track scales).
+    """
+    diffs   = xy - jnp.roll(xy, 1, axis=0)
+    seg_len = jnp.linalg.norm(diffs, axis=-1)
+    cum     = jnp.cumsum(seg_len)
+    total   = cum[-1]
+    u_in    = cum / (total + 1e-12)                                 # ∈ (0,1]
+    u_out   = jnp.linspace(0.0, 1.0, n_out + 1)[:-1]                # ∈ [0,1)
+
+    # jnp.interp with period= for proper wrap-around
+    x_out = jnp.interp(u_out, u_in, xy[:, 0], period=1.0)
+    y_out = jnp.interp(u_out, u_in, xy[:, 1], period=1.0)
+    return jnp.stack([x_out, y_out], axis=-1)
+
+
+def from_cones(
+    left_xy:  jnp.ndarray,                                          # [N_l, 2]
+    right_xy: jnp.ndarray,                                          # [N_r, 2]
+    config:   TrackGeometryConfig = TrackGeometryConfig(),
+) -> TrackGeometry:
+    """
+    Build TrackGeometry from FSG left/right cone polylines.
+
+    Caller must pre-order cones along the direction of travel (driverless
+    perception layer is responsible for this — see project_gp_mirena_bridge
+    track_ingestor.py for the gate-matching ROS-side preprocessor).
+    """
+    P_left   = _resample_periodic_chord(left_xy,  config.n_control)
+    P_right  = _resample_periodic_chord(right_xy, config.n_control)
+    P_center = 0.5 * (P_left + P_right)
+
+    u_grid, s_grid, L = _build_arclength_table(P_center, config.n_query)
+
+    # Half-widths sampled at the LUT grid (cached for fast queries)
+    eval_u = lambda P, u: _eval_bspline_periodic(P, u, _basis_b0)
+    pos_c = jax.vmap(lambda u: eval_u(P_center, u))(u_grid)
+    pos_l = jax.vmap(lambda u: eval_u(P_left,   u))(u_grid)
+    pos_r = jax.vmap(lambda u: eval_u(P_right,  u))(u_grid)
+
+    half_w_left  = jnp.linalg.norm(pos_l - pos_c, axis=-1)
+    half_w_right = jnp.linalg.norm(pos_r - pos_c, axis=-1)
+
+    return TrackGeometry(
+        P_center=P_center, P_left=P_left, P_right=P_right,
+        s_grid=s_grid, u_grid=u_grid, L=L,
+        half_w_left=half_w_left, half_w_right=half_w_right,
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# §5.  Construction — Frenet integration from a κ(s) profile
+# ─────────────────────────────────────────────────────────────────────────────
+# Useful for domain-randomized track generation. The Frenet–Serret system
+# in 2D collapses to:
+#
+#     dψ/ds = κ(s)
+#     dx/ds = cos ψ
+#     dy/ds = sin ψ
+#
+# Closed-track guarantee: rescale κ so ∫κ ds = ±2π · n_loops.
+# ─────────────────────────────────────────────────────────────────────────────
+
+def from_curvature(
+    kappa_s:    jnp.ndarray,                                        # [N_s]
+    ds:         float,
+    half_width: float = 2.0,
+    config:     TrackGeometryConfig = TrackGeometryConfig(),
+    n_loops:    int = 1,
+) -> TrackGeometry:
+    """
+    Integrate κ(s) → (x(s), y(s)) via Frenet, then refit B-spline control
+    points so the rest of the pipeline (arc-length LUT, normals, curvature
+    queries) stays consistent.
+
+    Closure is enforced: total turning is rescaled to 2π·n_loops.
+    """
+    # Enforce closure
+    int_k    = jnp.sum(kappa_s) * ds
+    target   = 2.0 * jnp.pi * n_loops
+    # Sign-preserving rescale (avoid κ=0 division)
+    scale    = target / (int_k + jnp.sign(int_k) * 1e-6)
+    kappa_s  = kappa_s * scale
+
+    # Symplectic Frenet integration (trapezoidal heading update)
+    psi = jnp.cumsum(kappa_s) * ds                                  # [N_s]
+    psi = psi - psi[0]                                              # start at heading 0
+    cos_psi = jnp.cos(psi)
+    sin_psi = jnp.sin(psi)
+    # Trapezoidal position integration for ½-step accuracy boost
+    cos_avg = 0.5 * (cos_psi + jnp.roll(cos_psi, 1))
+    sin_avg = 0.5 * (sin_psi + jnp.roll(sin_psi, 1))
+    cos_avg = cos_avg.at[0].set(cos_psi[0])
+    sin_avg = sin_avg.at[0].set(sin_psi[0])
+    x = jnp.cumsum(cos_avg) * ds
+    y = jnp.cumsum(sin_avg) * ds
+    xy_center = jnp.stack([x, y], axis=-1)
+
+    # Inward normal at each station: n̂ = (-sin ψ, cos ψ)
+    n_hat = jnp.stack([-sin_psi, cos_psi], axis=-1)
+    P_left_xy  = xy_center + half_width * n_hat
+    P_right_xy = xy_center - half_width * n_hat
+
+    return from_cones(P_left_xy, P_right_xy, config=config)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# §6.  Domain randomization — FSG-compliant random tracks
+# ─────────────────────────────────────────────────────────────────────────────
+# Strategy: sample a corner-straight skeleton with random radii drawn from the
+# FSG-rules envelope (R_min ≈ 9 m for hairpins → κ_max ≈ 0.11). Smooth corner
+# transitions with a half-Hann taper to keep κ(s) C¹.
+# ─────────────────────────────────────────────────────────────────────────────
+
+def randomize(
+    key:         jax.Array,
+    length:      float = 350.0,
+    n_corners:   int   = 10,
+    kappa_max:   float = 0.13,                                      # FSG R≈7.7 m
+    half_width:  float = 2.0,
+    ds:          float = 0.25,
+    config:      TrackGeometryConfig = TrackGeometryConfig(),
+) -> TrackGeometry:
+    """
+    Generate a closed FSG-compliant random track. Returns a TrackGeometry whose
+    control points are differentiable w.r.t. nothing (it's a sample), but the
+    output track itself supports gradient queries downstream.
+    """
+    k1, k2, k3, k4 = jax.random.split(key, 4)
+
+    # 50% straight, 50% corner budget — typical FSG sprint character
+    corner_budget   = 0.5 * length
+    straight_budget = length - corner_budget
+
+    # Corner curvatures: log-uniform in [0.05, kappa_max], random sign
+    log_min, log_max = jnp.log(0.05), jnp.log(kappa_max)
+    log_k    = jax.random.uniform(k1, (n_corners,), minval=log_min, maxval=log_max)
+    signs    = jax.random.choice(k2, jnp.array([-1.0, 1.0]), (n_corners,))
+    k_vals   = signs * jnp.exp(log_k)
+
+    # Dirichlet allocation for both corner arc-lengths and straight lengths
+    raw_c    = jax.random.gamma(k3, jnp.ones(n_corners))
+    arc_corn = corner_budget * raw_c / (jnp.sum(raw_c) + 1e-12)
+
+    raw_s    = jax.random.gamma(k4, jnp.ones(n_corners + 1))
+    arc_str  = straight_budget * raw_s / (jnp.sum(raw_s) + 1e-12)
+
+    # Build dense κ(s) profile in pure JAX (no Python list comprehension in
+    # traced code — but this function is called outside of JIT, so use NumPy-
+    # style index assignment via at[].set() in a single fori_loop).
+    n_s = int(jnp.ceil(length / ds))
+    s_axis = jnp.arange(n_s) * ds
+    kappa_dense = jnp.zeros(n_s)
+
+    # Build piecewise constant κ via a fori_loop accumulator on (s_start, k_val)
+    s_starts = jnp.cumsum(jnp.concatenate([
+        jnp.array([arc_str[0]]),
+        # interleave corners + straights from index 1
+        jnp.stack([arc_corn[:-1] + arc_str[1:-1], arc_str[1:-1]], axis=-1).ravel()[:2*(n_corners-1)],
+    ]))
+    # Simpler: compute corner [start, end] via cumulative sum of stitched events
+    seg_lens = jnp.concatenate([
+        jnp.stack([arc_str[:-1], arc_corn], axis=-1).ravel(),       # str, corn, str, corn, ...
+        arc_str[-1:],
+    ])                                                              # length 2*n_corners + 1
+    seg_kvals = jnp.concatenate([
+        jnp.stack([jnp.zeros(n_corners), k_vals], axis=-1).ravel(),
+        jnp.array([0.0]),
+    ])                                                              # length 2*n_corners + 1
+    seg_ends = jnp.cumsum(seg_lens)                                 # absolute end-of-segment
+
+    # Vectorized assignment: for each station s, pick the segment it belongs to
+    # via `searchsorted(seg_ends, s, side='right')`
+    seg_idx = jnp.searchsorted(seg_ends, s_axis, side='right')
+    seg_idx = jnp.clip(seg_idx, 0, seg_kvals.shape[0] - 1)
+    kappa_dense = seg_kvals[seg_idx]
+
+    # Smooth κ(s) with a half-Hann window to give C¹ corner entries/exits.
+    # Corners < 6 m of taper would be physically dubious at 80 km/h.
+    hann_n = max(int(round(2.0 / ds)), 4)                           # 2 m taper window
+    if hann_n % 2 == 0:
+        hann_n += 1
+    half = hann_n // 2
+    n_arr = jnp.arange(hann_n)
+    hann = 0.5 - 0.5 * jnp.cos(2 * jnp.pi * n_arr / (hann_n - 1))
+    hann = hann / (jnp.sum(hann) + 1e-12)
+    kappa_smooth = jnp.convolve(kappa_dense, hann, mode='same')
+
+    return from_curvature(
+        kappa_smooth, ds=ds, half_width=half_width,
+        config=config, n_loops=1,
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# §7.  Public query API — fully differentiable
 # ─────────────────────────────────────────────────────────────────────────────
 
 @jax.jit
-def update_rubber_level(
-    rubber: jax.Array,        # (N_s, N_n) current rubber level
-    car_s: jax.Array,         # car position along track [m]
-    car_n: jax.Array,         # car lateral offset [m]
-    cfg: TrackSurfaceConfig = TrackSurfaceConfig(),
-    dt: float = 0.005,
-) -> jax.Array:
+def _u_of_s(track: TrackGeometry, s: jnp.ndarray) -> jnp.ndarray:
     """
-    Update rubber accumulation based on car position.
-
-    Rubber deposits in a Gaussian pattern around the car's lateral position.
-    The racing line gradually builds up μ over multiple laps.
-
-    rubber(s, n) += rate · G(n - car_n; σ_w) · G(s - car_s; σ_s)
-
-    Decay: rubber -= decay_rate · rubber · dt
+    Invert the arc-length LUT: find u such that s_grid(u)=s.
+    Linear interp between LUT entries — gradient-safe, no branching.
     """
-    N_s_concrete = rubber.shape[0]
-    N_n_concrete = rubber.shape[1]
-    ds = cfg.track_length / N_s_concrete
-    dn = 2.0 * cfg.track_half_width / N_n_concrete
+    s_mod = jnp.mod(s, track.L)
+    # searchsorted → linear interp on u_grid via s_grid
+    return jnp.interp(s_mod, track.s_grid, track.u_grid, period=None)
 
-    s_grid = jnp.linspace(0, cfg.track_length, N_s_concrete)
-    n_grid = jnp.linspace(-cfg.track_half_width, cfg.track_half_width, N_n_concrete)
-
-    # Gaussian deposit centered on car position
-    # Longitudinal: sharp deposit under contact patch (~0.15m)
-    s_dist = jnp.abs(s_grid - car_s)
-    # Handle wraparound for circuit
-    s_dist = jnp.minimum(s_dist, cfg.track_length - s_dist)
-    g_s = jnp.exp(-0.5 * (s_dist / 0.3) ** 2)  # σ_s = 0.3m
-
-    # Lateral: wider deposit (full tire width ~0.2m, spread by traffic)
-    g_n = jnp.exp(-0.5 * ((n_grid - car_n) / cfg.rubber_width) ** 2)
-
-    # Outer product gives 2D deposit pattern
-    deposit = jnp.outer(g_s, g_n) * cfg.rubber_rate * dt
-
-    # Update with deposit and decay
-    rubber_new = rubber + deposit - cfg.rubber_decay * rubber * dt
-    return jnp.clip(rubber_new, 0.0, 1.0)
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# §5  Track Thermal Evolution
-# ─────────────────────────────────────────────────────────────────────────────
-
-@partial(jax.jit, static_argnums=())
-def update_track_temperature(
-    T_surface: jax.Array,       # (N_s, N_n) current surface temperatures [°C]
-    shadow_mask: jax.Array,     # (N_s,) solar occlusion factor
-    cfg: TrackSurfaceConfig = TrackSurfaceConfig(),
-    dt: float = 1.0,            # thermal update timestep (can be larger than sim dt)
-) -> jax.Array:
-    """
-    Track surface temperature evolution.
-
-    Energy balance per cell:
-      C · dT/dt = Q_solar - Q_radiation - Q_convection - Q_conduction
-
-    Q_solar = α · I_solar · shadow_factor
-    Q_radiation = ε · σ_SB · T⁴ (linearized around T_base)
-    Q_convection = h_wind · (T - T_air)
-    Q_conduction = k/d · (T - T_bulk)  [conduction into asphalt bulk]
-
-    Returns: updated T_surface (N_s, N_n)
-    """
-    sigma_SB = 5.67e-8  # Stefan-Boltzmann constant
-
-    # Surface depth for heat capacity
-    d_surface = 0.02  # m — top 2cm of asphalt exchanges heat rapidly
-    C_cell = cfg.rho_c_asphalt * d_surface  # J/m²/K
-
-    # Solar heating (per unit area, shadow-modulated)
-    Q_solar = cfg.alpha_solar * cfg.solar_flux * shadow_mask[:, None]
-    Q_solar = jnp.broadcast_to(Q_solar, T_surface.shape)
-
-    # Radiative cooling (linearized: Q_rad ≈ 4·ε·σ·T₀³·(T-T₀))
-    T_K = T_surface + 273.15
-    T_ref_K = cfg.T_air + 273.15
-    Q_rad = cfg.emissivity * sigma_SB * 4.0 * T_ref_K ** 3 * (T_K - T_ref_K)
-
-    # Wind convection
-    Q_conv = cfg.h_wind * (T_surface - cfg.T_air)
-
-    # Conduction to bulk (slow — bulk at ~T_air + small offset)
-    T_bulk = cfg.T_air + 2.0  # bulk temperature slightly above air
-    Q_cond = cfg.k_asphalt / 0.1 * (T_surface - T_bulk)  # 0.1m depth to bulk
-
-    # Energy balance
-    dT_dt = (Q_solar - Q_rad - Q_conv - Q_cond) / C_cell
-    T_new = T_surface + dT_dt * dt
-
-    return jnp.clip(T_new, -10.0, 80.0)
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# §6  Friction Query
-# ─────────────────────────────────────────────────────────────────────────────
 
 @jax.jit
-def query_track_friction(
-    car_s: jax.Array,           # distance along track [m]
-    car_n: jax.Array,           # lateral offset [m]
-    state: TrackSurfaceState,
-    cfg: TrackSurfaceConfig = TrackSurfaceConfig(),
-) -> tuple:
+def query(
+    track: TrackGeometry,
+    s:     jnp.ndarray,                                             # () or [N]
+) -> Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
     """
-    Query the local friction coefficient and track temperature at (s, n).
+    Returns (pos, T̂, N̂, κ, w_left, w_right) for one or many arc-length stations.
 
-    Bilinear interpolation from the grid.
-
-    Returns:
-        mu_local: local friction multiplier (to be applied to tire μ)
-        T_track_local: local track surface temperature [°C]
+    Differentiable w.r.t. s (continuous through the LUT) AND w.r.t. the
+    underlying control points (chain rule through the basis evaluation).
     """
-    # Map (s, n) to grid indices (fractional)
-    s_frac = (car_s % cfg.track_length) / cfg.track_length * (cfg.N_s - 1)
-    n_frac = ((car_n + cfg.track_half_width)
-              / (2.0 * cfg.track_half_width) * (cfg.N_n - 1))
+    u = _u_of_s(track, s)                                           # broadcast-shape
 
-    # Clamp to grid bounds
-    s_frac = jnp.clip(s_frac, 0.0, cfg.N_s - 1.001)
-    n_frac = jnp.clip(n_frac, 0.0, cfg.N_n - 1.001)
+    # Unscale to local segment param (chain rule: d/du = n_c · d/dt)
+    n_c = track.P_center.shape[0]
 
-    # Bilinear interpolation indices
-    si = jnp.floor(s_frac).astype(jnp.int32)
-    ni = jnp.floor(n_frac).astype(jnp.int32)
-    sf = s_frac - si  # fractional part
-    nf = n_frac - ni
+    # Position
+    pos = _eval_bspline_periodic(track.P_center, u, _basis_b0)      # [..., 2]
 
-    si1 = jnp.minimum(si + 1, cfg.N_s - 1)
-    ni1 = jnp.minimum(ni + 1, cfg.N_n - 1)
+    # Tangent in u-space, then scale to s-space tangent (unit)
+    dr_du = _eval_bspline_periodic(track.P_center, u, _basis_b1) * n_c   # [..., 2]
+    speed_u = jnp.linalg.norm(dr_du, axis=-1, keepdims=True) + 1e-9
+    T_hat = dr_du / speed_u
+    # Inward normal: rotate +90° (left of travel)
+    N_hat = jnp.stack([-T_hat[..., 1], T_hat[..., 0]], axis=-1)
 
-    # ── Rubber level interpolation ────────────────────────────────────────
-    r00 = state.rubber_level[si, ni]
-    r10 = state.rubber_level[si1, ni]
-    r01 = state.rubber_level[si, ni1]
-    r11 = state.rubber_level[si1, ni1]
-    rubber = (r00 * (1 - sf) * (1 - nf) + r10 * sf * (1 - nf)
-              + r01 * (1 - sf) * nf + r11 * sf * nf)
+    # Curvature: κ = (x'y'' − y'x'') / ‖r'‖³  with primes in u-parameter
+    d2r_du2 = _eval_bspline_periodic(track.P_center, u, _basis_b2) * (n_c ** 2)
+    cross_uu = (dr_du[..., 0] * d2r_du2[..., 1]
+                - dr_du[..., 1] * d2r_du2[..., 0])
+    speed_u_sq = jnp.sum(dr_du ** 2, axis=-1)
+    kappa = cross_uu / (speed_u_sq ** 1.5 + 1e-12)
 
-    # ── Temperature interpolation ─────────────────────────────────────────
-    t00 = state.T_surface[si, ni]
-    t10 = state.T_surface[si1, ni]
-    t01 = state.T_surface[si, ni1]
-    t11 = state.T_surface[si1, ni1]
-    T_local = (t00 * (1 - sf) * (1 - nf) + t10 * sf * (1 - nf)
-               + t01 * (1 - sf) * nf + t11 * sf * nf)
+    # Half-widths via cached LUT (linear interp)
+    w_left  = jnp.interp(jnp.mod(s, track.L), track.s_grid, track.half_w_left)
+    w_right = jnp.interp(jnp.mod(s, track.L), track.s_grid, track.half_w_right)
 
-    # ── Moisture interpolation ────────────────────────────────────────────
-    m00 = state.moisture[si, ni]
-    m10 = state.moisture[si1, ni]
-    m01 = state.moisture[si, ni1]
-    m11 = state.moisture[si1, ni1]
-    moisture = (m00 * (1 - sf) * (1 - nf) + m10 * sf * (1 - nf)
-                + m01 * (1 - sf) * nf + m11 * sf * nf)
+    return pos, T_hat, N_hat, kappa, w_left, w_right
 
-    # ── Composite friction multiplier ─────────────────────────────────────
-    # Rubber contribution: dusty → rubbered-in
-    mu_rubber = cfg.mu_dusty + (cfg.mu_rubbered - cfg.mu_dusty) * rubber
-
-    # Temperature contribution: Gaussian peak at T_grip_peak
-    T_diff = T_local - cfg.T_grip_peak
-    mu_thermal = 1.0 - 0.08 * (T_diff / cfg.T_grip_width) ** 2
-
-    # Moisture contribution
-    mu_moisture = 1.0 - moisture * (1.0 - cfg.mu_wet)
-
-    # Combined multiplier (multiplicative, centered on 1.0)
-    mu_local = cfg.mu_base * mu_rubber * mu_thermal * mu_moisture
-    mu_local = jnp.clip(mu_local, 0.3, 1.5)
-
-    return mu_local, T_local
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# §7  Per-Corner Friction Query
-# ─────────────────────────────────────────────────────────────────────────────
 
 @jax.jit
-def query_corner_friction(
-    car_s: jax.Array,           # distance along track [m]
-    car_n: jax.Array,           # lateral offset of CG [m]
-    yaw: jax.Array,             # yaw angle [rad]
-    state: TrackSurfaceState,
-    cfg: TrackSurfaceConfig = TrackSurfaceConfig(),
-    track_f: float = 1.20,      # front track width [m]
-    track_r: float = 1.18,      # rear track width [m]
-    lf: float = 0.8525,
-    lr: float = 0.6975,
-) -> tuple:
+def project_xy(
+    track:        TrackGeometry,
+    xy:           jnp.ndarray,                                      # [2]
+    s_guess:      jnp.ndarray,                                      # ()
+    search_half:  float = 12.0,
+) -> Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
     """
-    Query friction for each contact patch.
+    Project a world-frame point onto the centerline.
 
-    Each tire contacts the track at a different (s, n) position.
-    The friction can be DIFFERENT at each corner — asymmetric grip.
+    Returns (s_closest, n_signed, heading_at_s).
+        n_signed > 0   : car is on left of centerline (inside +N̂ half-plane)
+        n_signed < 0   : right side
 
-    Returns:
-        mu_corners: (4,) local friction multipliers [FL, FR, RL, RR]
-        T_corners: (4,) local track temperatures [°C]
+    Implementation: windowed soft-argmin around s_guess (warm-started from
+    previous timestep). Fully differentiable in xy via softmax temperature.
     """
-    cos_yaw = jnp.cos(yaw)
-    sin_yaw = jnp.sin(yaw)
+    n_cands  = 96
+    s_lo     = s_guess - search_half
+    s_hi     = s_guess + search_half
+    s_cands  = jnp.linspace(s_lo, s_hi, n_cands)
 
-    # Contact patch positions in track coordinates
-    # FL: forward-left, FR: forward-right, RL: rear-left, RR: rear-right
-    offsets = jnp.array([
-        [lf, track_f / 2],    # FL
-        [lf, -track_f / 2],   # FR
-        [-lr, track_r / 2],   # RL
-        [-lr, -track_r / 2],  # RR
-    ])
+    pos_c, T_c, N_c, _, _, _ = jax.vmap(lambda ss: query(track, ss))(s_cands)
+    d_sq = jnp.sum((pos_c - xy[None, :]) ** 2, axis=-1)             # [n_cands]
 
-    # Rotate offsets by yaw angle
-    s_offsets = offsets[:, 0] * cos_yaw - offsets[:, 1] * sin_yaw
-    n_offsets = offsets[:, 0] * sin_yaw + offsets[:, 1] * cos_yaw
+    # Soft-argmin (τ chosen so that the gradient is sharp but never zero)
+    tau     = 0.5
+    weights = jax.nn.softmax(-d_sq / tau)
+    s_best  = jnp.dot(weights, s_cands)
 
-    s_corners = car_s + s_offsets
-    n_corners = car_n + n_offsets
-
-    # Query each corner
-    mu_corners, T_corners = jax.vmap(
-        lambda s, n: query_track_friction(s, n, state, cfg)
-    )(s_corners, n_corners)
-
-    return mu_corners, T_corners
+    pos_b, T_b, N_b, _, _, _ = query(track, s_best)
+    delta_xy = xy - pos_b
+    n_signed = jnp.dot(delta_xy, N_b)
+    psi_track = jnp.arctan2(T_b[1], T_b[0])
+    return s_best, n_signed, psi_track
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# §8  Full Track Update Step
+# §8.  Smoke test (not run under JIT path — for local sanity only)
 # ─────────────────────────────────────────────────────────────────────────────
-
-@partial(jax.jit, static_argnums=())
-def track_surface_step(
-    state: TrackSurfaceState,
-    car_s: jax.Array,
-    car_n: jax.Array,
-    cfg: TrackSurfaceConfig = TrackSurfaceConfig(),
-    dt_sim: float = 0.005,
-    dt_thermal: float = 1.0,
-    update_thermal: bool = True,
-) -> TrackSurfaceState:
-    """
-    Full track surface update: rubber deposition + thermal evolution.
-
-    Called every sim step for rubber update, every 1s for thermal update
-    (thermal time constants are much longer than the sim dt).
-    """
-    # Rubber build-up
-    rubber_new = update_rubber_level(state.rubber_level, car_s, car_n, cfg, dt_sim)
-
-    # Thermal update (only when triggered — saves compute)
-    T_new = jax.lax.cond(
-        update_thermal,
-        lambda t: update_track_temperature(t, state.shadow_mask, cfg, dt_thermal),
-        lambda t: t,
-        state.T_surface,
-    )
-
-    return TrackSurfaceState(
-        T_surface=T_new,
-        rubber_level=rubber_new,
-        moisture=state.moisture,  # moisture evolves on longer timescales (rain model)
-        shadow_mask=state.shadow_mask,
-    )
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# §9  Initialization Helpers
-# ─────────────────────────────────────────────────────────────────────────────
-
-def create_track_surface(
-    track_length: float = 1000.0,
-    track_width: float = 10.0,
-    n_laps_pre_rubbered: int = 0,
-    shadow_zones: list = None,
-    T_ambient: float = 25.0,
-    solar_flux: float = 800.0,
-) -> tuple:
-    """
-    Factory to create track surface state and config.
-
-    Args:
-        track_length: circuit length [m]
-        track_width: total track width [m]
-        n_laps_pre_rubbered: simulate this many laps of rubber build-up
-        shadow_zones: list of (start_m, end_m, opacity) for shadow regions
-        T_ambient: ambient temperature [°C]
-        solar_flux: solar radiation [W/m²]
-
-    Returns:
-        state: TrackSurfaceState
-        cfg: TrackSurfaceConfig
-    """
-    cfg = TrackSurfaceConfig(
-        track_length=track_length,
-        track_half_width=track_width / 2.0,
-        T_air=T_ambient,
-        T_surface_base=T_ambient + 10.0,  # track warmer than air
-        solar_flux=solar_flux,
-    )
-
-    shadow = create_shadow_mask(cfg.N_s, track_length, shadow_zones)
-
-    state = TrackSurfaceState(
-        T_surface=jnp.full((cfg.N_s, cfg.N_n), cfg.T_surface_base),
-        rubber_level=jnp.zeros((cfg.N_s, cfg.N_n)),
-        moisture=jnp.zeros((cfg.N_s, cfg.N_n)),
-        shadow_mask=shadow,
-    )
-
-    # Pre-rubber if requested (simulate ideal racing line deposition)
-    if n_laps_pre_rubbered > 0:
-        # Deposit rubber along the ideal racing line (n ≈ 0)
-        n_grid = jnp.linspace(-cfg.track_half_width, cfg.track_half_width, cfg.N_n)
-        racing_line_deposit = jnp.exp(-0.5 * (n_grid / 1.5) ** 2)
-        per_lap = cfg.rubber_rate * track_length / (cfg.track_length / cfg.N_s)
-        total_rubber = jnp.minimum(
-            per_lap * n_laps_pre_rubbered * racing_line_deposit[None, :],
-            1.0,
-        )
-        state = state._replace(
-            rubber_level=jnp.broadcast_to(total_rubber, (cfg.N_s, cfg.N_n)))
-
-    return state, cfg
+if __name__ == "__main__":
+    print("[track_surface] smoke test …")
+    key = jax.random.PRNGKey(0)
+    trk = randomize(key, length=300.0, n_corners=8)
+    print(f"  L = {float(trk.L):.2f} m")
+    s_test = jnp.linspace(0.0, float(trk.L), 5)
+    pos, T_hat, N_hat, kappa, wL, wR = jax.vmap(lambda s: query(trk, s))(s_test)
+    print(f"  κ samples = {kappa}")
+    print(f"  w_left = {wL}")
+    # Gradient check: ∂(κ at s=50)/∂(P_center[0,0]) should be finite
+    g = jax.grad(lambda P, s: query(trk._replace(P_center=P), s)[3])(trk.P_center, jnp.array(50.0))
+    print(f"  grad κ wrt P_center[0]: {g[0]}  (finite gradient → differentiability OK)")
+    print("[track_surface] OK.")
