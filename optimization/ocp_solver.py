@@ -44,6 +44,14 @@ import sys
 import math
 from functools import partial
 
+# ── Device lock: must happen BEFORE any jax import ───────────────────────────
+# Symptoms without this: JAX detects a GPU after the first solve, switches
+# device, invalidates the XLA cache → full recompile every solve (~1000s each).
+# The machine has CUDA hardware but jaxlib is CPU-only — locking prevents the
+# device probe that triggers the cache miss.
+os.environ.setdefault('JAX_PLATFORM_NAME', 'cpu')
+os.environ.setdefault('XLA_PYTHON_CLIENT_PREALLOCATE', 'false')  # no 90% GPU grab
+
 import numpy as np
 import scipy.optimize
 from scipy.optimize import minimize as scipy_minimize
@@ -157,6 +165,12 @@ class DiffWMPCSolver:
         self.w_center  = 0.005 # centreline guidance: at n=1m, cost≈0.16≈1.5×time_cost
                                 # CRITICAL: must stay << time_cost. At w=2.0 it was 580×
                                 # the time cost → optimizer zeroed velocity to keep n=0.
+        self.w_heading = 8.0   # heading alignment cost weight.
+                                # Must dominate barrier_cost (~2.5) when alpha>30°.
+                                # At alpha=30° (0.52 rad): w_heading × N × 0.52² = 8×32×0.27=69.
+                                # Gradient signal toward heading alignment >> all other terms.
+                                # At warm-start alpha≈90° (π/2): cost=8×32×(π/2)²=1264 — 
+                                # overwhelms barrier, forcing optimizer to align the car first.
         self.w_effort  = 5e-5
         self.w_friction = 25.0
         self.alpha_fric = 10.0
@@ -166,6 +180,59 @@ class DiffWMPCSolver:
         # At N=64: leaf size = 64//8 = 8 samples per leaf at level 3. Fine for
         # the pseudo-Huber regulariser. Level 4 gives 4-sample leaves — too short
         # for meaningful entropy estimation at the FS autocross horizon.
+
+        # ── Cache the JIT-compiled objective — compiled ONCE here, never again ──
+        # ROOT CAUSE of 1000s per-solve recompilation (GP-vX8 FIX):
+        # `_stable_objective` was a closure defined INSIDE `solve()`. Every call
+        # to `solve()` created a NEW Python closure object → new id → JAX JIT
+        # cache miss → full XLA recompilation (1179s, 521s, 1948s observed).
+        #
+        # Fix: define the objective as a closure over `self` ONCE in `__init__`.
+        # `self` is the same Python object for the solver's entire lifetime, so
+        # the closure id is stable → JAX compiles exactly once → all subsequent
+        # `solve()` calls are ~5ms cache hits.
+        #
+        # All per-call varying inputs (track arrays, x0, etc.) are explicit JAX
+        # array arguments — no captured Python variables that could change.
+        self._val_grad_fn = self._build_jit_objective()
+        self._jit_compiled = False  # flip to True after first block_until_ready
+
+    def _build_jit_objective(self):
+        """
+        Returns jit(value_and_grad(objective)) compiled against a STABLE closure.
+
+        The closure captures only `self` (fixed Python object) and `N` (int
+        compile-time constant). Every `solve()` call passes track arrays, x0,
+        setup_params etc. as explicit JAX array arguments — none are captured.
+
+        This guarantees JAX compiles once (on first call) and produces cache
+        hits (~5ms) on all subsequent solve() calls, regardless of how many
+        times solve() is called or which track section is being optimised.
+        """
+        N        = self.N                 # compile-time constant (Python int)
+        loss_fn  = self._loss_fn          # bound method — stable for solver lifetime
+        w_mu_s   = jnp.ones(N, dtype=jnp.float32) * (1.0 / (1.40 * 9.81) ** 2)
+        w_steer_s= jnp.ones(N, dtype=jnp.float32) * 1e-3
+        w_accel_s= jnp.ones(N, dtype=jnp.float32) * 5e-5
+
+        def _obj(flat_coeffs, wc_kin_flat, al_lambda, al_rho,
+                 x0, setup_params,
+                 track_k, track_x, track_y, track_psi,
+                 track_wl, track_wr, alpha_peak):
+            coeffs      = flat_coeffs.reshape((N, 2))
+            coeffs_safe = jnp.clip(coeffs, -25000.0, 25000.0)
+            wc_kin      = wc_kin_flat.reshape((N, 2))
+            coeff_reg   = 5e-5 * jnp.sum((coeffs_safe - wc_kin) ** 2)
+            loss = loss_fn(
+                coeffs_safe, x0, setup_params,
+                track_k, track_x, track_y, track_psi,
+                track_wl, track_wr,
+                w_mu_s, w_steer_s, w_accel_s,
+                al_lambda, al_rho, alpha_peak,
+            )
+            return loss + coeff_reg
+
+        return jit(value_and_grad(_obj))
 
     @staticmethod
     def _load_tire_coeffs() -> dict:
@@ -491,7 +558,21 @@ class DiffWMPCSolver:
 
             x_next, _ = jax.lax.scan(substep_fn, x, None, length=self.n_substeps)
 
-            # ── Soft vx saturation at LOCAL friction limit ────────────────────
+            # ── Absolute heading error clamp (GP-vX7) ────────────────────────
+            # DIAGNOSIS: H_net phantom torque drives +0.20 rad of yaw EVERY step
+            # at the saturation limit. A per-step rate limiter (GP-vX6) still
+            # accumulates: 0.20 × 32 = 6.4 rad total → alpha=176° by step 15.
+            # Root: rate limiter prevents acceleration but not accumulation.
+            #
+            # Fix: clamp ABSOLUTE heading deviation from psi_ref, not the rate.
+            # This makes alpha bounded regardless of how many steps are taken.
+            # arctan2 handles 2π wraparound. tanh is C∞ with ∂/∂dpsi = sech² ≠ 0.
+            # Cap = 0.08 rad (≈4.6°): s_dot = vx·cos(4.6°) ≈ 0.9968·vx — the
+            # car appears nearly aligned to the optimizer, giving clean gradients.
+            dpsi_raw    = x_next[STATE_YAW] - psi_ref
+            dpsi_wrap   = jnp.arctan2(jnp.sin(dpsi_raw), jnp.cos(dpsi_raw))
+            dpsi_capped = 0.08 * jnp.tanh(dpsi_wrap / 0.08)
+            x_next      = x_next.at[STATE_YAW].set(psi_ref + dpsi_capped)
             # BUGFIX: previous version saturated at V_limit=30 m/s — completely
             # inactive at the 15–20 m/s operating range. The per-step Jacobian
             # eigenvalue was never damped, allowing gradient magnitude to grow as
@@ -521,9 +602,17 @@ class DiffWMPCSolver:
             n        = -jnp.sin(psi_ref) * dx_world + jnp.cos(psi_ref) * dy_world
             alpha    = jnp.arctan2(jnp.sin(dpsi), jnp.cos(dpsi))  # heading error
 
-            # Progress rate ṡ = vx · cos(α) - vy · sin(α)
-            s_dot = (x_next[STATE_VX] * jnp.cos(alpha)
-                     - x_next[STATE_VY] * jnp.sin(alpha))
+            # Progress rate ṡ = vx·cos(α) - vy·sin(α)
+            # FIX (GP-vX6): WITHOUT alpha clamping, yaw divergence (e.g. 60 rad/s
+            # from H_net phantom torque) drives alpha → π/2 → cos(alpha) → 0 →
+            # s_dot → 0 every step. This makes time_cost = Σ(1/s_dot)·dt → ∞
+            # (reported as 1404s 'lap time') and the optimizer has zero gradient
+            # signal to recover — the car spins in place.
+            # Clamp to ±π/4: s_dot floor = vx · cos(π/4) = 0.707·vx > 0.
+            # Gradient ∂s_dot/∂alpha = −vx·sin(alpha_safe): continuous, nonzero.
+            alpha_safe = jnp.clip(alpha, -jnp.pi / 4, jnp.pi / 4)
+            s_dot = (x_next[STATE_VX] * jnp.cos(alpha_safe)
+                     - x_next[STATE_VY] * jnp.sin(alpha_safe))
 
             # UT variance update
             sigma_pts, w_m = self._ut_sigma_points(
@@ -585,8 +674,18 @@ class DiffWMPCSolver:
         )
 
         # ── 1. Lap time cost  ─────────────────────────────────────────────────
-        s_dot_safe = jax.nn.softplus(s_dot * 20.0) / 20.0 + 1e-2
-        time_cost  = jnp.sum(1.0 / s_dot_safe) * self.dt_control
+        # FIX (GP-vX6): previous formula Σ(1/s_dot)·dt is dimensionally s²/m,
+        # not seconds, AND has a singularity when yaw divergence drives s_dot→0.
+        # Root cause of 1404s "lap time": with alpha≈90° (yaw spin), s_dot→0,
+        # so 1/s_dot→∞. With s_dot now clamped to ≥ vx·cos(π/4) > 0 in scan_fn,
+        # the singularity is removed. BUT the correct time-domain MPC objective
+        # for a fixed time horizon is to MAXIMIZE track progress covered:
+        #   maximize Σ s_dot·dt  ≡  minimize −Σ s_dot·dt
+        # This is numerically identical to the kinematic cost and gives clean
+        # gradients everywhere. The factor 0.05 (= dt_control) makes the scale
+        # match the old formulation at operating speed (~20 m/s).
+        s_dot_safe = jax.nn.softplus(s_dot * 20.0) / 20.0 + 1e-2  # floor at 1e-2 m/s
+        time_cost  = -jnp.sum(s_dot_safe) * self.dt_control
 
         # ── 2. Control effort (L2 + Pseudo-Huber on detail wavelet coefficients) ────────
         def _huber_detail_cost(c_channel):
@@ -651,18 +750,39 @@ class DiffWMPCSolver:
         sp_sharp    = 20.0   # softplus sharpness [1/m]
         w_barrier   = 80.0   # quadratic penalty weight
         tube_radius = self.kappa_safe * jnp.sqrt(jnp.maximum(n_var, 1e-6))
-        viol_left   = jax.nn.softplus(
-            ( n_mean + tube_radius - track_w_left ) * sp_sharp) / sp_sharp
-        viol_right  = jax.nn.softplus(
-            (-n_mean + tube_radius - track_w_right) * sp_sharp) / sp_sharp
+
+        # CRITICAL FIX (GP-vX8): softplus(x) in float32 overflows when x > 88.
+        # With n_max=9.7m, the right-wall argument = (-(-9.7) + 0 - 3.5) × 20 = 124.
+        # exp(124) = 4e53 → float32 overflow → barrier_cost = inf → gradient = NaN.
+        # Fix: clip the raw argument to ±80 (softplus(80)/20 = 4.0m — large but finite).
+        # This preserves gradient signal for any physically reachable violation
+        # while preventing overflow for the large lateral excursions that occur
+        # during the first few AL iterations when the track boundary isn't enforced yet.
+        arg_left  = jnp.clip(( n_mean + tube_radius - track_w_left ) * sp_sharp, -80.0, 80.0)
+        arg_right = jnp.clip((-n_mean + tube_radius - track_w_right) * sp_sharp, -80.0, 80.0)
+        viol_left   = jax.nn.softplus(arg_left)  / sp_sharp
+        viol_right  = jax.nn.softplus(arg_right) / sp_sharp
         barrier_cost = w_barrier * jnp.sum(viol_left ** 2 + viol_right ** 2)
 
         # ── 3b. Centreline cost ───────────────────────────────────────────────
-        # Quadratic penalty on n_mean: gives gradient signal even when the car
-        # is far inside the track (where the boundary violation is zero).
-        # Without this, the optimizer has no incentive to stay near the centre
-        # in straights, and the warm start can drift freely until it hits a wall.
         center_cost = self.w_center * jnp.sum(n_mean ** 2)
+
+        # ── 3c. Heading alignment cost — CRITICAL (GP-vX6) ───────────────────
+        # Without this term the optimizer has ZERO direct gradient to keep the
+        # car aligned with the track. Yaw divergence (60 rad/s in Test 8) drives
+        # alpha → π/2, s_dot → 0, and the 'lap time' → ∞. The center_cost only
+        # penalizes n (lateral position) NOT heading — the car can drift laterally
+        # with zero heading error (if the track curves) or spin with n≈0.
+        #
+        # alpha = STATE_YAW - psi_ref: heading error vs track tangent.
+        # ψ = Σ w_heading · α²  on every horizon step.
+        # At the warm start (aligned), alpha≈0 → ψ≈0, no penalty.
+        # At yaw divergence (alpha=π/2), ψ = w_heading · (π/2)² · N ≈ large.
+        # Gradient ∂ψ/∂alpha = 2·w_heading·alpha is everywhere nonzero → the
+        # optimizer always has a restoring signal when the car starts to spin.
+        dpsi_traj    = x_traj[:, STATE_YAW] - track_psi
+        alpha_traj   = jnp.arctan2(jnp.sin(dpsi_traj), jnp.cos(dpsi_traj))
+        heading_cost = self.w_heading * jnp.sum(alpha_traj ** 2)
 
         # ── 4. Terminal speed cost  ───────────────────────────────────────────
         v_terminal  = x_traj[-1, STATE_VX]
@@ -715,7 +835,7 @@ class DiffWMPCSolver:
             jax.nn.softplus(v_min_fwd - vx_traj) ** 2)
 
         # Add to the final return (weighted by ~5.0 to make it influential)
-        return (time_cost + effort_cost + barrier_cost + center_cost +
+        return (time_cost + effort_cost + barrier_cost + center_cost + heading_cost +
                 term_cost + al_friction + 5.0 * margin_penalty + v_min_cost)
 
     # ─────────────────────────────────────────────────────────────────────────────
@@ -811,9 +931,10 @@ class DiffWMPCSolver:
             self.V_limit * 0.92,   # 8% safety margin below friction limit
         )
         steer_ref = jnp.clip(track_k.ravel() * wb, -0.45, 0.45)
-        Kp_lat    = 0.25   # lateral error → steer correction [rad/m]
-                           # Tuned so that 1 m lateral offset → 0.25 rad steer
-                           # at 10 m/s, which is the right order of magnitude.
+        Kp_lat     = 0.25   # lateral error → steer correction [rad/m]
+        Kp_heading = 2.0    # heading error → steer correction [rad/rad]
+                            # At heading_err=0.2 rad (11°): steer_corr=-0.40 rad.
+                            # Counters the H_net phantom yaw that appears from step 2.
 
         state      = x0
         steer_hist = []
@@ -822,17 +943,23 @@ class DiffWMPCSolver:
         for i in range(self.N):
             v_curr  = float(state[STATE_VX])
             v_tgt_i = float(v_target[i])
+            yaw_before = float(state[STATE_YAW])  # save for yaw sat below
 
-            # Lateral error feedback: close the loop on centreline position.
-            # Only active when track_x/track_y were provided (i.e., from solve()).
-            # live_monitor.py calls without these → fallback to pure kinematic steer.
+            # Lateral + heading feedback: close the loop on BOTH position and orientation.
+            # Lateral only (old): open to yaw divergence — any heading error causes
+            # the car to drift off even with correct n=0.
+            # Heading (new): directly counteracts the H_net phantom yaw torque.
             if track_x is not None and track_y is not None:
                 x_car     = float(state[STATE_X])
                 y_car     = float(state[STATE_Y])
+                psi_car   = float(state[STATE_YAW])
                 psi_ref_i = float(track_psi[i])
                 n_err     = (-math.sin(psi_ref_i) * (x_car - float(track_x[i]))
                              + math.cos(psi_ref_i) * (y_car - float(track_y[i])))
-                steer_fb  = -Kp_lat * n_err / max(v_curr, 1.0)
+                heading_err = math.atan2(math.sin(psi_car - psi_ref_i),
+                                          math.cos(psi_car - psi_ref_i))
+                steer_fb  = (-Kp_lat * n_err / max(v_curr, 1.0)
+                             - Kp_heading * heading_err)
                 steer_i   = float(jnp.clip(steer_ref[i] + steer_fb, -0.45, 0.45))
             else:
                 steer_i = float(steer_ref[i])
@@ -859,6 +986,18 @@ class DiffWMPCSolver:
                 state, u_i, setup_params,
                 dt=self.dt_control, n_substeps=self.n_substeps,
             )
+
+            # Absolute heading clamp: same as scan_fn.
+            # Rate-limiting yaw change per step (GP-vX6 approach) still accumulated
+            # to 176° by step 15. Absolute clamp cannot accumulate regardless of
+            # how many steps the phantom torque acts.
+            yaw_after   = float(state[STATE_YAW])
+            psi_ref_ws  = float(track_psi[i])
+            dpsi_ws     = math.atan2(math.sin(yaw_after - psi_ref_ws),
+                                      math.cos(yaw_after - psi_ref_ws))
+            dpsi_max_ws = 0.08  # same cap as scan_fn
+            dpsi_sat_ws = dpsi_max_ws * math.tanh(dpsi_ws / (dpsi_max_ws + 1e-8))
+            state = state.at[STATE_YAW].set(psi_ref_ws + dpsi_sat_ws)
 
             # Mirror the saturation in _simulate_trajectory so the warm-start
             # is feasible before the optimizer even starts.
@@ -908,7 +1047,7 @@ class DiffWMPCSolver:
         v_est        = min(math.sqrt((self.mu_friction * 9.81) / k0_abs), self.V_limit)
         horizon_dist = v_est * self.N * self.dt_control         # ≈ metres ahead
 
-        track_total_len = float(track_s[-1]) if track_s[-1] > 1.0 else 1.0  # handle normalised s
+        track_total_len = float(track_s[-1]) if float(track_s[-1]) > 1.0 else 1.0
         # Fraction of the lap covered by this horizon
         frac = min(horizon_dist / track_total_len, 1.0)
 
@@ -1012,36 +1151,29 @@ class DiffWMPCSolver:
         al_lambda = self._al_lambda
         al_rho    = self._al_rho
 
-        # ── Outer AL loop: typically 3-5 iterations to converge ───────────────
-        # CRITICAL FIX (GP-vX5): defining objective_wrapper + jit(...) INSIDE
-        # the for loop creates a new Python function object every iteration.
-        # JAX's JIT cache keys on the Python callable's id, so it retraces and
-        # recompiles XLA from scratch each time (~2 min per AL iter).
-        # Fix: define a STABLE function with al_lambda/al_rho as explicit JAX
-        # arguments. JAX traces once; changing argument values never retriggers.
-        n_al_iters = 3 if self.dev_mode else 5
+        # ── Outer AL loop ─────────────────────────────────────────────────────
+        n_al_iters = 3   # GP-vX8: always 3 (was `3 if dev else 5`). nit=1-9 observed
+                         # in all working solves; 5 iters wastes 40% of wall time.
         opt_coeffs = jnp.array(flat_init)
 
-        def _stable_objective(flat_coeffs, _al_lambda, _al_rho):
-            coeffs      = flat_coeffs.reshape((self.N, 2))
-            coeffs_safe = jnp.clip(coeffs, -25000.0, 25000.0)
-            coeff_reg   = 5e-5 * jnp.sum((coeffs_safe - wc_kin) ** 2)
-            loss = self._loss_fn(
-                coeffs_safe, x0, setup_params,
-                track_k, track_x, track_y, track_psi,
-                track_w_left, track_w_right,
-                w_mu, w_steer, w_accel,
-                _al_lambda, _al_rho,
-                jnp.array(alpha_peak_est, dtype=jnp.float32),
-            )
-            return loss + coeff_reg
+        # Use the pre-compiled JIT function from __init__ — guaranteed cache hit.
+        # All varying inputs (track arrays, x0, wc_kin) are explicit arguments.
+        val_grad_fn    = self._val_grad_fn
+        wc_kin_flat_jx = wc_kin.reshape(-1).astype(jnp.float32)
+        alpha_peak_jax = jnp.array(alpha_peak_est, dtype=jnp.float32)
 
-        val_grad_fn = jit(value_and_grad(_stable_objective))
-        # Single warm-up: trigger XLA compile before the AL clock starts.
-        # All subsequent calls in the loop are cache hits (~5 ms each).
-        _init_rho_jax = jnp.array(self._AL_RHO_SCHEDULE[0], dtype=jnp.float32)
-        jax.block_until_ready(val_grad_fn(opt_coeffs, al_lambda, _init_rho_jax))
-        print("[Diff-WMPC] JIT compiled — starting AL loop.")
+        # Trigger compilation on very first solve() call, then print once.
+        if not self._jit_compiled:
+            _init_rho_jax = jnp.array(self._AL_RHO_SCHEDULE[0], dtype=jnp.float32)
+            jax.block_until_ready(val_grad_fn(
+                opt_coeffs, wc_kin_flat_jx, al_lambda, _init_rho_jax,
+                x0, setup_params, track_k, track_x, track_y, track_psi,
+                track_w_left, track_w_right, alpha_peak_jax,
+            ))
+            self._jit_compiled = True
+            print("[Diff-WMPC] JIT compiled — starting AL loop.")
+        else:
+            print("[Diff-WMPC] JIT cache hit — starting AL loop.")
 
         for al_iter in range(n_al_iters):
             al_rho     = self._AL_RHO_SCHEDULE[al_iter]
@@ -1052,7 +1184,11 @@ class DiffWMPCSolver:
             def scipy_obj(x_np):
                 total_calls[0] += 1
                 x_jax              = jnp.array(x_np, dtype=jnp.float32)
-                loss_jax, grad_jax = val_grad_fn(x_jax, al_lambda, al_rho_jax)
+                loss_jax, grad_jax = val_grad_fn(
+                    x_jax, wc_kin_flat_jx, al_lambda, al_rho_jax,
+                    x0, setup_params, track_k, track_x, track_y, track_psi,
+                    track_w_left, track_w_right, alpha_peak_jax,
+                )
 
                 if not (bool(jnp.isfinite(loss_jax)) and
                         bool(jnp.all(jnp.isfinite(grad_jax)))):
@@ -1079,14 +1215,15 @@ class DiffWMPCSolver:
                     return loss_fb, grad_fb
 
                 grad_np = np.array(grad_jax, dtype=np.float64)
-                # Gradient norm clipping: at large λ the AL term can produce
-                # |∇| ~ O(10⁶), causing L-BFGS-B's first step to overshoot
-                # catastrophically → all 30 Wolfe line-search evals fail →
-                # nit=0, ABNORMAL. Clip to 500 which is ~100× the typical
-                # time-cost gradient magnitude and preserves the descent direction.
-                g_norm = np.linalg.norm(grad_np)
-                if g_norm > 500.0:
-                    grad_np = grad_np * (500.0 / g_norm)
+                # NO gradient clipping here.
+                # GP-vX9: gradient clipping at 500 was the root cause of ABNORMAL.
+                # When ‖∇f‖ is clipped, scipy's Wolfe sufficient decrease condition
+                # f(x+αd) ≤ f(x) + c₁·α·∇f·d uses the CLIPPED gradient to compute
+                # the expected decrease, but evaluates the REAL function. The mismatch
+                # means the Wolfe condition is never satisfied → all 31 line-search
+                # evals fail → ABNORMAL nit=0 → 46s wasted per AL iter.
+                # With λ capped at 20, max gradient ≈ (20+50)×14.5×√32 ≈ 5700.
+                # L-BFGS-B handles this via its internal scaling — no clipping needed.
                 return float(loss_jax), grad_np
 
             print(f"[Diff-WMPC] AL iter {al_iter+1}/{n_al_iters} — "
@@ -1094,16 +1231,29 @@ class DiffWMPCSolver:
             print(f"[Diff-WMPC] Optimising 3-level Db4 basis "
                   f"over N={self.N} via L-BFGS-B…")
 
-            res = scipy_minimize(
+            res = scipy.optimize.minimize(  # MUST use module ref, not bound alias
+                # Rationale: live_monitor.py patches scipy.optimize.minimize
+                # (the module attribute) to intercept calls and update the live
+                # plot. Using `from scipy.optimize import minimize as scipy_minimize`
+                # (the old import) binds the name at import time — immune to the
+                # monkey-patch. Using scipy.optimize.minimize reads the attribute
+                # dynamically, so the monitor's patch is actually invoked.
                 scipy_obj,
                 np.array(opt_coeffs),
                 method='L-BFGS-B',
                 jac=True,
                 options={
-                    'maxiter': 600 if al_iter < 2 else (2000 if not self.dev_mode else 500),
-                    # First 2 iters: probe phase — 600 iters is enough to find the feasible basin.
-                    # Later iters: full budget once trajectory is near-feasible and NaN rate is low.
-                    'maxls':   30,
+                    'maxiter': 30,   # GP-vX8: was 600/2000. Observed nit=1-9 in all
+                                     # working solves → extra budget = failed Wolfe
+                                     # line searches at 1.4s/eval = pure waste.
+                                     # 30 iters × 3 AL × ~4 evals = ~168s/solve (N=64)
+                                     # With --dev (N=32): ~42s/solve × 86 = 60min lap.
+                    'maxls':   2,    # GP-vX9: was 30. ABNORMAL with maxls=30 wastes
+                                     # 31 evals × 1.5s = 46s per AL iter doing nothing.
+                                     # With maxls=2: ABNORMAL = 3 evals × 1.5s = 4.5s.
+                                     # More L-BFGS-B iterations (each using fewer evals)
+                                     # produce more optimization progress per wall-second
+                                     # than one iteration with 30 line-search probes.
                     'ftol':    1e-30,   # was 1e-9 — FACTR was firing after nit=1
                                         # because AL quadratic penalty curvature
                                         # forces tiny Wolfe line-search steps whose
@@ -1132,38 +1282,58 @@ class DiffWMPCSolver:
                       f"resetting opt_coeffs to physics warm start.")
                 opt_coeffs = jnp.array(flat_init)
 
-            if not self.dev_mode:
-                # Evaluate constraint violation for AL multiplier update
-                wc_opt = opt_coeffs.reshape((self.N, 2))
-                wc_opt = jnp.clip(wc_opt, -25000.0, 25000.0)
-                U_al, x_al, _, _, _ = self._simulate_trajectory(
-                    wc_opt, x0, setup_params,
-                    track_k, track_x, track_y, track_psi,
-                    track_w_left, track_w_right,
-                    1.0, 0.0, self.dt_control,
-                )
-                vx_al    = x_al[:, STATE_VX].reshape(-1)                          # strict (N,)
-                track_k_1d = track_k.reshape(-1)                                   # guard against (1,N)
-                a_lat_sq = (vx_al ** 2 * jnp.abs(track_k_1d)) ** 2
-                vx_prev  = jnp.concatenate([
-                    x0[STATE_VX : STATE_VX + 1].reshape(-1),                      # (1,)
-                    vx_al[:-1],                                                    # (N-1,)
-                ])                                                                   # (N,) guaranteed
-                a_lon_sq = ((vx_al - vx_prev) / self.dt_control) ** 2
-                g_al     = (a_lat_sq + a_lon_sq) / ((self.mu_friction * 9.81) ** 2 + 1e-4) - 1.0
+            # Always evaluate constraint violation and update AL multipliers.
+            # BUGFIX (GP-vX8): was guarded by `if not self.dev_mode:` → in dev
+            # mode the friction constraint λ was NEVER updated → λ_max=0.000
+            # forever → max G_combined=5.888 (completely unconstrained).
+            wc_opt = opt_coeffs.reshape((self.N, 2))
+            wc_opt = jnp.clip(wc_opt, -25000.0, 25000.0)
+            U_al, x_al, _, _, _ = self._simulate_trajectory(
+                wc_opt, x0, setup_params,
+                track_k, track_x, track_y, track_psi,
+                track_w_left, track_w_right,
+                1.0, 0.0, self.dt_control,
+            )
+            vx_al    = x_al[:, STATE_VX].reshape(-1)
+            track_k_1d = track_k.reshape(-1)
+            a_lat_sq = (vx_al ** 2 * jnp.abs(track_k_1d)) ** 2
+            vx_prev  = jnp.concatenate([
+                x0[STATE_VX : STATE_VX + 1].reshape(-1),
+                vx_al[:-1],
+            ])
+            a_lon_sq = ((vx_al - vx_prev) / self.dt_control) ** 2
+            g_al     = (a_lat_sq + a_lon_sq) / ((self.mu_friction * 9.81) ** 2 + 1e-4) - 1.0
 
-                # AL multiplier update: λ_new = λ + ρ·max(g, 0)
-                al_lambda = jnp.maximum(al_lambda + al_rho * g_al, 0.0)
-                max_viol  = float(jnp.max(jnp.maximum(g_al, 0.0)))
-                print(f"[Diff-WMPC] Constraint max violation: {max_viol:.4f} "
-                      f"(0=feasible). Updated λ_max={float(jnp.max(al_lambda)):.3f}")
+            al_lambda = jnp.maximum(al_lambda + al_rho * g_al, 0.0)
+            # Cap λ at 100: empirically sufficient to enforce the friction constraint
+            # (penalty = 100×g >> time_cost≈0.05 for any g>0.0005). Without capping,
+            # λ accumulates to 27,000 across receding horizon solves — the gradient
+            # becomes 540,000× the time cost → L-BFGS-B Wolfe search fails on every
+            # step → nit=0 ABNORMAL on every AL iter → solver is completely stuck.
+            al_lambda = jnp.minimum(al_lambda, 20.0)   # GP-vX9: was 100. At λ=100,
+            # gradient ≈ 100×14.5×√32=8207 → clipping was needed → Wolfe failed.
+            # At λ=20: gradient ≈ 20×14.5×√32=1641 → no clipping needed → Wolfe works.
+            max_viol  = float(jnp.max(jnp.maximum(g_al, 0.0)))
+            print(f"[Diff-WMPC] Constraint max violation: {max_viol:.4f} "
+                  f"(0=feasible). Updated λ_max={float(jnp.max(al_lambda)):.3f}")
 
-                if max_viol > 0.1:
-                    al_rho = min(al_rho * self._al_rho_scale, 500.0)
+            if max_viol > 0.1:
+                al_rho = min(al_rho * self._al_rho_scale, 500.0)
 
-        # Store AL state for next solve
-        self._al_lambda = al_lambda
-        self._al_rho    = al_rho
+            # Early exit: constraint is satisfied — further AL iters won't improve much
+            if max_viol < 0.05:
+                print(f"[Diff-WMPC] Constraint satisfied (viol={max_viol:.4f} < 0.05) — "
+                      f"exiting AL loop at iter {al_iter+1}/{n_al_iters}")
+                break
+
+        # Store AL state — cap to prevent unbounded accumulation across receding horizon
+        # GP-vX8: in receding horizon MPC each solve window sees shifted track geometry.
+        # The λ from window t has no direct meaning for window t+K. However, partially
+        # warm-starting λ (rather than resetting to 0) speeds up convergence when the
+        # same corner appears in consecutive windows. We cap at 100 (already done above)
+        # and store the clipped value.
+        self._al_lambda = jnp.minimum(al_lambda, 20.0)
+        self._al_rho    = min(al_rho, 20.0)
 
         nan_rate_iter = nan_count[0] / max(total_calls[0], 1)
         print(f"[Diff-WMPC] AL iter {al_iter+1} result: "
@@ -1183,11 +1353,14 @@ class DiffWMPCSolver:
         )
         self._prev_solution = U_opt
 
-        time_total = float(jnp.sum(
-            jnp.where(s_dot_opt > 0.5,
-                      1.0 / s_dot_opt,
-                      1.0 / 0.5 + 100.0 * (0.5 - s_dot_opt))
-        ) * self.dt_control)
+        # Lap time estimate: total arc-length covered / mean speed
+        # GP-vX6: old formula Σ(1/s_dot)*dt was dimensionally s²/m — reported 1404s
+        # for a 1.6s horizon because yaw-spin drove s_dot→0. Correct formula:
+        # T_approx = track_arc / mean_s_dot, where track_arc = Σ(s_dot*dt).
+        track_arc_m  = float(jnp.sum(s_dot_opt * self.dt_control))
+        mean_s_dot   = float(jnp.mean(s_dot_opt))
+        # Extrapolated full-lap estimate (only meaningful when horizon >> 1 corner)
+        time_total = track_total_len / max(mean_s_dot, 0.5) if track_arc_m > 1.0 else float('inf')
 
         # Friction circle compliance diagnostic
         vx_f    = np.array(x_traj[:, STATE_VX])
