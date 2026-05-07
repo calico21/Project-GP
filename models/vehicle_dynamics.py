@@ -334,23 +334,19 @@ def compute_bump_steer(
     return bs_lin * z_corner + bs_quad * z_corner ** 2
 
 
-def compute_bumpstop_force(
-    z_corner: jax.Array,
-    gap: jax.Array,
-    k_bs: float = 500_000.0,
-    beta: float = 200.0,
-) -> jax.Array:
+def compute_bumpstop_force(z_corner: jax.Array, gap: jax.Array, k_bs: float = 500_000.0, beta: float = 200.0) -> jax.Array:
     """
     C^∞ bumpstop force via softplus. Zero force for z < gap, rising rapidly
     above. Replaces hard clip — gradient-alive through contact.
     F_bs = k_bs · softplus((z - gap)·β) / β
     """
-    return k_bs * jax.nn.softplus(beta * (z_corner - gap)) / beta
+    return k_bs * jnp.logaddexp(0.0, beta * (z_corner - gap)) / beta
 
 
-def compute_castor_trail(castor_deg: jax.Array, Fz: jax.Array, tire_radius: float) -> jax.Array:
+def compute_castor_trail(castor_deg: jax.Array, Fy: jax.Array, tire_radius: float) -> jax.Array:
+    # FIX: Castor restoring moment is driven by lateral force (Fy), not vertical load (Fz)
     t_mech = tire_radius * jnp.tan(jnp.deg2rad(castor_deg))
-    return Fz * t_mech
+    return -Fy * t_mech
 
 
 def _softplus_floor(x: jax.Array, floor: float = 10.0) -> jax.Array:
@@ -363,7 +359,7 @@ def _softplus_floor(x: jax.Array, floor: float = 10.0) -> jax.Array:
     Replaces jnp.maximum(..., floor) whose sub-gradient is zero below the
     floor — kills optimizer signal exactly when a corner goes light.
     """
-    return floor + jax.nn.softplus(x - floor)
+    return floor + jnp.logaddexp(0.0, x - floor)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -481,7 +477,7 @@ class NeuralEnergyLandscape(nn.Module):
         x = FiLMLayer(64)(x, setup_emb)
         x = nn.swish(x)
 
-        H_raw = jnp.squeeze(jax.nn.softplus(nn.Dense(1)(x))) * self.h_scale
+        H_raw = jnp.squeeze(jnp.logaddexp(0.0, nn.Dense(1)(x))) * self.h_scale
         H_res = jnp.minimum(H_raw, self.H_RESIDUAL_CAP)
 
         # BUGFIX-5: gate at physical equilibrium _Z_EQ, not at z=0.
@@ -544,7 +540,7 @@ import flax.linen as nn
  
 def _softplus_floor(x, floor):
     """Smooth lower bound — gradient alive at floor."""
-    return floor + jax.nn.softplus(x - floor)
+    return floor + jnp.logaddexp(0.0, x - floor)
  
  
 class PhysicsInformedAeroMap(nn.Module):
@@ -632,7 +628,7 @@ class PhysicsInformedAeroMap(nn.Module):
  
         # Drag coefficient — ALWAYS POSITIVE via softplus
         Cd_base = self.base_Cd + 0.05 * jnp.abs(pitch)  # pitch-induced drag
-        Cd = jax.nn.softplus(Cd_base * (1.0 + delta[2]))
+        Cd = jnp.logaddexp(0.0, Cd_base * (1.0 + delta[2]))
  
         # ── Forces (v² dependence is structural, not learned) ────────────────
         Fz_aero_f = q_dyn * Cl_f * self.base_A
@@ -852,41 +848,32 @@ class DifferentiableMultiBodyVehicle:
         # ────────────────────────────────────────────────────────
         p    = self.M_diag * v
 
-        def _full_H(h_params, q_, p_, setup_):
-            T       = 0.5 * jnp.sum((p_ ** 2) / (self.M_diag + 1e-8))
-            V       = 0.5 * jnp.sum(q_[6:10] ** 2) * _V_STRUCT_PRIOR_K
+        # 1. Exact linear physics (MUST flow gradients for optimizer to steer/move)
+        dH_dq_phys = jnp.zeros(14).at[6:10].set(q[6:10] * _V_STRUCT_PRIOR_K)
+        dH_dp_phys = p / (self.M_diag + 1e-8)
+        
+        # 2. Neural residual (Stop gradient ONLY on this to prevent Hessian explosion)
+        def _nn_H(q_, p_):
+            v_raw = p_ / (self.M_diag + 1e-8)
+            v_safe = jnp.clip(v_raw, -35.0, 35.0)
+            v_safe = v_safe.at[5].set(jnp.clip(v_safe[5], -8.0, 8.0))
+            p_safe = v_safe * self.M_diag
             susp_sq = jnp.sum((q_[6:10] - _Z_EQ) ** 2) + 1e-4
-            return T + V + self.H_net.apply(h_params, q_, p_, setup_) * susp_sq
-        grad_H_fn    = jax.grad(_full_H, argnums=(1, 2))
-        dH_dq, dH_dp = grad_H_fn(self.H_params, q, p, setup_params)
-
+            return self.H_net.apply(self.H_params, q_, p_safe, setup_params) * susp_sq
+            
+        dH_dq_nn, dH_dp_nn = jax.grad(_nn_H, argnums=(0, 1))(q, p)
+        
+        # Block the Neural Network's Hessian, but preserve physical kinematics
+        dH_dq_nn = jax.lax.stop_gradient(dH_dq_nn)
+        dH_dp_nn = jax.lax.stop_gradient(dH_dp_nn)
+        
+        dH_dq = dH_dq_phys + dH_dq_nn
+        dH_dp = dH_dp_phys + dH_dp_nn
+        
         FORCE_CAP = 12000.0; VEL_CAP = 150.0
         dH_dq  = FORCE_CAP * jnp.tanh(dH_dq / (FORCE_CAP + 1e-8))
         dH_dp  = VEL_CAP   * jnp.tanh(dH_dp / (VEL_CAP   + 1e-8))
 
-        # Stop the H_net Hessian from entering ANY outer optimization backward pass.
-        #
-        # WHAT THIS DOES: blocks ∂²H/∂(q,p)² from accumulating through the
-        # WMPC lax.scan (64 steps) × GLRK-4 Newton scan (5 iters) × substep
-        # scan (5 substeps) = up to 1600 chained Hessian evaluations. Even one
-        # ill-conditioned Hessian evaluation at a transient non-physical state
-        # NaNs the entire backward pass via JAX's non-short-circuiting scan.
-        #
-        # WHAT THIS PRESERVES:
-        # · Forward dynamics remain exactly correct — H_net forces (PH_accel)
-        #   are computed faithfully and drive the car in the forward pass.
-        # · Physical force gradients (∂F_tire/∂u, ∂F_spring/∂k, ∂F_damper/∂c)
-        #   still flow back through the entire scan chain — the optimizer retains
-        #   full gradient signal for braking, cornering, and setup optimization.
-        # · MORL setup gradients are unaffected: setup enters through
-        #   SuspensionSetup (spring/ARB/damper), not through H_net argnums.
-        #
-        # WHY SEMANTICALLY EXACT: H_params are frozen during all online
-        # optimization (WMPC, MORL). H_net's Hessian w.r.t. state contributes
-        # zero useful gradient information for the wavelet coefficient search.
-        # This is the straight-through estimator applied to a frozen network.
-        dH_dq = jax.lax.stop_gradient(dH_dq)
-        dH_dp = jax.lax.stop_gradient(dH_dp)
         grad_H = jnp.concatenate([dH_dq, dH_dp])
 
         J = jnp.zeros((28, 28))
@@ -1008,10 +995,11 @@ class DifferentiableMultiBodyVehicle:
         h_rc_f = self._h_rc0_f + self._dh_rc_dz_f * (z_fl + z_fr) * 0.5
         h_rc_r = self._h_rc0_r + self._dh_rc_dz_r * (z_rl + z_rr) * 0.5
 
-        gamma_fl = jnp.deg2rad(s.camber_f + self._camber_dz_f * z_fl + self.vp.get('camber_gain_f', -0.80) * jnp.rad2deg(phi_roll) * 0.5)
-        gamma_fr = jnp.deg2rad(-s.camber_f + self._camber_dz_f * z_fr - self.vp.get('camber_gain_f', -0.80) * jnp.rad2deg(phi_roll) * 0.5)
-        gamma_rl = jnp.deg2rad(s.camber_r + self._camber_dz_r * z_rl + self.vp.get('camber_gain_r', -0.65) * jnp.rad2deg(phi_roll) * 0.5)
-        gamma_rr = jnp.deg2rad(-s.camber_r + self._camber_dz_r * z_rr - self.vp.get('camber_gain_r', -0.65) * jnp.rad2deg(phi_roll) * 0.5)
+        # CORRECTED: Perfect mirror symmetry for the right side tires
+        gamma_fl = jnp.deg2rad( s.camber_f + self._camber_dz_f * z_fl + self.vp.get('camber_gain_f', -0.80) * jnp.rad2deg(phi_roll) * 0.5)
+        gamma_fr = jnp.deg2rad(-s.camber_f - self._camber_dz_f * z_fr + self.vp.get('camber_gain_f', -0.80) * jnp.rad2deg(phi_roll) * 0.5)
+        gamma_rl = jnp.deg2rad( s.camber_r + self._camber_dz_r * z_rl + self.vp.get('camber_gain_r', -0.65) * jnp.rad2deg(phi_roll) * 0.5)
+        gamma_rr = jnp.deg2rad(-s.camber_r - self._camber_dz_r * z_rr + self.vp.get('camber_gain_r', -0.65) * jnp.rad2deg(phi_roll) * 0.5)
 
         delta_cmd   = u[0]
         delta_bs_fl = compute_bump_steer(z_fl, s.bump_steer_f, self._bs2_f)
@@ -1059,8 +1047,8 @@ class DifferentiableMultiBodyVehicle:
         Fx_fr, Fy_fr = self.tire.compute_force(alpha_t_fr, kappa_t_fr, Fz_fr, gamma_fr, T_ribs_fr, T_gas_fr, vx, wz=wz)
         Mz_fl        = self.tire.compute_aligning_torque(alpha_t_fl, kappa_t_fl, Fz_fl, gamma_fl, Fy_fl, Fx_fl)
         Mz_fr        = self.tire.compute_aligning_torque(alpha_t_fr, kappa_t_fr, Fz_fr, gamma_fr, Fy_fr, Fx_fr)
-        Mz_castor_fl = compute_castor_trail(s.castor_f, Fz_fl, self.R_wheel)
-        Mz_castor_fr = compute_castor_trail(s.castor_f, Fz_fr, self.R_wheel)
+        Mz_castor_fl = compute_castor_trail(s.castor_f, Fy_fl, self.R_wheel)
+        Mz_castor_fr = compute_castor_trail(s.castor_f, Fy_fr, self.R_wheel)
 
         # ═══════════════════════════════════════════════════════════════════
         # §5.1  Hub Motor Torques (4WD — no mechanical differential)
@@ -1152,6 +1140,19 @@ class DifferentiableMultiBodyVehicle:
         F_ext = F_ext.at[27].set(-Fx_rr * self.R_wheel + T_hub_rr * eta)
 
         dq_dt = PH_accel[0:14]
+        
+        # ── KINEMATICS FIX: Apply Yaw Rotation ──
+        # PH_accel[0:2] contains the local body frame velocities (vx, vy).
+        # We must rotate them to global X, Y coordinates!
+        vx_local = dq_dt[0]
+        vy_local = dq_dt[1]
+        
+        vx_world = vx_local * jnp.cos(psi_yaw) - vy_local * jnp.sin(psi_yaw)
+        vy_world = vx_local * jnp.sin(psi_yaw) + vy_local * jnp.cos(psi_yaw)
+        
+        dq_dt = dq_dt.at[0].set(vx_world).at[1].set(vy_world)
+
+        # (Continue with existing dv_dt code...)
         dv_dt = (PH_accel[14:28] + F_ext[14:28]) / self.M_diag
         # 500 m/s² ≈ 51G — physically unreachable, only active at Newton overshoot states.
         # Clipping is inactive near the optimum so gradient quality is unaffected there.
@@ -1175,10 +1176,11 @@ class DifferentiableMultiBodyVehicle:
         # four_corner_transient_derivatives computes both velocity passthrough
         # (d_alpha_t = alpha_dot) AND the acceleration (d_alpha_dot) from the
         # 2nd-order ODE: ẍ + 2ζωₙẋ + ωₙ²x = ωₙ²·x_kin
+        # ── Module 5: 2nd-order transient slip → 16 states ───────────────────
         d_transient_4x4 = four_corner_transient_derivatives(
             jnp.array([alpha_kin_fl, alpha_kin_fr, alpha_kin_rl, alpha_kin_rr]),
             jnp.array([kappa_ref_fl, kappa_ref_fr, kappa_ref_rl, kappa_ref_rr]),
-            transient_4x4,
+            jax.lax.stop_gradient(transient_4x4),  # <--- KILLS THE 52 BILLION GRADIENT
             jnp.array([Fz_fl, Fz_fr, Fz_rl, Fz_rr]),
             jnp.abs(vx),
         )
@@ -1189,11 +1191,12 @@ class DifferentiableMultiBodyVehicle:
         # dF1/dt = k1·v_shaft - F1/τ1
         # dF2/dt = k2·v_shaft - F2/τ2
         # dT_oil/dt = (|F·v| - h·(T-T_env)) / C_oil
+        # ── Module 2: Damper Maxwell branch + thermal ODE → 12 states ────────
         dz_corners = jnp.array([dz_fl, dz_fr, dz_rl, dz_rr])
-        F1_all  = damper_4x3[:, 0]
-        F2_all  = damper_4x3[:, 1]
-        T_oil   = damper_4x3[:, 2]
-        mu_visc = jnp.exp(0.015 * (40.0 - T_oil))   # Arrhenius viscosity scaling
+        F1_all  = jax.lax.stop_gradient(damper_4x3[:, 0])  # <--- KILLS NEWTON EXPLOSION
+        F2_all  = jax.lax.stop_gradient(damper_4x3[:, 1])  # <--- KILLS NEWTON EXPLOSION
+        T_oil   = jax.lax.stop_gradient(damper_4x3[:, 2])  
+        mu_visc = jnp.exp(0.015 * (40.0 - T_oil))   
         dF1     = 15000.0 * dz_corners - F1_all / 0.008
         dF2     =  5000.0 * dz_corners - F2_all / 0.040
         P_diss  = jnp.abs((F1_all + F2_all) * mu_visc * dz_corners)
@@ -1278,10 +1281,17 @@ class DifferentiableMultiBodyVehicle:
         elastokin_4x6 = x[84:108].reshape((4, 6))
 
         def _full_H(h_params_, q_, p_, setup_):
-            T       = 0.5 * jnp.sum((p_ ** 2) / (self.M_diag + 1e-8))
+            # TIGHTER CLAMP: Strictly bound velocities to physical limits 
+            # to prevent H_net from hallucinating yaw spins.
+            v_raw = p_ / (self.M_diag + 1e-8)
+            v_safe = jnp.clip(v_raw, -35.0, 35.0)                     # Max 35 m/s linear
+            v_safe = v_safe.at[5].set(jnp.clip(v_safe[5], -8.0, 8.0)) # Max 8 rad/s yaw
+            p_safe = v_safe * self.M_diag
+            
+            T       = 0.5 * jnp.sum((p_safe ** 2) / (self.M_diag + 1e-8))
             V       = 0.5 * jnp.sum(q_[6:10] ** 2) * _V_STRUCT_PRIOR_K
             susp_sq = jnp.sum((q_[6:10] - _Z_EQ) ** 2) + 1e-4
-            return T + V + self.H_net.apply(h_params_, q_, p_, setup_) * susp_sq
+            return T + V + self.H_net.apply(h_params_, q_, p_safe, setup_) * susp_sq
 
         grad_H_fn    = jax.grad(_full_H, argnums=(1, 2))
         dH_dq, dH_dp = grad_H_fn(h_params, q, p, setup_params)   # h_params traced

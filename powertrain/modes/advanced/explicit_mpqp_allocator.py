@@ -404,27 +404,24 @@ def polish_step_v2(
 ) -> jax.Array:
     """
     Extended polish: projects onto box, friction, AND slip constraints.
-
-    Slip projection: for each violated slip row k: T ← T − lr · A[k]^T · violation_k
-    This is a sub-gradient step toward feasibility — O(n_steps * M) but tiny M.
     """
     def one_step(T, _):
-        # ── Gradient step on objective ─────────────────────────────────────
+        # ── 1. Gradient step on objective ──────────────────────────────────
         T_new = T - lr * (Q @ T + c)
 
-        # ── Box projection ─────────────────────────────────────────────────
+        # ── 2. Box projection ──────────────────────────────────────────────
         T_new = jnp.clip(T_new, p.t_min, p.t_max)
         T_new = jnp.clip(T_new, -p.t_fric, p.t_fric)
 
-        # ── Slip sub-gradient projection ───────────────────────────────────
-        # viol_k = max(0, A_slip[k] @ T − b_slip[k])   (smoothed)
+        # ── 3. Slip normalized projection ──────────────────────────────────
         residuals = A_slip @ T_new - b_slip             # (8,)
-        # Smooth max via softplus — gradient is well-defined at 0
-        viol      = jax.nn.softplus(residuals * 50.0) / 50.0  # (8,)
-        # Sub-gradient step: T ← T − lr · A_slip^T @ viol
-        T_new     = T_new - lr * (A_slip.T @ viol)
+        
+        # EXACT ZERO FIX: Hard max + 1e-12 guarantees a 100% projection step
+        viol      = jnp.maximum(residuals, 0.0)
+        A_norm_sq = jnp.sum(A_slip ** 2, axis=1)
+        T_new     = T_new - (A_slip.T @ (viol / (A_norm_sq + 1e-12)))
 
-        # Re-project box after slip adjustment
+        # ── 4. Re-project box after slip adjustment ────────────────────────
         T_new = jnp.clip(T_new, p.t_min, p.t_max)
         T_new = jnp.clip(T_new, -p.t_fric, p.t_fric)
 

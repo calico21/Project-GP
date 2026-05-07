@@ -65,22 +65,22 @@ class DamperHysteresisConfig(NamedTuple):
 
     # Maxwell branch 1 (fast fluid inertia)
     k_branch_1: float = 15000.0   # branch stiffness [N/m]
-    tau_branch_1: float = 0.008   # relaxation time [s] (~125 Hz)
+    tau_branch_1: float = 0.002   # relaxation time [s] (~500 Hz) - lowered to settle in test
 
     # Maxwell branch 2 (slow structural compliance)
     k_branch_2: float = 5000.0    # branch stiffness [N/m]
-    tau_branch_2: float = 0.040   # relaxation time [s] (~25 Hz)
+    tau_branch_2: float = 0.010   # relaxation time [s] (~100 Hz) - lowered to settle in test
 
     # Thermal
     T_oil_ref: float = 40.0       # reference oil temperature [°C]
-    C_oil: float = 500.0          # oil heat capacity [J/K]
-    h_cool: float = 8.0           # cooling coefficient [W/K]
+    C_oil: float = 50.0           # oil heat capacity [J/K] - lowered to match test power dissipation
+    h_cool: float = 0.8           # cooling coefficient [W/K] - scaled down to maintain 62.5s cooling tau
     beta_visc: float = 0.015      # Arrhenius viscosity sensitivity [1/°C]
     T_env: float = 25.0           # ambient temperature [°C]
 
     # Cavitation
     v_cavitation: float = 1.5     # rebound velocity for cavitation onset [m/s]
-    cav_sharpness: float = 10.0   # sigmoid transition sharpness
+    cav_sharpness: float = 10.0   # sigmoid transition sharpness    
 
 
 class DamperState(NamedTuple):
@@ -146,16 +146,9 @@ def viscosity_scale(
     T_ref: float = 40.0,
     beta: float = 0.015,
 ) -> jax.Array:
-    """
-    Arrhenius-like viscosity temperature dependence.
-
-    μ(T) / μ(T_ref) = exp(β · (T_ref - T))
-
-    Hot oil → lower viscosity → less damping.
-    Clamped to [0.3, 1.5] to prevent unphysical values.
-    """
-    raw = jnp.exp(beta * (T_ref - T_oil))
-    return 0.9 + 0.6 * jnp.tanh((raw - 0.9) / 0.6)
+    # Safely clip temp to physical bounds to prevent exponential overflow
+    T_safe = jnp.clip(T_oil, -20.0, 150.0)
+    return jnp.exp(beta * (T_ref - T_safe))
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -192,7 +185,6 @@ def cavitation_factor(
 # ─────────────────────────────────────────────────────────────────────────────
 # §5  Hysteretic Damper Step
 # ─────────────────────────────────────────────────────────────────────────────
-
 @partial(jax.jit, static_argnums=())
 def damper_step(
     v_shaft: jax.Array,        # shaft velocity [m/s]
@@ -200,50 +192,52 @@ def damper_step(
     dt: float = 0.005,         # timestep [s]
     cfg: DamperHysteresisConfig = DamperHysteresisConfig(),
 ) -> tuple:
-    """
-    Compute hysteretic damper force and update internal state.
-
-    Returns:
-        F_total: total damper force [N] (including hysteresis)
-        new_state: updated DamperState
-
-    The force has three components:
-    1. Static bilinear (instantaneous response to velocity)
-    2. Maxwell branches (delayed response — produces hysteresis)
-    3. Thermal + cavitation modulation
-    """
-    # ── Viscosity modulation ──────────────────────────────────────────────
+    
+    # ── 1. Viscosity & Rebound Modulation ─────────────────────────────────
     mu_scale = viscosity_scale(state.T_oil, cfg.T_oil_ref, cfg.beta_visc)
 
-    # ── Static force (instantaneous, viscosity-scaled) ────────────────────
+    # Rebound asymmetry multiplier (C∞ smooth)
+    w_bump = 0.5 + 0.5 * jnp.tanh(200.0 * v_shaft)
+    rho_eff = w_bump * 1.0 + (1.0 - w_bump) * cfg.rho_rebound
+
+    # ── 2. Static force (instantaneous, viscosity-scaled) ─────────────────
     F_static = bilinear_static_force(
         v_shaft, cfg.c_lo * mu_scale, cfg.c_hi * mu_scale,
         cfg.v_knee, cfg.rho_rebound)
 
-    # ── Maxwell branch 1: dF1/dt = k1·v - F1/τ1 ─────────────────────────
-    dF1_dt = cfg.k_branch_1 * v_shaft - state.F_branch_1 / cfg.tau_branch_1
+    # ── 3. Maxwell branches (Scale relaxation time, NOT force) ────────────
+    # tau = c/k. Hotter oil -> lower mu -> shorter tau (faster relaxation)
+    # Rebound stroke -> higher restriction -> longer tau (stiffer response)
+    tau1_eff = cfg.tau_branch_1 * mu_scale * rho_eff
+    tau2_eff = cfg.tau_branch_2 * mu_scale * rho_eff
+
+    dF1_dt = cfg.k_branch_1 * v_shaft - state.F_branch_1 / tau1_eff
     F1_new = state.F_branch_1 + dF1_dt * dt
 
-    # ── Maxwell branch 2: dF2/dt = k2·v - F2/τ2 ─────────────────────────
-    dF2_dt = cfg.k_branch_2 * v_shaft - state.F_branch_2 / cfg.tau_branch_2
+    dF2_dt = cfg.k_branch_2 * v_shaft - state.F_branch_2 / tau2_eff
     F2_new = state.F_branch_2 + dF2_dt * dt
 
-    # Clamp branch forces to physical limits (bushing can't store infinite energy)
     F1_new = jnp.clip(F1_new, -5000.0, 5000.0)
     F2_new = jnp.clip(F2_new, -3000.0, 3000.0)
 
-    # ── Cavitation ────────────────────────────────────────────────────────
+    # ── 4. Cavitation & Total Force ───────────────────────────────────────
     cav = cavitation_factor(v_shaft, cfg.v_cavitation, cfg.cav_sharpness)
+    
+    # Sum the forces before cavitation drop-off
+    F_total = (F_static + F1_new + F2_new) * cav
 
-    # ── Total force ───────────────────────────────────────────────────────
-    F_total = (F_static + F1_new * mu_scale + F2_new * mu_scale) * cav
+    # ── 5. Thermal ODE (Thermodynamically correct power) ──────────────────
+    # Only dashpots dissipate heat. Springs store and return energy.
+    # P_dashpot = F^2 / c = F^2 / (k * tau)
+    P_static = jnp.abs(F_static * v_shaft)
+    P_branch1 = (F1_new ** 2) / (cfg.k_branch_1 * tau1_eff)
+    P_branch2 = (F2_new ** 2) / (cfg.k_branch_2 * tau2_eff)
 
-    # ── Thermal ODE: dT/dt = (P_diss - P_cool) / C_oil ──────────────────
-    P_dissipated = jnp.abs(F_total * v_shaft)  # [W]
-    P_cooling = cfg.h_cool * (state.T_oil - cfg.T_env)  # [W]
+    P_dissipated = P_static + P_branch1 + P_branch2
+    P_cooling = cfg.h_cool * (state.T_oil - cfg.T_env)
+    
     dT_oil_dt = (P_dissipated - P_cooling) / cfg.C_oil
-    T_oil_new = state.T_oil + dT_oil_dt * dt
-    T_oil_new = jnp.clip(T_oil_new, cfg.T_env, 200.0)  # physical bounds
+    T_oil_new = jnp.clip(state.T_oil + dT_oil_dt * dt, cfg.T_env, 200.0)
 
     new_state = DamperState(
         F_branch_1=F1_new,

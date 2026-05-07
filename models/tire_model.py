@@ -296,7 +296,7 @@ class SparseGPMatern52(nn.Module):
 
         # softplus floor: C∞ everywhere, non-zero gradient at kink.
         # At k_xx - red = 0: softplus(0) = log(2) ≈ 0.693, gradient = 0.5.
-        post_var = jax.nn.softplus(prior_var - red) + 1e-8
+        post_var = jnp.logaddexp(0.0, prior_var - red) + 1e-8
         return jnp.sqrt(post_var)
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -604,7 +604,8 @@ class PacejkaTire:
         eps = 1e-6
 
         Fz0     = c.get('FNOMIN', 654.0)
-        Fz_safe = jnp.maximum(Fz, 10.0)
+        # Permanently shield Pacejka exponentials from optimizer spikes
+        Fz_safe = jnp.clip(Fz, 10.0, 15000.0) 
         dfz     = (Fz_safe - Fz0) / (Fz0 + eps)
 
         lam_muy = self._thermal_grip_factor(T_ribs, T_gas)
@@ -789,7 +790,7 @@ class PacejkaTire:
         c   = self.coeffs
         eps = 1e-6
         Fz0     = c.get('FNOMIN', 654.0)
-        Fz_safe = jnp.maximum(Fz, 10.0)
+        Fz_safe = jnp.clip(Fz, 10.0, 15000.0)
         dfz     = (Fz_safe - Fz0) / (Fz0 + eps)
         gam     = gamma
 

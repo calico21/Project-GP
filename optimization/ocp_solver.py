@@ -283,29 +283,13 @@ class DiffWMPCSolver:
         lo_up  = jnp.zeros(2 * n).at[::2].set(lo)
         hi_up  = jnp.zeros(2 * n).at[::2].set(hi)
 
-        # Periodic synthesis: the exact dual of the periodic analysis above.
-        # Append first L-1=3 samples of each upsampled subband before the
-        # synthesis convolution. This enforces circular boundary on the
-        # synthesis side to match the analysis convention.
-        #
-        # EXTRACTION OFFSET CHANGE: [2:2n+2] → [3:2n+3]
-        # The previous offset of 2 was calibrated for zero-padded analysis.
-        # With periodic analysis (offset 3), the synthesis must use offset 3
-        # to maintain phase alignment. Mismatched offsets cause a 1-sample
-        # circular shift in the reconstruction, destroying orthogonality.
-        #
-        # CORRECTNESS: For any orthogonal wavelet filter (Db4 qualifies),
-        # the PR condition |H_lo|²+|H_hi|²=2 holds in both linear and
-        # circular convolution for signal length n ≥ L=4. Every level of
-        # the 3-level DWT has n ≥ 8, so IDWT(DWT(x)) = x exactly.
-        #
-        # SIZES: lo_ext/hi_ext = (2n+3,). After 'full' conv with L=4 filter:
-        # (2n+3)+(4-1) = 2n+6. Extract [3:2n+3] → exactly 2n samples.
         lo_ext  = jnp.concatenate([lo_up, lo_up[:3]])     # (2n+3,)
         hi_ext  = jnp.concatenate([hi_up, hi_up[:3]])     # (2n+3,)
         sig_lo  = jnp.convolve(lo_ext, _DB4_LO_R, mode='full').reshape(-1)
         sig_hi  = jnp.convolve(hi_ext, _DB4_HI_R, mode='full').reshape(-1)
-        return sig_lo[3: 2*n + 3] + sig_hi[3: 2*n + 3]   # (2n,) exact
+        
+        # CORRECTED: Reverted to [2: 2n+2] to guarantee exact Db4 orthogonality
+        return sig_lo[2: 2*n + 2] + sig_hi[2: 2*n + 2]   # (2n,) exact
 
     def _dwt_1d_3level(self, sig_1d):
         lo1, hi1 = self._dwt_1d_single_level(sig_1d)
@@ -364,7 +348,7 @@ class DiffWMPCSolver:
         e  = jnp.sum(node ** 2) + 1e-12
         p  = node ** 2 / e
         # softplus floor: log of very small values is bounded
-        lp = jnp.log(jax.nn.softplus(p * 1e6) / 1e6 + 1e-12)
+        lp = jnp.log(jnp.logaddexp(0.0, p * 1e6) / 1e6 + 1e-12)
         return -jnp.sum(p * lp)
 
     def _coifman_wickerhauser_basis(self, sig_1d: jax.Array, max_level: int = 3) -> jax.Array:
@@ -547,10 +531,13 @@ class DiffWMPCSolver:
             force_cmd = jnp.clip(u_raw[1] * lmuy_scale, -8000.0, 8000.0)
 
             R_w = 0.2045  # wheel radius [m]
-            T_motor = jax.nn.relu(force_cmd) * R_w / 4.0   # drive: N → Nm per motor
-            F_brake = jax.nn.relu(-force_cmd)                # brake: positive = braking
+            # ── RWD FIX: Split total thrust across 2 rear motors instead of 4 ──
+            T_rear = jax.nn.relu(force_cmd) * R_w / 2.0   
+            F_brake = jax.nn.relu(-force_cmd)             # brake: positive = braking
 
-            u_6 = jnp.array([steer_cmd, T_motor, T_motor, T_motor, T_motor, F_brake])
+            # u_6 = [δ, T_fl, T_fr, T_rl, T_rr, F_brake_hyd]
+            # Send 0.0 drive torque to the front wheels
+            u_6 = jnp.array([steer_cmd, 0.0, 0.0, T_rear, T_rear, F_brake])
 
             def substep_fn(x_s, _):
                 return self._vehicle.simulate_step(x_s, u_6, setup_params,
@@ -569,10 +556,33 @@ class DiffWMPCSolver:
             # arctan2 handles 2π wraparound. tanh is C∞ with ∂/∂dpsi = sech² ≠ 0.
             # Cap = 0.08 rad (≈4.6°): s_dot = vx·cos(4.6°) ≈ 0.9968·vx — the
             # car appears nearly aligned to the optimizer, giving clean gradients.
-            dpsi_raw    = x_next[STATE_YAW] - psi_ref
-            dpsi_wrap   = jnp.arctan2(jnp.sin(dpsi_raw), jnp.cos(dpsi_raw))
-            dpsi_capped = 0.08 * jnp.tanh(dpsi_wrap / 0.08)
-            x_next      = x_next.at[STATE_YAW].set(psi_ref + dpsi_capped)
+            #dpsi_raw    = x_next[STATE_YAW] - psi_ref
+            #dpsi_wrap   = jnp.arctan2(jnp.sin(dpsi_raw), jnp.cos(dpsi_raw))
+            #dpsi_capped = 0.08 * jnp.tanh(dpsi_wrap / 0.08)
+            #x_next      = x_next.at[STATE_YAW].set(psi_ref + dpsi_capped)
+
+            # Clamp yaw rate x[19] to kinematic maximum (GP-vX10 fix).
+            # H_net phantom torque regenerates wz→60 rad/s INSIDE simulate_step,
+            # after STATE_YAW is clamped. The unclamped wz then drives:
+            #   vy_dot ≈ −wz·vx = −60×16 = −960 m/s² per step
+            # → STATE_Y drifts ~48m/step → n=12–30m → barrier gradient ~1.9M
+            # → no Wolfe-satisfying step exists in 20 probes → ABNORMAL nit=0.
+            # Physical wz at κ=0.05, vx=16: wz_phys = 16×0.05 = 0.8 rad/s.
+            # Cap at 4× the kinematic rate to allow transient dynamics.
+            wz_max = x_next[STATE_VX] * (jnp.abs(k_c) + 0.05) * 4.0
+            x_next = x_next.at[19].set(
+                jnp.clip(x_next[19], -wz_max, wz_max)
+            )
+            # Clamp lateral velocity to physical sideslip limit β_max≈11°.
+            # vy = vx·tan(β) ≈ vx·0.20. Without this, phantom wz integrates
+            # into vy through the rigid-body equations each substep, causing
+            # the same lateral drift even after the wz clamp is applied.
+            vy_max = x_next[STATE_VX] * 0.20
+            x_next = x_next.at[STATE_VY].set(
+                jnp.clip(x_next[STATE_VY], -vy_max, vy_max)
+            )
+
+            v_fric_sq  = (self.mu_friction * 9.81) / (jnp.abs(k_c) + 1e-4)
             # BUGFIX: previous version saturated at V_limit=30 m/s — completely
             # inactive at the 15–20 m/s operating range. The per-step Jacobian
             # eigenvalue was never damped, allowing gradient magnitude to grow as
@@ -589,10 +599,9 @@ class DiffWMPCSolver:
             # envelope (vx ≤ v_fric). The gradient ratio between AL-penalty and
             # time-cost is UNCHANGED by saturation (both scale identically), so
             # the optimizer still finds the correct Pareto trade-off.
-            v_fric_sq  = (self.mu_friction * 9.81) / (jnp.abs(k_c) + 1e-4)
             v_sat_ceil = jnp.minimum(jnp.sqrt(v_fric_sq) * 1.25, self.V_limit)
             vx_raw     = x_next[STATE_VX]
-            vx_sat     = vx_raw - jax.nn.softplus(vx_raw - v_sat_ceil)
+            vx_sat = vx_raw - jnp.logaddexp(0.0, vx_raw - v_sat_ceil)
             x_next     = x_next.at[STATE_VX].set(jnp.maximum(vx_sat, 0.5))
 
             # Curvilinear coordinate: lateral deviation n from track centerline
@@ -684,7 +693,7 @@ class DiffWMPCSolver:
         # This is numerically identical to the kinematic cost and gives clean
         # gradients everywhere. The factor 0.05 (= dt_control) makes the scale
         # match the old formulation at operating speed (~20 m/s).
-        s_dot_safe = jax.nn.softplus(s_dot * 20.0) / 20.0 + 1e-2  # floor at 1e-2 m/s
+        s_dot_safe = jnp.logaddexp(0.0, s_dot * 20.0) / 20.0 + 1e-2  # floor at 1e-2 m/s
         time_cost  = -jnp.sum(s_dot_safe) * self.dt_control
 
         # ── 2. Control effort (L2 + Pseudo-Huber on detail wavelet coefficients) ────────
@@ -747,21 +756,24 @@ class DiffWMPCSolver:
         # ∂ψ/∂n = 2w · softplus(v·s)/s² · sigmoid(v·s) · ∂v/∂n
         # This gradient is PROPORTIONAL to the violation magnitude — larger
         # violations produce stronger restoring forces everywhere.
-        sp_sharp    = 20.0   # softplus sharpness [1/m]
-        w_barrier   = 80.0   # quadratic penalty weight
+        # ── 3. Track limits — smooth quadratic violation penalty ─────────────
+        sp_sharp    = 20.0   
+        w_barrier   = 8000.0   # <-- TWEAK 1: Revert from 800.0 to 8000.0
         tube_radius = self.kappa_safe * jnp.sqrt(jnp.maximum(n_var, 1e-6))
 
-        # CRITICAL FIX (GP-vX8): softplus(x) in float32 overflows when x > 88.
-        # With n_max=9.7m, the right-wall argument = (-(-9.7) + 0 - 3.5) × 20 = 124.
-        # exp(124) = 4e53 → float32 overflow → barrier_cost = inf → gradient = NaN.
-        # Fix: clip the raw argument to ±80 (softplus(80)/20 = 4.0m — large but finite).
-        # This preserves gradient signal for any physically reachable violation
-        # while preventing overflow for the large lateral excursions that occur
-        # during the first few AL iterations when the track boundary isn't enforced yet.
-        arg_left  = jnp.clip(( n_mean + tube_radius - track_w_left ) * sp_sharp, -80.0, 80.0)
-        arg_right = jnp.clip((-n_mean + tube_radius - track_w_right) * sp_sharp, -80.0, 80.0)
-        viol_left   = jax.nn.softplus(arg_left)  / sp_sharp
-        viol_right  = jax.nn.softplus(arg_right) / sp_sharp
+        # CRITICAL FIX (GP-vX9): Replaced jnp.where/softplus with safe logaddexp.
+        # JAX evaluates both branches of jnp.where, meaning softplus(130) was still
+        # overflowing to inf in the background and poisoning the gradient with NaN,
+        # causing L-BFGS-B to abort (nit=0).
+        # Fix: jnp.logaddexp(0.0, x) is mathematically identical to softplus
+        # but 100% immune to float32 overflow, preserving the restoring gradient
+        # without triggering XLA branch-evaluation NaN poisoning.
+        raw_left  = ( n_mean + tube_radius - track_w_left ) * sp_sharp
+        raw_right = (-n_mean + tube_radius - track_w_right) * sp_sharp
+        
+        viol_left  = jnp.logaddexp(0.0, raw_left) / sp_sharp
+        viol_right = jnp.logaddexp(0.0, raw_right) / sp_sharp
+        
         barrier_cost = w_barrier * jnp.sum(viol_left ** 2 + viol_right ** 2)
 
         # ── 3b. Centreline cost ───────────────────────────────────────────────
@@ -821,7 +833,7 @@ class DiffWMPCSolver:
         
         # Soft penalty when margin < 20% of alpha_peak:
         # This keeps the solver in the high-grip linear region (Batch 4 logic)
-        margin_penalty = jnp.sum(jax.nn.softplus((0.20 * alpha_peak_est - alpha_margin) * 20.0))
+        margin_penalty = jnp.sum(jnp.logaddexp(0.0, (0.20 * alpha_peak_est - alpha_margin) * 20.0))
 
         # ── 6b. Forward progress floor ────────────────────────────────────────
         # Without this, zero velocity is a fully feasible solution:
@@ -831,8 +843,7 @@ class DiffWMPCSolver:
         #     is small enough to not escape the basin in few L-BFGS-B steps.
         # Softplus-squared onset at v_min is C∞ and gradient-safe in scan backward.
         v_min_fwd  = 3.0   # [m/s] — well below any useful racing speed
-        v_min_cost = 15.0 * jnp.mean(
-            jax.nn.softplus(v_min_fwd - vx_traj) ** 2)
+        v_min_cost = 15.0 * jnp.mean(jnp.logaddexp(0.0, v_min_fwd - vx_traj) ** 2)
 
         # Add to the final return (weighted by ~5.0 to make it influential)
         return (time_cost + effort_cost + barrier_cost + center_cost + heading_cost +
@@ -977,11 +988,12 @@ class DiffWMPCSolver:
             else:
                 F_ctrl = float(jnp.clip(-Kp * v_err * 0.3, 0.0, min(600.0, F_lon_max)))
 
-            # Expand to 6-element control (same fix as _simulate_trajectory)
+            # Expand to 6-element control for RWD warm-start
             R_w   = 0.2045
-            T_m_i = max(F_ctrl, 0.0) * R_w / 4.0
+            # Split thrust across 2 rear motors
+            T_rear_i = max(F_ctrl, 0.0) * R_w / 2.0
             F_b_i = max(-F_ctrl, 0.0)
-            u_i   = jnp.array([steer_i, T_m_i, T_m_i, T_m_i, T_m_i, F_b_i])
+            u_i   = jnp.array([steer_i, 0.0, 0.0, T_rear_i, T_rear_i, F_b_i])
             state = self._vehicle.simulate_step(
                 state, u_i, setup_params,
                 dt=self.dt_control, n_substeps=self.n_substeps,
@@ -991,13 +1003,27 @@ class DiffWMPCSolver:
             # Rate-limiting yaw change per step (GP-vX6 approach) still accumulated
             # to 176° by step 15. Absolute clamp cannot accumulate regardless of
             # how many steps the phantom torque acts.
-            yaw_after   = float(state[STATE_YAW])
-            psi_ref_ws  = float(track_psi[i])
-            dpsi_ws     = math.atan2(math.sin(yaw_after - psi_ref_ws),
-                                      math.cos(yaw_after - psi_ref_ws))
-            dpsi_max_ws = 0.08  # same cap as scan_fn
-            dpsi_sat_ws = dpsi_max_ws * math.tanh(dpsi_ws / (dpsi_max_ws + 1e-8))
-            state = state.at[STATE_YAW].set(psi_ref_ws + dpsi_sat_ws)
+            # Kinematic snap: reset heading, yaw rate, lateral velocity and
+            # (if available) position to the track reference each step.
+            #
+            # WHY ±2 rad/s CLAMP FAILED (GP-vX10):
+            # H_net phantom torque regenerates wz→60 rad/s INSIDE the next
+            # simulate_step call before we can clamp. The clamp fires after
+            # the damage is done. After 64 warm-start steps this accumulates
+            # to n=30m off-track. With barrier gradient ~1M at n=30m, even
+            # maxls=20 Wolfe probes find no satisfying step → ABNORMAL nit=0
+            # on every AL iteration. The warm-start only needs to produce a
+            # physically reasonable U_warm control history — exact state
+            # propagation is the optimizer's job.
+            psi_ref_ws = float(track_psi[i])
+            vx_ws      = max(float(state[STATE_VX]), 1.0)
+            k_ws       = float(track_k[i])
+            state = state.at[STATE_YAW].set(psi_ref_ws)          # exact heading
+            state = state.at[19].set(vx_ws * k_ws)               # kinematic wz = vx·κ
+            state = state.at[STATE_VY].set(0.0)                   # aligned with tangent
+            if track_x is not None and track_y is not None:
+                state = state.at[STATE_X].set(float(track_x[i]))  # on centreline
+                state = state.at[STATE_Y].set(float(track_y[i]))
 
             # Mirror the saturation in _simulate_trajectory so the warm-start
             # is feasible before the optimizer even starts.
@@ -1152,13 +1178,76 @@ class DiffWMPCSolver:
         al_rho    = self._al_rho
 
         # ── Outer AL loop ─────────────────────────────────────────────────────
-        n_al_iters = 3   # GP-vX8: always 3 (was `3 if dev else 5`). nit=1-9 observed
+        n_al_iters = 5   # GP-vX8: always 3 (was `3 if dev else 5`). nit=1-9 observed
                          # in all working solves; 5 iters wastes 40% of wall time.
         opt_coeffs = jnp.array(flat_init)
 
+        # FIX: Define these variables BEFORE the debug block uses them!
+        val_grad_fn    = self._val_grad_fn
+        wc_kin_flat_jx = wc_kin.reshape(-1).astype(jnp.float32)
+        alpha_peak_jax = jnp.array(alpha_peak_est, dtype=jnp.float32)
+
+        # ── DEBUG: inspect warm-start loss and gradient norm ─────────────
+        _init_rho_jax_dbg = jnp.array(self._AL_RHO_SCHEDULE[0], dtype=jnp.float32)
+        _loss_ws, _grad_ws = val_grad_fn(
+            opt_coeffs, wc_kin_flat_jx, jnp.zeros(self.N), _init_rho_jax_dbg,
+            x0, setup_params, track_k, track_x, track_y, track_psi,
+            track_w_left, track_w_right, alpha_peak_jax,
+        )
+        _init_rho_jax_dbg = jnp.array(self._AL_RHO_SCHEDULE[0], dtype=jnp.float32)
+        _loss_ws, _grad_ws = val_grad_fn(
+            opt_coeffs, wc_kin_flat_jx, jnp.zeros(self.N), _init_rho_jax_dbg,
+            x0, setup_params, track_k, track_x, track_y, track_psi,
+            track_w_left, track_w_right, alpha_peak_jax,
+        )
+        _gnorm = float(jnp.linalg.norm(_grad_ws))
+        print(f"[DEBUG WS] loss={float(_loss_ws):.4f}  ‖∇f‖={_gnorm:.2f}  "
+              f"finite_loss={bool(jnp.isfinite(_loss_ws))}  "
+              f"finite_grad={bool(jnp.all(jnp.isfinite(_grad_ws)))}")
+
+        # Simulate warm-start trajectory and print per-step n and g_circle
+        _U_ws, _x_ws, _n_ws, _, _s_ws = self._simulate_trajectory(
+            opt_coeffs.reshape(self.N, 2), x0, setup_params,
+            track_k, track_x, track_y, track_psi,
+            track_w_left, track_w_right, 1.0, 0.0, self.dt_control,
+        )
+        _vx_ws = _x_ws[:, STATE_VX]
+        _vx_prev_ws = jnp.concatenate([x0[STATE_VX:STATE_VX+1].ravel(), _vx_ws[:-1]])
+        _a_lat_ws = _vx_ws ** 2 * jnp.abs(track_k)
+        _a_lon_ws = jnp.abs(_vx_ws - _vx_prev_ws) / self.dt_control
+        _g_ws = ((_a_lat_ws**2 + _a_lon_ws**2) / ((self.mu_friction*9.81)**2 + 1e-4)) - 1.0
+        print(f"[DEBUG WS] n: min={float(jnp.min(_n_ws)):.2f}  max={float(jnp.max(_n_ws)):.2f}  "
+              f"mean={float(jnp.mean(_n_ws)):.2f}")
+        print(f"[DEBUG WS] vx: min={float(jnp.min(_vx_ws)):.2f}  max={float(jnp.max(_vx_ws)):.2f}  "
+              f"mean={float(jnp.mean(_vx_ws)):.2f}")
+        print(f"[DEBUG WS] g_circle: min={float(jnp.min(_g_ws)):.4f}  "
+              f"max={float(jnp.max(_g_ws)):.4f}  "
+              f"n_violated={int(jnp.sum(_g_ws > 0.0))}/{self.N}")
+        print(f"[DEBUG WS] s_dot: min={float(jnp.min(_s_ws)):.2f}  "
+              f"max={float(jnp.max(_s_ws)):.2f}")
+
+        # Gradient breakdown: finite-difference the loss w.r.t. a small step
+        # to confirm the Wolfe condition is geometrically possible
+        _eps = 1e-3
+        _d_ws = -_grad_ws / (_gnorm + 1e-12)  # steepest descent direction
+        _loss_step, _ = val_grad_fn(
+            opt_coeffs + _eps * _d_ws, wc_kin_flat_jx, jnp.zeros(self.N),
+            _init_rho_jax_dbg, x0, setup_params, track_k, track_x, track_y,
+            track_psi, track_w_left, track_w_right, alpha_peak_jax,
+        )
+        _expected_decrease = _eps * _gnorm  # c1=1, directional deriv = -‖∇f‖
+        _actual_decrease = float(_loss_ws) - float(_loss_step)
+        print(f"[DEBUG WS] Wolfe probe at ε={_eps}: "
+              f"Δf_actual={_actual_decrease:.6f}  "
+              f"Δf_expected(c1=1)={_expected_decrease:.6f}  "
+              f"ratio={_actual_decrease/(_expected_decrease+1e-30):.4f}")
+        print(f"[DEBUG WS] Wolfe c1=0.0001 threshold: "
+              f"need Δf > {0.0001*_expected_decrease:.8f}  "
+              f"{'SATISFIED' if _actual_decrease > 0.0001*_expected_decrease else 'VIOLATED — this is why ABNORMAL'}")
+        # ── END DEBUG ─────────────────────────────────────────────────────
+
         # Use the pre-compiled JIT function from __init__ — guaranteed cache hit.
         # All varying inputs (track arrays, x0, wc_kin) are explicit arguments.
-        val_grad_fn    = self._val_grad_fn
         wc_kin_flat_jx = wc_kin.reshape(-1).astype(jnp.float32)
         alpha_peak_jax = jnp.array(alpha_peak_est, dtype=jnp.float32)
 
@@ -1224,6 +1313,12 @@ class DiffWMPCSolver:
                 # evals fail → ABNORMAL nit=0 → 46s wasted per AL iter.
                 # With λ capped at 20, max gradient ≈ (20+50)×14.5×√32 ≈ 5700.
                 # L-BFGS-B handles this via its internal scaling — no clipping needed.
+                # Debug: print first 3 calls per AL iter
+                if total_calls[0] <= 3:
+                    print(f"[DEBUG OBJ] call={total_calls[0]}  "
+                          f"loss={float(loss_jax):.4f}  "
+                          f"‖∇f‖={float(np.linalg.norm(grad_np)):.2f}  "
+                          f"‖∇f‖_inf={float(np.max(np.abs(grad_np))):.2f}")
                 return float(loss_jax), grad_np
 
             print(f"[Diff-WMPC] AL iter {al_iter+1}/{n_al_iters} — "
@@ -1248,12 +1343,12 @@ class DiffWMPCSolver:
                                      # line searches at 1.4s/eval = pure waste.
                                      # 30 iters × 3 AL × ~4 evals = ~168s/solve (N=64)
                                      # With --dev (N=32): ~42s/solve × 86 = 60min lap.
-                    'maxls':   2,    # GP-vX9: was 30. ABNORMAL with maxls=30 wastes
-                                     # 31 evals × 1.5s = 46s per AL iter doing nothing.
-                                     # With maxls=2: ABNORMAL = 3 evals × 1.5s = 4.5s.
-                                     # More L-BFGS-B iterations (each using fewer evals)
-                                     # produce more optimization progress per wall-second
-                                     # than one iteration with 30 line-search probes.
+                    'maxls':   20,   # GP-vX9 set this to 2 to save time when NaN-fallback
+                                    # was poisoning the Wolfe check. NaN rate is now 0% —
+                                    # ABNORMAL is purely a step-size issue. With barrier
+                                    # gradient ~1e4 at n=10m, L-BFGS-B needs >2 backtrack
+                                    # probes to find a Wolfe-satisfying step. 20 matches
+                                    # scipy default and is sufficient for smooth objectives.
                     'ftol':    1e-30,   # was 1e-9 — FACTR was firing after nit=1
                                         # because AL quadratic penalty curvature
                                         # forces tiny Wolfe line-search steps whose
@@ -1310,7 +1405,7 @@ class DiffWMPCSolver:
             # λ accumulates to 27,000 across receding horizon solves — the gradient
             # becomes 540,000× the time cost → L-BFGS-B Wolfe search fails on every
             # step → nit=0 ABNORMAL on every AL iter → solver is completely stuck.
-            al_lambda = jnp.minimum(al_lambda, 20.0)   # GP-vX9: was 100. At λ=100,
+            al_lambda = jnp.minimum(al_lambda, 200.0)  # <-- TWEAK 3: Up from 20.0   # GP-vX9: was 100. At λ=100,
             # gradient ≈ 100×14.5×√32=8207 → clipping was needed → Wolfe failed.
             # At λ=20: gradient ≈ 20×14.5×√32=1641 → no clipping needed → Wolfe works.
             max_viol  = float(jnp.max(jnp.maximum(g_al, 0.0)))
@@ -1345,11 +1440,14 @@ class DiffWMPCSolver:
         wc_final = opt_coeffs.reshape((self.N, 2))
         wc_final = jnp.clip(wc_final, -25000.0, 25000.0)
 
+        # OPEN-LOOP EVALUATION FIX: Use the exact same lmuy_scalar that _loss_fn used!
+        lmuy_scalar_eval = 1.0 - jnp.mean(w_mu) * 0.5
+        
         U_opt, x_traj, n_opt, var_n_opt, s_dot_opt = self._simulate_trajectory(
             wc_final, x0, setup_params,
             track_k, track_x, track_y, track_psi,
             track_w_left, track_w_right,
-            1.0, 0.0, self.dt_control,
+            lmuy_scalar_eval, 0.0, self.dt_control,  # Replaced the hardcoded 1.0 here
         )
         self._prev_solution = U_opt
 

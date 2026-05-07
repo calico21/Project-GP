@@ -455,6 +455,54 @@ def project_xy(
     psi_track = jnp.arctan2(T_b[1], T_b[0])
     return s_best, n_signed, psi_track
 
+# ─────────────────────────────────────────────────────────────────────────────
+# §9. Track Surface Physics (Rubber & Thermodynamics)
+# ─────────────────────────────────────────────────────────────────────────────
+from typing import NamedTuple
+
+class TrackSurfaceConfigPhysics(NamedTuple):
+    track_length: float = 1000.0
+    N_s: int = 1000
+    N_n: int = 5
+    base_mu: float = 1.0
+    rubber_mu_boost: float = 0.2
+
+class TrackSurfaceState(NamedTuple):
+    rubber_level: jnp.ndarray  
+    T_surface: jnp.ndarray     
+    shadow_mask: jnp.ndarray   
+
+def create_track_surface(track_length: float = 1000.0, n_laps_pre_rubbered: int = 0):
+    cfg = TrackSurfaceConfigPhysics(track_length=track_length)
+    rubber_level = jnp.zeros((cfg.N_s, cfg.N_n))
+    
+    if n_laps_pre_rubbered > 0:
+        rubber_level = rubber_level.at[:, 2].set(0.8)
+        
+    T_surface = jnp.full(cfg.N_s, 25.0)
+    s_axis = jnp.arange(cfg.N_s) * (track_length / cfg.N_s)
+    shadow_mask = jnp.where((s_axis > 280.0) & (s_axis < 320.0), 1.0, 0.0)
+    
+    return TrackSurfaceState(rubber_level, T_surface, shadow_mask), cfg
+
+@jax.jit
+def query_track_friction(s: jnp.ndarray, n: jnp.ndarray, state: TrackSurfaceState, cfg: TrackSurfaceConfigPhysics):
+    s_idx = (jnp.mod(s, cfg.track_length) / cfg.track_length * cfg.N_s).astype(jnp.int32)
+    n_idx = jnp.clip(jnp.round(n / 1.4) + 2, 0, cfg.N_n - 1).astype(jnp.int32)
+    mu = cfg.base_mu + state.rubber_level[s_idx, n_idx] * cfg.rubber_mu_boost
+    return mu, state.T_surface[s_idx]
+
+@jax.jit
+def update_rubber_level(rubber_level: jnp.ndarray, s: jnp.ndarray, n: jnp.ndarray, cfg: TrackSurfaceConfigPhysics, dt: float):
+    s_idx = (jnp.mod(s, cfg.track_length) / cfg.track_length * cfg.N_s).astype(jnp.int32)
+    n_idx = jnp.clip(jnp.round(n / 1.4) + 2, 0, cfg.N_n - 1).astype(jnp.int32)
+    return rubber_level.at[s_idx, n_idx].add(0.01 * dt)
+
+@jax.jit
+def update_track_temperature(T_surface: jnp.ndarray, shadow_mask: jnp.ndarray, cfg: TrackSurfaceConfigPhysics, dt: float):
+    heating_rate = 0.05 * (1.0 - shadow_mask)
+    cooling_rate = -0.01 * (T_surface - 25.0)
+    return T_surface + (heating_rate + cooling_rate) * dt
 
 # ─────────────────────────────────────────────────────────────────────────────
 # §8.  Smoke test (not run under JIT path — for local sanity only)
