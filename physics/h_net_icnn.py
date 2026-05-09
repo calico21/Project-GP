@@ -143,6 +143,9 @@ class _PotentialICNN(nn.Module):
 # ─────────────────────────────────────────────────────────────────────────────
 # §5  PotentialNet — V(q, setup), grounded at q_eq
 # ─────────────────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
+# §5  PotentialNet — V(q, setup), grounded at q_eq
+# ─────────────────────────────────────────────────────────────────────────────
 
 class PotentialNet(nn.Module):
     """
@@ -161,7 +164,19 @@ class PotentialNet(nn.Module):
     def __call__(self, q: jax.Array, setup: jax.Array) -> jax.Array:
         q_centered = q - _Z_EQ_DEFAULT
 
-        film  = nn.Dense(2 * self.q_dim, name="film")(setup)
+        # 1. Duplication Input Trick: Feed negated variables to bypass non-negativity restrictions
+        setup_duplicated = jnp.concatenate([setup, -setup], axis=-1)
+
+        # 2. Strict Xavier (Glorot) Initialization for Modulators
+        film = nn.Dense(
+            2 * self.q_dim, 
+            name="film",
+            kernel_init=jax.nn.initializers.glorot_normal(),
+            bias_init=jax.nn.initializers.zeros
+        )(setup_duplicated)
+        
+        # Scale begins perfectly at 1.0, bias at 0.0 to prevent the structural 
+        # prior from immediately dominating the learned residual.
         gamma = 1.0 + 0.1 * jnp.tanh(film[: self.q_dim])
         beta  = 0.05 * jnp.tanh(film[self.q_dim:])
 
@@ -192,7 +207,9 @@ class PassiveHNet(nn.Module):
     k_hidden:   tuple[int, ...] = (64, 64, 32)
     v_hidden:   tuple[int, ...] = (64, 64, 32)
     psi_hidden: tuple[int, ...] = (64, 32)
-    h_cap:      float        = 15_000.0   # was 50_000
+    # Elevate the cap from 15,000 to 50,000 Joules to prevent gradient clipping 
+    # during extreme elastokinematic maneuvers.
+    h_cap:      float        = 50_000.0   # Restored from 15_000.0
 
     @nn.compact
     def __call__(self, q: jax.Array, p: jax.Array, setup: jax.Array) -> jax.Array:

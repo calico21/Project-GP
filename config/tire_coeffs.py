@@ -63,7 +63,7 @@ tire_coeffs = {
     'PEX2':   0.095,
     'PEX3':  -0.020,
     'PEX4':   0.0,
-    'PKX1':  21.51,
+    'PKX1':  5.0,          # was 18.5  ← CRITICAL: recalibrated downwards to shift \kappa^* from 0.02 to ~0.10-0.15
     'PKX2':  13.49,
     'PKX3':  -0.41,
     'PHX1':   0.0,

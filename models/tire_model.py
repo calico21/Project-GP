@@ -660,7 +660,9 @@ class PacejkaTire:
         PEX1 = c.get('PEX1', -0.20)
         PEX2 = c.get('PEX2',  0.10)
         PEX3 = c.get('PEX3',  0.0)
-        PKX1 = c.get('PKX1', 18.5)
+        # Recalibrate PKX1 downwards to push the \kappa^* peak to ~0.10 - 0.15
+        # Prevents infinite stiffness "steel wheel" anomaly (peak at 0.02)
+        PKX1 = c.get('PKX1',  5.0)  # <-- Changed from 18.5
         PKX2 = c.get('PKX2',  0.0)
         PKX3 = c.get('PKX3',  0.20)
         PHX1 = c.get('PHX1',  0.0)
@@ -741,7 +743,10 @@ class PacejkaTire:
         # BUGFIX-5: include normalized thermal deviation as 6th PINN feature.
         # T_eff = surface average; same value used by _thermal_grip_factor.
         T_eff  = jnp.mean(T_ribs[:3])
-        T_norm = (T_eff - self.T_opt) / 30.0
+        
+        # Replace linear thermal derating with a softer exponential saturation
+        # This prevents catastrophic loss of lateral stiffness when cold during warmup
+        T_norm = jnp.tanh((T_eff - self.T_opt) / 30.0) # <-- Changed from (T_eff - self.T_opt) / 30.0
 
         # jnp.asarray handles both Python float and JAX array Vx without
         # isinstance checks (which fail under abstract tracing in jit).

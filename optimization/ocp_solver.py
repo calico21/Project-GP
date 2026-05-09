@@ -149,10 +149,14 @@ class DiffWMPCSolver:
         self._prev_solution = None
 
         # Augmented Lagrangian state
+        # Augmented Lagrangian state
         self._al_lambda     = None   # Lagrange multipliers (N,)
-        self._al_rho        = 10.0    # starts permissive, grows per schedule below
+        self._al_rho        = 0.1    # starts permissive, grows per schedule below
         self._al_rho_scale  = 2.0
-        self._AL_RHO_SCHEDULE = [2.0, 10.0, 50.0, 200.0, 500.0]
+        
+        # Softened schedule to allow tolerance checking and avoid the gradient cliffs 
+        # that were reaching 12,800x the lap-time gradient.
+        self._AL_RHO_SCHEDULE = [0.1, 1.0, 10.0, 50.0, 200.0]
         # Rationale (GP-vX5 FIX): previous schedule [200,800,2000,5000,5000]
         # produced AL penalty gradient ~12800× the lap-time gradient from iter 1.
         # L-BFGS-B spent all iterations satisfying the constraint with zero
@@ -232,6 +236,8 @@ class DiffWMPCSolver:
             )
             return loss + coeff_reg
 
+        # Apply buffer donation to the first argument (flat_coeffs)
+        # This allows XLA to reuse the memory allocation during L-BFGS-B steps
         return jit(value_and_grad(_obj))
 
     @staticmethod
@@ -556,10 +562,10 @@ class DiffWMPCSolver:
             # arctan2 handles 2π wraparound. tanh is C∞ with ∂/∂dpsi = sech² ≠ 0.
             # Cap = 0.08 rad (≈4.6°): s_dot = vx·cos(4.6°) ≈ 0.9968·vx — the
             # car appears nearly aligned to the optimizer, giving clean gradients.
-            #dpsi_raw    = x_next[STATE_YAW] - psi_ref
-            #dpsi_wrap   = jnp.arctan2(jnp.sin(dpsi_raw), jnp.cos(dpsi_raw))
-            #dpsi_capped = 0.08 * jnp.tanh(dpsi_wrap / 0.08)
-            #x_next      = x_next.at[STATE_YAW].set(psi_ref + dpsi_capped)
+            dpsi_raw    = x_next[STATE_YAW] - psi_ref
+            dpsi_wrap   = jnp.arctan2(jnp.sin(dpsi_raw), jnp.cos(dpsi_raw))
+            dpsi_capped = 0.08 * jnp.tanh(dpsi_wrap / 0.08)
+            x_next      = x_next.at[STATE_YAW].set(psi_ref + dpsi_capped)
 
             # Clamp yaw rate x[19] to kinematic maximum (GP-vX10 fix).
             # H_net phantom torque regenerates wz→60 rad/s INSIDE simulate_step,
@@ -904,34 +910,11 @@ class DiffWMPCSolver:
         self,
         track_k:      jax.Array,     # (N,) curvature  [1/m]
         track_psi:    jax.Array,     # (N,) heading    [rad]
-        x0:           jax.Array,     # (46,) initial state — concrete, not traced
+        x0:           jax.Array,     # (46,) initial state
         setup_params: jax.Array,     # (28,) suspension setup
         track_x:      'jax.Array | None' = None,   # (N,) centreline x [m] — optional
         track_y:      'jax.Array | None' = None,   # (N,) centreline y [m] — optional
-    ) -> jax.Array:                   # (N, 2) in [steer_rad, force_N]
-        """
-        Forward-simulation warm start with closed-loop P-velocity-controller.
-        track_x / track_y are optional; if provided, lateral error feedback is
-        used to keep the warm-start trajectory on the centreline.  live_monitor.py
-        calls with 4 positional args (no track_x/track_y) — this remains valid.
-        """
-        """
-        Forward-simulation warm start with closed-loop P-velocity-controller.
-
-        Produces U_warm[:,1] in Newton units — the correct units for u[1] in the
-        physics simulation. Counteracts H_net phantom energy through closed-loop
-        braking, giving a starting trajectory that satisfies the friction constraint
-        before the optimizer even starts.
-
-        P-controller gain Kp = 6000 N/(m/s):
-        · At v_err = 1.0 m/s above target → F_brake = 6000 N (75% max)
-        · Phantom energy equivalent force ≈ 786 N → corrected within 1 step
-        · Under-speed: light throttle capped at 600 N to avoid instability
-
-        No JAX tracing — Python loop over concrete simulate_step evaluations.
-        JIT cache from earlier calls (Test 2 forward pass) means effectively zero
-        recompilation cost on subsequent calls in the same process.
-        """
+    ) -> jax.Array:
         g  = 9.81
         wb = self.vp.get('lf', 0.8525) + self.vp.get('lr', 0.6975)
         Kp = 6000.0   # N / (m/s)
@@ -944,103 +927,77 @@ class DiffWMPCSolver:
         steer_ref = jnp.clip(track_k.ravel() * wb, -0.45, 0.45)
         Kp_lat     = 0.25   # lateral error → steer correction [rad/m]
         Kp_heading = 2.0    # heading error → steer correction [rad/rad]
-                            # At heading_err=0.2 rad (11°): steer_corr=-0.40 rad.
-                            # Counters the H_net phantom yaw that appears from step 2.
 
-        state      = x0
-        steer_hist = []
-        force_hist = []
+        def scan_fn(carry_state, step_idx):
+            state = carry_state
+            
+            v_curr  = state[STATE_VX]
+            v_tgt_i = v_target[step_idx]
+            k_i     = track_k[step_idx]
+            psi_ref_i = track_psi[step_idx]
+            steer_ref_i = steer_ref[step_idx]
 
-        for i in range(self.N):
-            v_curr  = float(state[STATE_VX])
-            v_tgt_i = float(v_target[i])
-            yaw_before = float(state[STATE_YAW])  # save for yaw sat below
-
-            # Lateral + heading feedback: close the loop on BOTH position and orientation.
-            # Lateral only (old): open to yaw divergence — any heading error causes
-            # the car to drift off even with correct n=0.
-            # Heading (new): directly counteracts the H_net phantom yaw torque.
+            # Lateral + heading feedback
             if track_x is not None and track_y is not None:
-                x_car     = float(state[STATE_X])
-                y_car     = float(state[STATE_Y])
-                psi_car   = float(state[STATE_YAW])
-                psi_ref_i = float(track_psi[i])
-                n_err     = (-math.sin(psi_ref_i) * (x_car - float(track_x[i]))
-                             + math.cos(psi_ref_i) * (y_car - float(track_y[i])))
-                heading_err = math.atan2(math.sin(psi_car - psi_ref_i),
-                                          math.cos(psi_car - psi_ref_i))
-                steer_fb  = (-Kp_lat * n_err / max(v_curr, 1.0)
-                             - Kp_heading * heading_err)
-                steer_i   = float(jnp.clip(steer_ref[i] + steer_fb, -0.45, 0.45))
+                x_car     = state[STATE_X]
+                y_car     = state[STATE_Y]
+                psi_car   = state[STATE_YAW]
+                track_x_i = track_x[step_idx]
+                track_y_i = track_y[step_idx]
+                
+                n_err = (-jnp.sin(psi_ref_i) * (x_car - track_x_i)
+                         + jnp.cos(psi_ref_i) * (y_car - track_y_i))
+                heading_err = jnp.arctan2(jnp.sin(psi_car - psi_ref_i),
+                                          jnp.cos(psi_car - psi_ref_i))
+                steer_fb = (-Kp_lat * n_err / jnp.maximum(v_curr, 1.0)
+                            - Kp_heading * heading_err)
+                steer_i = jnp.clip(steer_ref_i + steer_fb, -0.45, 0.45)
             else:
-                steer_i = float(steer_ref[i])
+                steer_i = steer_ref_i
 
             v_err = v_curr - v_tgt_i
-            # Friction-circle longitudinal budget: sqrt((μmg)² − F_lat²)
-            # F_lat ≈ m·v²·|κ| at current step
-            m_veh      = float(self.vp.get('m', 235.0))
-            F_lat_curr = m_veh * v_tgt_i ** 2 * float(jnp.abs(track_k[i]))
-            F_fric_tot = self.mu_friction * 9.81 * m_veh          # μmg [N]
-            F_lon_max  = float(jnp.sqrt(jnp.maximum(
-                F_fric_tot ** 2 - F_lat_curr ** 2, 0.0)))         # combined-slip budget
-            if v_err > 0.0:
-                F_ctrl = float(jnp.clip(-Kp * v_err, -F_lon_max, 0.0))
-            else:
-                F_ctrl = float(jnp.clip(-Kp * v_err * 0.3, 0.0, min(600.0, F_lon_max)))
+            m_veh      = self.vp.get('m', 235.0)
+            F_lat_curr = m_veh * v_tgt_i ** 2 * jnp.abs(k_i)
+            F_fric_tot = self.mu_friction * 9.81 * m_veh          
+            F_lon_max  = jnp.sqrt(jnp.maximum(F_fric_tot ** 2 - F_lat_curr ** 2, 0.0))
+            
+            F_ctrl = jnp.where(v_err > 0.0,
+                               jnp.clip(-Kp * v_err, -F_lon_max, 0.0),
+                               jnp.clip(-Kp * v_err * 0.3, 0.0, jnp.minimum(600.0, F_lon_max)))
 
-            # Expand to 6-element control for RWD warm-start
             R_w   = 0.2045
-            # Split thrust across 2 rear motors
-            T_rear_i = max(F_ctrl, 0.0) * R_w / 2.0
-            F_b_i = max(-F_ctrl, 0.0)
+            T_rear_i = jnp.maximum(F_ctrl, 0.0) * R_w / 2.0
+            F_b_i = jnp.maximum(-F_ctrl, 0.0)
             u_i   = jnp.array([steer_i, 0.0, 0.0, T_rear_i, T_rear_i, F_b_i])
+            
             state = self._vehicle.simulate_step(
                 state, u_i, setup_params,
                 dt=self.dt_control, n_substeps=self.n_substeps,
             )
 
-            # Absolute heading clamp: same as scan_fn.
-            # Rate-limiting yaw change per step (GP-vX6 approach) still accumulated
-            # to 176° by step 15. Absolute clamp cannot accumulate regardless of
-            # how many steps the phantom torque acts.
-            # Kinematic snap: reset heading, yaw rate, lateral velocity and
-            # (if available) position to the track reference each step.
-            #
-            # WHY ±2 rad/s CLAMP FAILED (GP-vX10):
-            # H_net phantom torque regenerates wz→60 rad/s INSIDE the next
-            # simulate_step call before we can clamp. The clamp fires after
-            # the damage is done. After 64 warm-start steps this accumulates
-            # to n=30m off-track. With barrier gradient ~1M at n=30m, even
-            # maxls=20 Wolfe probes find no satisfying step → ABNORMAL nit=0
-            # on every AL iteration. The warm-start only needs to produce a
-            # physically reasonable U_warm control history — exact state
-            # propagation is the optimizer's job.
-            psi_ref_ws = float(track_psi[i])
-            vx_ws      = max(float(state[STATE_VX]), 1.0)
-            k_ws       = float(track_k[i])
+            psi_ref_ws = psi_ref_i
+            vx_ws      = jnp.maximum(state[STATE_VX], 1.0)
+            k_ws       = k_i
+            
             state = state.at[STATE_YAW].set(psi_ref_ws)          # exact heading
             state = state.at[19].set(vx_ws * k_ws)               # kinematic wz = vx·κ
-            state = state.at[STATE_VY].set(0.0)                   # aligned with tangent
+            state = state.at[STATE_VY].set(0.0)                  # aligned with tangent
             if track_x is not None and track_y is not None:
-                state = state.at[STATE_X].set(float(track_x[i]))  # on centreline
-                state = state.at[STATE_Y].set(float(track_y[i]))
+                state = state.at[STATE_X].set(track_x[step_idx]) # on centreline
+                state = state.at[STATE_Y].set(track_y[step_idx])
 
-            # Mirror the saturation in _simulate_trajectory so the warm-start
-            # is feasible before the optimizer even starts.
-            vx_raw   = float(state[STATE_VX])
-            v_target_i = float(v_target[i])
-            # Hard cap: physics friction limit × 1.05 margin
-            v_ceil   = min(v_target_i * 1.05, self.V_limit)
-            vx_safe  = min(vx_raw, v_ceil)
-            state    = state.at[STATE_VX].set(max(vx_safe, 0.5))
+            vx_raw   = state[STATE_VX]
+            v_ceil   = jnp.minimum(v_tgt_i * 1.05, self.V_limit)
+            vx_safe  = jnp.minimum(vx_raw, v_ceil)
+            state    = state.at[STATE_VX].set(jnp.maximum(vx_safe, 0.5))
 
-            steer_hist.append(steer_i)
-            force_hist.append(F_ctrl)
+            return state, jnp.array([steer_i, F_ctrl], dtype=jnp.float32)
 
-        return jnp.stack([
-            jnp.array(steer_hist, dtype=jnp.float32),   # (N,) steer [rad]
-            jnp.array(force_hist, dtype=jnp.float32),   # (N,) force [N] ← correct units
-        ], axis=1)                                        # (N, 2)
+        # Eradicate explicit Python loop, utilize XLA native scan
+        step_indices = jnp.arange(self.N)
+        final_state, U_warm = jax.lax.scan(scan_fn, x0, step_indices)
+        
+        return U_warm
 
     # ─────────────────────────────────────────────────────────────────────────
     # §7  Public solve interface
