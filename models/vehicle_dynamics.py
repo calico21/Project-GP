@@ -247,6 +247,9 @@ jax.tree_util.register_pytree_node(
     lambda _, leaves: SuspensionSetup(*leaves),
 )
 
+def safe_abs(x, eps=1e-8):
+    """C-infinity continuously differentiable absolute value."""
+    return jnp.sqrt(x**2 + eps)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # §2  PhysicsNormalizer
@@ -310,7 +313,7 @@ def compute_damper_force_bilinear(
     physical accuracy is preserved. At z_dot=0 the blend is 50/50 of bump and
     rebound — the only physically valid C^∞ extension at zero velocity.
     """
-    v_abs  = jnp.abs(z_dot)
+    v_abs  = safe_abs(z_dot)
     w_bump = jax.nn.sigmoid(200.0 * z_dot)
     w_reb  = 1.0 - w_bump
 
@@ -340,7 +343,7 @@ def compute_bumpstop_force(z_corner: jax.Array, gap: jax.Array, k_bs: float = 50
     above. Replaces hard clip — gradient-alive through contact.
     F_bs = k_bs · softplus((z - gap)·β) / β
     """
-    return k_bs * jnp.logaddexp(0.0, beta * (z_corner - gap)) / beta
+    return k_bs * jax.nn.softplus(beta * (z_corner - gap)) / beta
 
 
 def compute_castor_trail(castor_deg: jax.Array, Fy: jax.Array, tire_radius: float) -> jax.Array:
@@ -359,7 +362,7 @@ def _softplus_floor(x: jax.Array, floor: float = 10.0) -> jax.Array:
     Replaces jnp.maximum(..., floor) whose sub-gradient is zero below the
     floor — kills optimizer signal exactly when a corner goes light.
     """
-    return floor + jnp.logaddexp(0.0, x - floor)
+    return floor + jax.nn.softplus(x - floor)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -477,7 +480,7 @@ class NeuralEnergyLandscape(nn.Module):
         x = FiLMLayer(64)(x, setup_emb)
         x = nn.swish(x)
 
-        H_raw = jnp.squeeze(jnp.logaddexp(0.0, nn.Dense(1)(x))) * self.h_scale
+        H_raw = jnp.squeeze(jax.nn.softplus(nn.Dense(1)(x))) * self.h_scale
         H_res = jnp.minimum(H_raw, self.H_RESIDUAL_CAP)
 
         # BUGFIX-5: gate at physical equilibrium _Z_EQ, not at z=0.
@@ -627,7 +630,7 @@ class NeuralDissipationMatrix(nn.Module):
 #         Cl_r = _softplus_floor(Cl_r_base * (1.0 + delta[1]), 0.0)
  
 #         # Drag coefficient — ALWAYS POSITIVE via softplus
-#         Cd_base = self.base_Cd + 0.05 * jnp.abs(pitch)  # pitch-induced drag
+#         Cd_base = self.base_Cd + 0.05 * safe_abs(pitch)  # pitch-induced drag
 #         Cd = jnp.logaddexp(0.0, Cd_base * (1.0 + delta[2]))
  
 #         # ── Forces (v² dependence is structural, not learned) ────────────────
@@ -789,7 +792,7 @@ class DifferentiableMultiBodyVehicle:
         eps  = 0.5
         tr   = self.track_r
         eta  = self.vp.get('drivetrain_efficiency', 0.92)
-        vx_s = jnp.maximum(jnp.abs(vx), eps)
+        vx_s = jnp.maximum(safe_abs(vx), eps)
 
         v_rl       = vx_s - wz * tr / 2.0
         v_rr       = vx_s + wz * tr / 2.0
@@ -1019,10 +1022,10 @@ class DifferentiableMultiBodyVehicle:
         eps_v        = 0.5
         v_corner_fl  = vx - wz * tf2
         v_corner_fr  = vx + wz * tf2
-        alpha_kin_fl = delta_fl       - jnp.arctan2(vy + wz * self.lf, jnp.maximum(jnp.abs(v_corner_fl), eps_v))
-        alpha_kin_fr = delta_fr       - jnp.arctan2(vy + wz * self.lf, jnp.maximum(jnp.abs(v_corner_fr), eps_v))
-        alpha_kin_rl = delta_comply_r - jnp.arctan2(vy - wz * self.lr, jnp.maximum(jnp.abs(vx - wz * tr2), eps_v))
-        alpha_kin_rr = delta_comply_r - jnp.arctan2(vy - wz * self.lr, jnp.maximum(jnp.abs(vx + wz * tr2), eps_v))
+        alpha_kin_fl = delta_fl       - jnp.arctan2(vy + wz * self.lf, jnp.maximum(safe_abs(v_corner_fl), eps_v))
+        alpha_kin_fr = delta_fr       - jnp.arctan2(vy + wz * self.lf, jnp.maximum(safe_abs(v_corner_fr), eps_v))
+        alpha_kin_rl = delta_comply_r - jnp.arctan2(vy - wz * self.lr, jnp.maximum(safe_abs(vx - wz * tr2), eps_v))
+        alpha_kin_rr = delta_comply_r - jnp.arctan2(vy - wz * self.lr, jnp.maximum(safe_abs(vx + wz * tr2), eps_v))
 
         # 2nd-order model: dα_t/dt = α_dot (already in state)
         # The acceleration (dα_dot/dt) is computed in the dx_slip block below
@@ -1057,16 +1060,16 @@ class DifferentiableMultiBodyVehicle:
         T_hub_fl = u[1]; T_hub_fr = u[2]; T_hub_rl = u[3]; T_hub_rr = u[4]
         F_brake_hyd = u[5]
 
-        F_brake_f = -jnp.abs(F_brake_hyd) * s.brake_bias_f * 0.5
-        F_brake_r = -jnp.abs(F_brake_hyd) * (1.0 - s.brake_bias_f) * 0.5
+        F_brake_f = -safe_abs(F_brake_hyd) * s.brake_bias_f * 0.5
+        F_brake_r = -safe_abs(F_brake_hyd) * (1.0 - s.brake_bias_f) * 0.5
 
         eta = self.vp.get('drivetrain_efficiency', 0.95)
-        vx_s = jnp.maximum(jnp.abs(vx), 0.5)
+        vx_s = jnp.maximum(safe_abs(vx), 0.5)
 
-        v_fl_g = jnp.maximum(jnp.abs(vx - wz * tf2), 0.5)
-        v_fr_g = jnp.maximum(jnp.abs(vx + wz * tf2), 0.5)
-        v_rl_g = jnp.maximum(jnp.abs(vx - wz * tr2), 0.5)
-        v_rr_g = jnp.maximum(jnp.abs(vx + wz * tr2), 0.5)
+        v_fl_g = jnp.maximum(safe_abs(vx - wz * tf2), 0.5)
+        v_fr_g = jnp.maximum(safe_abs(vx + wz * tf2), 0.5)
+        v_rl_g = jnp.maximum(safe_abs(vx - wz * tr2), 0.5)
+        v_rr_g = jnp.maximum(safe_abs(vx + wz * tr2), 0.5)
 
         # ── CRITICAL FIX: use wheel angular velocity STATES for kappa ────────
         # v[10:14] are the wheel ω DOFs integrated by F_ext[24:27].
@@ -1163,11 +1166,13 @@ class DifferentiableMultiBodyVehicle:
         dT_4x7 = four_corner_thermal_derivatives(
             T_4x7,
             jnp.array([Fz_fl, Fz_fr, Fz_rl, Fz_rr]),
-            jnp.array([jnp.abs(kappa_ref_fl), jnp.abs(kappa_ref_fr),
-                       jnp.abs(kappa_ref_rl), jnp.abs(kappa_ref_rr)]),
+            jnp.array([
+                jnp.sqrt(kappa_ref_fl**2 + 1e-8), jnp.sqrt(kappa_ref_fr**2 + 1e-8),
+                jnp.sqrt(kappa_ref_rl**2 + 1e-8), jnp.sqrt(kappa_ref_rr**2 + 1e-8)
+            ]),
             jnp.array([alpha_t_fl, alpha_t_fr, alpha_t_rl, alpha_t_rr]),
             jnp.array([gamma_fl, gamma_fr, gamma_rl, gamma_rr]),
-            jnp.abs(vx),
+            safe_abs(vx),
             jnp.array([omega_wheel_fl, omega_wheel_fr, omega_wheel_rl, omega_wheel_rr]),
         )
         dx_therm = dT_4x7.ravel()   # (28,)
@@ -1182,7 +1187,7 @@ class DifferentiableMultiBodyVehicle:
             jnp.array([kappa_ref_fl, kappa_ref_fr, kappa_ref_rl, kappa_ref_rr]),
             jax.lax.stop_gradient(transient_4x4),  # <--- KILLS THE 52 BILLION GRADIENT
             jnp.array([Fz_fl, Fz_fr, Fz_rl, Fz_rr]),
-            jnp.abs(vx),
+            safe_abs(vx),
         )
         dx_slip = jnp.clip(d_transient_4x4.ravel(), -500.0, 500.0)   # (16,)
 
@@ -1199,7 +1204,7 @@ class DifferentiableMultiBodyVehicle:
         mu_visc = jnp.exp(0.015 * (40.0 - T_oil))   
         dF1     = 15000.0 * dz_corners - F1_all / 0.008
         dF2     =  5000.0 * dz_corners - F2_all / 0.040
-        P_diss  = jnp.abs((F1_all + F2_all) * mu_visc * dz_corners)
+        P_diss  = jnp.sqrt(((F1_all + F2_all) * mu_visc * dz_corners)**2 + 1e-8)
         dT_oil_dt = (P_diss - 8.0 * (T_oil - 25.0)) / 500.0
         dx_damper = jnp.stack([dF1, dF2, dT_oil_dt], axis=1).ravel()   # (12,)
 
@@ -1209,7 +1214,7 @@ class DifferentiableMultiBodyVehicle:
         v_bcast  = jnp.broadcast_to(dz_corners[:, None], (4, 6))
         # KILLS THE ADJOINT GRADIENT EXPLOSION
         z_hyst   = jax.lax.stop_gradient(elastokin_4x6)
-        v_abs_bw = jnp.abs(v_bcast)
+        v_abs_bw = jnp.sqrt(v_bcast**2 + 1e-8)
         z_abs_bw = jnp.sqrt(z_hyst ** 2 + 1e-12)
         dz_hyst  = (v_bcast
                     - 0.5 * v_abs_bw * z_abs_bw * z_hyst

@@ -84,6 +84,9 @@ from functools import partial
 # ─────────────────────────────────────────────────────────────────────────────
 # §1  Spectral normalization utility
 # ─────────────────────────────────────────────────────────────────────────────
+def safe_abs(x, eps=1e-8):
+    """C-infinity continuously differentiable absolute value."""
+    return jnp.sqrt(x**2 + eps)
 
 class SpectralDense(nn.Module):
     """
@@ -296,7 +299,7 @@ class SparseGPMatern52(nn.Module):
 
         # softplus floor: C∞ everywhere, non-zero gradient at kink.
         # At k_xx - red = 0: softplus(0) = log(2) ≈ 0.693, gradient = 0.5.
-        post_var = jnp.logaddexp(0.0, prior_var - red) + 1e-8
+        post_var = jax.nn.softplus(prior_var - red) + 1e-8
         return jnp.sqrt(post_var)
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -447,8 +450,8 @@ class PacejkaTire:
         rho_c               = 2.0e6
         contact_half_length = 0.075
         thermal_diff        = k_rubber / rho_c
-        V_safe              = jnp.maximum(jnp.abs(V_slide), 1e-3)
-        q_flux              = (mu_actual * jnp.abs(Fz) * V_safe) / (2.0 * contact_half_length * 0.205)
+        V_safe              = jnp.maximum(jnp.sqrt(V_slide**2 + 1e-8), 1e-3)
+        q_flux              = (mu_actual * safe_abs(Fz) * V_safe) / (2.0 * contact_half_length * 0.205)
         T_flash             = ((q_flux * contact_half_length)
                                / (k_rubber * jnp.sqrt(jnp.pi * (V_safe * contact_half_length) / thermal_diff)))
         return jnp.clip(T_flash, 0.0, 350.0)
@@ -498,7 +501,8 @@ class PacejkaTire:
 
         Fz_f       = (Fz_corners[0] + Fz_corners[1]) * 0.5
         kap_f      = (kappa[0] + kappa[1]) * 0.5
-        V_slide_f  = jnp.abs(Vx * kap_f)
+        V_slide_f = jnp.sqrt((Vx * kap_f)**2 + 1e-8)
+        V_slide_r = jnp.sqrt((Vx * kap_r)**2 + 1e-8)
         T_flash_f  = self.compute_flash_temperature(mu_nom, Fz_f, V_slide_f)
 
         # Frictional heat split evenly across 3 surface nodes
@@ -527,7 +531,7 @@ class PacejkaTire:
 
         Fz_r      = (Fz_corners[2] + Fz_corners[3]) * 0.5
         kap_r     = (kappa[2] + kappa[3]) * 0.5
-        V_slide_r = jnp.abs(Vx * kap_r)
+        V_slide_r = safe_abs(Vx * kap_r)
         T_flash_r = self.compute_flash_temperature(mu_nom, Fz_r, V_slide_r)
 
         Q_fric_r  = mu_nom * Fz_r * V_slide_r / (3.0 * C_node + 1e-6)
@@ -636,7 +640,7 @@ class PacejkaTire:
 
         Ky   = (PKY1 * Fz0
                 * jnp.sin(PKY4 * jnp.arctan(Fz_safe / jnp.maximum(PKY2 * Fz0, eps)))
-                * (1.0 - PKY3 * jnp.abs(gam)))
+                * (1.0 - PKY3 * safe_abs(gam)))
         Dy   = PDY1 * (1.0 + PDY2 * dfz) * (1.0 - PDY3 * gam ** 2) * Fz_safe * lam_muy
         Cy   = PCY1
         By   = Ky / jnp.maximum(Cy * Dy, eps)
@@ -733,11 +737,19 @@ class PacejkaTire:
         Fy = Fy0 * Gyk
         Fx = Fx0 * Gxa
 
-        # ── Turn slip correction ─────────────────────────────────────────────
+        # ── Turn slip correction (JAX-Safe) ──────────────────────────────────
         a_contact = c.get('contact_half_length', 0.05)
-        R_path    = jnp.abs(Vx) / (jnp.abs(wz) + eps)
-        phi_t     = a_contact / (R_path + 1e-3)
-        Fy        = Fy * (1.0 - 0.15 * jnp.abs(phi_t))
+        
+        # 1. Compute curvature directly instead of radius.
+        # Floor Vx at 0.1 m/s to prevent division by zero at standstill.
+        curvature = (jnp.sqrt(wz**2 + 1e-8) + eps) / (jnp.sqrt(Vx**2 + 1e-8) + 0.1)
+        phi_t     = a_contact * curvature
+        
+        # 2. Smoothly fade out the correction at ultra-low speeds (< 0.5 m/s)
+        # This completely kills any remaining gradient spikes when the car is stopped.
+        low_speed_fade = jax.nn.sigmoid(10.0 * (safe_abs(Vx) - 0.5))
+        
+        Fy = Fy * (1.0 - 0.15 * safe_abs(phi_t) * low_speed_fade)
 
         # ── PINN/GP residual corrections ─────────────────────────────────────
         # BUGFIX-5: include normalized thermal deviation as 6th PINN feature.
@@ -819,7 +831,7 @@ class PacejkaTire:
         SHt = QHZ1 + QHZ2 * dfz
         a_t = alpha + SHt
 
-        Bt      = (QBZ1 + QBZ2 * dfz + QBZ3 * dfz ** 2) * (1.0 + QBZ9 * jnp.abs(gam))
+        Bt      = (QBZ1 + QBZ2 * dfz + QBZ3 * dfz ** 2) * (1.0 + QBZ9 * safe_abs(gam))
         Ct      = QCZ1
         Dt      = Fz_safe * R0 * (QDZ1 + QDZ2 * dfz) * (1.0 + QDZ3 * gam + QDZ4 * gam ** 2)
         # MF6.2 full Et: includes sign-dependent asymmetry term (QEZ3)
@@ -854,7 +866,7 @@ class PacejkaTire:
         rl = relaxation length [m]; τ = rl / |Vx| [s]
         """
         rl  = self.coeffs.get('relaxation_length', 0.35)
-        tau = rl / (jnp.maximum(jnp.abs(Vx), 1.0))
+        tau = rl / (jnp.maximum(safe_abs(Vx), 1.0))
         d_alpha = (alpha_kin - alpha_t) / tau
         d_kappa = (kappa_kin - kappa_t) / tau
         return d_alpha, d_kappa

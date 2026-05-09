@@ -147,143 +147,380 @@ def test_circular_track():
 
     N = 64
     track_s       = np.linspace(0, 100, N)
-    track_k       = np.full(N, 0.05)   # Radius = 20 m
+    track_k       = np.full(N, 0.05)
     track_w_left  = np.full(N, 3.5)
     track_w_right = np.full(N, 3.5)
+    track_psi     = track_s * 0.05
+    track_x       = 20.0 * np.sin(track_psi)
+    track_y       = 20.0 * (1.0 - np.cos(track_psi))
 
-    track_psi = track_s * 0.05
-    track_x   = 20.0 * np.sin(track_psi)
-    track_y   = 20.0 * (1.0 - np.cos(track_psi))
-
-    WMPC_V_LOWER = 13.0
-    WMPC_V_UPPER = 17.5   
-
-    print(f"Solving MPC for constant curvature (R=20m). "
-          f"Expected physical limit ~16.6 m/s "
-          f"(PASS envelope: {WMPC_V_LOWER}–{WMPC_V_UPPER} m/s)...")
-
-    from models.vehicle_dynamics import DifferentiableMultiBodyVehicle
+    # ─────────────────────────────────────────────────────────────────
+    # §0  Imports & shared setup (mirrors solver internals)
+    # ─────────────────────────────────────────────────────────────────
+    from models.vehicle_dynamics import DifferentiableMultiBodyVehicle, build_default_setup_28
     from config.vehicles.ter26 import vehicle_params as VP
     from config.tire_coeffs import tire_coeffs as TC
     from optimization.objectives import _expand_8_to_28_setup
     from optimization.ocp_solver import DiffWMPCSolver
-    
+
     _veh = DifferentiableMultiBodyVehicle(VP, TC)
-    _x   = DifferentiableMultiBodyVehicle.make_initial_state(T_env=25.0, vx0=15.0)
-    _u   = jnp.array([0.15, 1000.0, 1000.0, 1000.0, 1000.0, 0.0])
-    
     _sp  = _expand_8_to_28_setup(
         jnp.array([35000., 38000., 400., 450., 2500., 2800., 0.28, 0.60])
     )
-    
+
+    # ─────────────────────────────────────────────────────────────────
+    # §1  Physics stability (200-step rollout) — unchanged
+    # ─────────────────────────────────────────────────────────────────
+    _x   = DifferentiableMultiBodyVehicle.make_initial_state(T_env=25.0, vx0=15.0)
+    _u   = jnp.array([0.15, 1000.0, 1000.0, 1000.0, 1000.0, 0.0])
     nan_found = False
     for _i in range(200):
         _x_next = _veh.simulate_step(_x, _u, _sp, dt=0.01)
         if not jnp.all(jnp.isfinite(_x_next)) or jnp.any(jnp.abs(_x_next) > 1e6):
-            nan_idx = jnp.where(~jnp.isfinite(_x_next))[0]
-            print(f"   [DEBUG] NaN first appeared at step {_i}, state indices: {nan_idx}")  
-            nan_found = True
-            break
+            print(f"   [DEBUG] NaN at step {_i}, indices: {jnp.where(~jnp.isfinite(_x_next))[0]}")
+            nan_found = True; break
         _x = _x_next
     if not nan_found:
-        print(f"   [DEBUG] 200-step rollout clean. Final vx={float(_x[14]):.3f} m/s — physics is stable.")
-        
+        print(f"   [DEBUG §1] 200-step rollout clean. Final vx={float(_x[14]):.3f} m/s")
+
+    # ─────────────────────────────────────────────────────────────────
+    # §2  DWT / WPD round-trip — unchanged
+    # ─────────────────────────────────────────────────────────────────
     _cw = DiffWMPCSolver(N_horizon=64)
     _u_test = jnp.stack([
-        jnp.sin(jnp.linspace(0.0, 2.0 * np.pi, 64)),   
-        jnp.cos(jnp.linspace(0.0, 4.0 * np.pi, 64)) * 0.5,  
+        jnp.sin(jnp.linspace(0.0, 2.0 * jnp.pi, 64)),
+        jnp.cos(jnp.linspace(0.0, 4.0 * jnp.pi, 64)) * 0.5,
     ], axis=1)
-
-    _coeffs  = _cw._db4_dwt(_u_test)    
-    _recon   = _cw._db4_idwt(_coeffs)   
-    _err     = float(jnp.max(jnp.abs(_recon - _u_test)))
-
-    if _err < 3.0:
-        print(f"[PASS] DWT round-trip: max|recon - orig| = {_err:.4f} (within periodic-boundary tolerance)")
-    else:
-        print(f"[FAIL] DWT round-trip error {_err:.4f} — check boundary convention")
+    _coeffs = _cw._db4_dwt(_u_test)
+    _recon  = _cw._db4_idwt(_coeffs)
+    _err    = float(jnp.max(jnp.abs(_recon - _u_test)))
+    print(f"[{'PASS' if _err < 3.0 else 'FAIL'}] DWT round-trip: max|err|={_err:.4f}")
 
     def _sh_entropy(x):
-        flat = x.ravel()
-        e    = jnp.sum(flat ** 2) + 1e-12
-        p    = flat ** 2 / e
-        lp   = jnp.log(jax.nn.softplus(p * 1e6) / 1e6 + 1e-12)
-        return float(-jnp.sum(p * lp))
-
-    _H_raw    = _sh_entropy(_u_test[:, 0])
-    _H_cw     = _sh_entropy(_coeffs[:, 0])
-    if _H_cw <= _H_raw + 0.5:
-        print(f"[PASS] CW basis entropy: H_coeffs={_H_cw:.3f} ≤ H_signal={_H_raw:.3f}+0.5")
-    else:
-        print(f"[WARN] CW basis increased entropy by {_H_cw - _H_raw:.3f}")
-
+        flat = x.ravel(); e = jnp.sum(flat**2) + 1e-12
+        p = flat**2 / e
+        return float(-jnp.sum(p * jnp.log(jax.nn.softplus(p * 1e6) / 1e6 + 1e-12)))
+    _H_raw, _H_cw = _sh_entropy(_u_test[:, 0]), _sh_entropy(_coeffs[:, 0])
+    print(f"[{'PASS' if _H_cw <= _H_raw + 0.5 else 'WARN'}] CW entropy: {_H_cw:.3f} vs {_H_raw:.3f}+0.5")
     _leaves = _cw._wpd_full_tree(_u_test[:, 0], max_level=3)
-    if len(_leaves) == 8 and all(leaf.shape == (8,) for leaf in _leaves):
-        print(f"[PASS] WPD full tree: 8 leaves of shape (8,) at max_level=3")
-    else:
-        print(f"[FAIL] WPD tree malformed")
+    print(f"[{'PASS' if len(_leaves)==8 and all(l.shape==(8,) for l in _leaves) else 'FAIL'}] WPD tree shape")
 
+    # ─────────────────────────────────────────────────────────────────
+    # §3  EXTENDED GRADIENT NaN DIAGNOSTICS
+    # ─────────────────────────────────────────────────────────────────
+    print("\n" + "─" * 60)
+    print("  §3 GRADIENT NaN DIAGNOSTICS (new)")
+    print("─" * 60)
+
+    solver = DiffWMPCSolver(N_horizon=64, mu_friction=1.40, V_limit=30.0)
+    setup_params = build_default_setup_28(VP)
+
+    # Shared track arrays as JAX
+    tk  = jnp.array(track_k,       dtype=jnp.float32)
+    tx  = jnp.array(track_x,       dtype=jnp.float32)
+    ty  = jnp.array(track_y,       dtype=jnp.float32)
+    tpsi= jnp.array(np.unwrap(track_psi), dtype=jnp.float32)
+    twl = jnp.array(track_w_left,  dtype=jnp.float32)
+    twr = jnp.array(track_w_right, dtype=jnp.float32)
+
+    from models.vehicle_dynamics import compute_equilibrium_suspension
+    z_eq = compute_equilibrium_suspension(setup_params, VP)
+    x0 = (DifferentiableMultiBodyVehicle.make_initial_state(T_env=25.0, vx0=16.0)
+          .at[0].set(tx[0]).at[1].set(ty[0]).at[5].set(tpsi[0])
+          .at[6:10].set(z_eq))
+    _T_corner_warm = jnp.array([85., 85., 85., 80., 75., 30., 40.])
+    x0 = x0.at[28:56].set(jnp.tile(_T_corner_warm, 4))
+
+    # Build warm-start coefficients
+    U_warm = solver._build_physics_warmstart(tk, tpsi, x0, setup_params, tx, ty)
+    wc_kin = solver._db4_dwt(U_warm)
+    opt_coeffs = wc_kin.reshape(-1).astype(jnp.float32)
+    wc_kin_flat = wc_kin.reshape(-1).astype(jnp.float32)
+
+    # ── §3a: JAX NaN-checking mode ────────────────────────────────────
+    # Forces JAX to raise on first NaN, printing the exact op.
+    print("\n[§3a] Enabling jax_debug_nans — will raise on first NaN in backward pass:")
+    _orig_debug_nans = jax.config.jax_debug_nans if hasattr(jax.config, 'jax_debug_nans') else False
     try:
-        solver = DiffWMPCSolver(
-            N_horizon=64,
-            mu_friction=1.40,
-            V_limit=30.0,
-            dev_mode=False,   
-        )
-        result = solver.solve(
-            track_s=track_s, track_k=track_k,
-            track_x=track_x, track_y=track_y, track_psi=track_psi,
-            track_w_left=track_w_left, track_w_right=track_w_right
-        )
+        jax.config.update("jax_debug_nans", True)
 
-        mean_v = np.mean(result['v'])
-        mean_g = np.mean(result['lat_g'])
-        max_g_comb = result['g_combined_max']
-        compliance = result['friction_compliance_pct']
-        max_n = np.max(np.abs(result['n']))
-        
-        # Check Db4 Wavelet smoothing
-        max_steer_rate = np.max(np.abs(np.diff(result['delta']))) / solver.dt_control
-        
-        # Forward progress proxy for heading cost
-        lap_time_est = result['time']
+        def _loss_probe(c):
+            return solver._loss_fn(
+                c.reshape(N, 2), x0, setup_params,
+                tk, tx, ty, tpsi, twl, twr,
+                jnp.ones(N) * 0.02, jnp.ones(N) * 1e-3, jnp.ones(N) * 5e-5,
+                jnp.zeros(N), jnp.array(0.1, dtype=jnp.float32),
+                jnp.array(0.13, dtype=jnp.float32),
+            )
 
-        print(f"  > Solver achieved mean speed: {mean_v:.2f} m/s")
-        print(f"  > Solver achieved Lat G: {mean_g:.2f} G")
+        try:
+            loss_val, grad_val = jax.value_and_grad(_loss_probe)(opt_coeffs)
+            print(f"  loss={float(loss_val):.4f}  grad_finite={bool(jnp.all(jnp.isfinite(grad_val)))}")
+            print(f"  ‖∇f‖={float(jnp.linalg.norm(grad_val)):.4f}")
+        except Exception as e:
+            print(f"  [CAUGHT NaN] Exception: {e}")
+    finally:
+        jax.config.update("jax_debug_nans", False)
 
-        # 1. Physics Limits
-        if WMPC_V_LOWER < mean_v < WMPC_V_UPPER:
-            print("[PASS] Solver correctly discovered the exact physical limit of the tires.")
-        else:
-            print(f"[FAIL] Solver velocity ({mean_v:.2f} m/s) out of bounds ({WMPC_V_LOWER}-{WMPC_V_UPPER}).")
+    # ── §3b: Per-component gradient isolation ─────────────────────────
+    # Compute gradient of each loss term independently to identify the NaN source.
+    print("\n[§3b] Per-component gradient (each term independently):")
 
-        # 2. Augmented Lagrangian Feasibility
-        if max_g_comb <= 1.05 and compliance > 85.0:
-            print(f"[PASS] AL Friction constraint strictly satisfied (max G_comb={max_g_comb:.3f}, {compliance:.1f}% compliance)")
-        else:
-            print(f"[FAIL] Friction constraint violated! (max G_comb={max_g_comb:.3f}, {compliance:.1f}% compliance)")
+    U_opt, x_traj, n_mean, var_n, s_dot = solver._simulate_trajectory(
+        opt_coeffs.reshape(N, 2), x0, setup_params,
+        tk, tx, ty, tpsi, twl, twr, 1.0, 0.0, solver.dt_control,
+    )
+    print(f"  Forward trajectory: n∈[{float(jnp.min(n_mean)):.2f},{float(jnp.max(n_mean)):.2f}]"
+          f"  vx∈[{float(jnp.min(x_traj[:,14])):.2f},{float(jnp.max(x_traj[:,14])):.2f}]"
+          f"  s_dot_min={float(jnp.min(s_dot)):.2f}")
 
-        # 3. Track Boundaries & Optimizer Convergence
-        # If the track barrier gradient is fixed, max_n should comfortably snap back < 3.6m
-        if max_n < 3.6:
-            print(f"[PASS] Optimizer converged and pulled trajectory inside boundaries (max lateral error: {max_n:.2f}m)")
-        else:
-            print(f"[FAIL] Optimizer failed to pull car inside boundaries (max lateral error: {max_n:.2f}m). Check barrier gradient.")
+    # Each component function — shares the simulation, tests only the cost math
+    def _cost_time(c):
+        _, _, _, _, sd = solver._simulate_trajectory(
+            c.reshape(N,2), x0, setup_params, tk, tx, ty, tpsi, twl, twr, 1.0, 0.0, solver.dt_control)
+        sd_safe = jnp.logaddexp(0.0, sd * 20.0) / 20.0 + 1e-2
+        return -jnp.sum(sd_safe) * solver.dt_control
 
-        # 4. Heading Alignment (GP-vX6 Spin Fix)
-        if lap_time_est < 15.0:
-            print(f"[PASS] Heading cost active: Car maintained forward progress (Est Lap Time: {lap_time_est:.1f}s)")
-        else:
-            print(f"[FAIL] Heading cost failed: Car spun out or stalled (Est Lap Time: {lap_time_est:.1f}s)")
+    def _cost_barrier(c):
+        _, _, nm, vn, _ = solver._simulate_trajectory(
+            c.reshape(N,2), x0, setup_params, tk, tx, ty, tpsi, twl, twr, 1.0, 0.0, solver.dt_control)
+        tube = solver.kappa_safe * jnp.sqrt(jnp.maximum(vn, 1e-6))
+        viol_l = jnp.logaddexp(0.0, (nm + tube - twl) * 20.0) / 20.0
+        viol_r = jnp.logaddexp(0.0, (-nm + tube - twr) * 20.0) / 20.0
+        return 8000.0 * jnp.sum(viol_l**2 + viol_r**2)
 
-        # 5. Pseudo-Huber Wavelet Regularization
-        if max_steer_rate < 15.0:
-            print(f"[PASS] Db4 Wavelet L1 regularization active: Steering is smooth (max rate: {max_steer_rate:.2f} rad/s)")
-        else:
-            print(f"[WARN] High-frequency actuator chatter detected (max rate: {max_steer_rate:.2f} rad/s)")
+    def _cost_heading(c):
+        _, xt, _, _, _ = solver._simulate_trajectory(
+            c.reshape(N,2), x0, setup_params, tk, tx, ty, tpsi, twl, twr, 1.0, 0.0, solver.dt_control)
+        dpsi = xt[:, 5] - tpsi
+        alpha = jnp.arctan2(jnp.sin(dpsi), jnp.cos(dpsi))
+        return solver.w_heading * jnp.sum(alpha**2)
 
+    def _cost_center(c):
+        _, _, nm, _, _ = solver._simulate_trajectory(
+            c.reshape(N,2), x0, setup_params, tk, tx, ty, tpsi, twl, twr, 1.0, 0.0, solver.dt_control)
+        return solver.w_center * jnp.sum(nm**2)
+
+    def _cost_sim_only(c):
+        # Gradient w.r.t. simulation output directly (no cost math)
+        _, xt, nm, vn, sd = solver._simulate_trajectory(
+            c.reshape(N,2), x0, setup_params, tk, tx, ty, tpsi, twl, twr, 1.0, 0.0, solver.dt_control)
+        return jnp.sum(sd) + jnp.sum(nm) + jnp.sum(xt[:, 14])
+
+    components = {
+        'time_cost':    _cost_time,
+        'barrier_cost': _cost_barrier,
+        'heading_cost': _cost_heading,
+        'center_cost':  _cost_center,
+        'sim_output':   _cost_sim_only,
+    }
+
+    for name, fn in components.items():
+        try:
+            g = jax.grad(fn)(opt_coeffs)
+            g_norm = float(jnp.linalg.norm(g))
+            n_nan  = int(jnp.sum(~jnp.isfinite(g)))
+            print(f"  {name:20s}: ‖∇‖={g_norm:>12.2f}  NaN_count={n_nan:>5d}  "
+                  f"{'[NaN!]' if n_nan > 0 else '[OK]'}")
+        except Exception as e:
+            print(f"  {name:20s}: EXCEPTION → {e}")
+
+    # ── §3c: Single-step physics gradient scan ────────────────────────
+    # Find which STEP in the scan first produces NaN gradient.
+    print("\n[§3c] Per-step physics gradient (first NaN step detection):")
+
+    def _scan_to_step_k(c, k_steps):
+        """Run exactly k_steps of physics, return sum of state."""
+        U = solver._db4_idwt(c.reshape(N, 2))
+        R_w = 0.2045
+
+        def scan_fn(x, i):
+            u_raw = U[i]
+            steer = jnp.clip(u_raw[0], -0.45, 0.45)
+            force = jnp.clip(u_raw[1], -8000.0, 8000.0)
+            T_rear = jax.nn.relu(force) * R_w / 2.0
+            F_brake = jax.nn.relu(-force)
+            u6 = jnp.array([steer, 0.0, 0.0, T_rear, T_rear, F_brake])
+            x_next = solver._vehicle.simulate_step(x, u6, setup_params, dt=solver.dt_control/solver.n_substeps)
+            return x_next, x_next[14]  # carry state, emit vx
+
+        _, vx_hist = jax.lax.scan(scan_fn, x0, jnp.arange(k_steps))
+        return jnp.sum(vx_hist)
+
+    first_nan_step = None
+    for k in [1, 2, 4, 8, 16, 32, 64]:
+        try:
+            g_k = jax.grad(lambda c: _scan_to_step_k(c, k))(opt_coeffs)
+            ok  = bool(jnp.all(jnp.isfinite(g_k)))
+            n_nan = int(jnp.sum(~jnp.isfinite(g_k)))
+            print(f"  steps={k:3d}: grad_finite={ok}  NaN_count={n_nan}")
+            if not ok and first_nan_step is None:
+                first_nan_step = k
+        except Exception as e:
+            print(f"  steps={k:3d}: EXCEPTION → {e}")
+            if first_nan_step is None:
+                first_nan_step = k
+
+    if first_nan_step:
+        print(f"  → NaN gradient first appears between step {first_nan_step//2 or 0} and {first_nan_step}")
+    else:
+        print(f"  → Gradient is finite through all step counts — NaN must be in cost math, not physics")
+
+    # ── §3d: Finite-difference gradient check ─────────────────────────
+    # Ground-truth gradient via central FD — tells us if the TRUE gradient exists.
+    print("\n[§3d] Finite-difference gradient (central diff, first 16 dims):")
+
+    def _full_loss_np(x_np):
+        x_jax = jnp.array(x_np, dtype=jnp.float32)
+        return float(solver._loss_fn(
+            x_jax.reshape(N, 2), x0, setup_params,
+            tk, tx, ty, tpsi, twl, twr,
+            jnp.ones(N)*0.02, jnp.ones(N)*1e-3, jnp.ones(N)*5e-5,
+            jnp.zeros(N), jnp.array(0.1), jnp.array(0.13),
+        ))
+
+    x_np0 = np.array(opt_coeffs, dtype=np.float64)
+    eps_fd = 1e-3
+    fd_grads = np.full(16, np.nan)
+    for i in range(16):
+        xp = x_np0.copy(); xp[i] += eps_fd
+        xm = x_np0.copy(); xm[i] -= eps_fd
+        fp, fm = _full_loss_np(xp), _full_loss_np(xm)
+        if np.isfinite(fp) and np.isfinite(fm):
+            fd_grads[i] = (fp - fm) / (2 * eps_fd)
+    n_finite_fd = int(np.sum(np.isfinite(fd_grads)))
+    print(f"  FD gradient (first 16 dims, eps={eps_fd}): {np.round(fd_grads, 2)}")
+    print(f"  FD finite count: {n_finite_fd}/16  ‖FD‖={np.linalg.norm(fd_grads[np.isfinite(fd_grads)]):.2f}")
+    if n_finite_fd == 16:
+        print("  → TRUE gradient is finite: NaN is an AD artifact (backward pass bug)")
+    elif n_finite_fd == 0:
+        print("  → TRUE gradient also NaN: forward pass has a discontinuity/singularity here")
+    else:
+        print(f"  → Mixed: {16-n_finite_fd} dims have NaN TRUE gradient (genuine singularity)")
+
+    # ── §3e: State trajectory breakdown at warm-start ─────────────────
+    print("\n[§3e] Warm-start trajectory statistics (per-step):")
+    print(f"  {'step':>5} {'vx':>7} {'vy':>7} {'wz':>7} {'n':>7} {'yaw_err':>8} {'g_circ':>8}")
+    vx_traj = x_traj[:, 14]; vy_traj = x_traj[:, 15]; wz_traj = x_traj[:, 19]
+    dpsi_traj = x_traj[:, 5] - tpsi
+    alpha_traj = np.array(jnp.arctan2(jnp.sin(dpsi_traj), jnp.cos(dpsi_traj)))
+    n_arr = np.array(n_mean)
+    vx_arr = np.array(vx_traj)
+    vx_prev = np.concatenate([[float(x0[14])], vx_arr[:-1]])
+    a_lat = vx_arr**2 * np.abs(np.array(tk))
+    a_lon = np.abs(vx_arr - vx_prev) / solver.dt_control
+    g_circ = np.sqrt(a_lat**2 + a_lon**2) / (solver.mu_friction * 9.81)
+    for step in [0, 4, 8, 16, 32, 48, 63]:
+        print(f"  {step:>5d} {float(vx_arr[step]):>7.2f} {float(vy_traj[step]):>7.3f}"
+              f" {float(wz_traj[step]):>7.3f} {float(n_arr[step]):>7.3f}"
+              f" {float(alpha_traj[step]):>8.4f} {float(g_circ[step]):>8.4f}")
+    print(f"  States with |vx|>V_limit: {int(np.sum(vx_arr > solver.V_limit))}/64")
+    print(f"  States with |vy|>1.0:     {int(np.sum(np.abs(np.array(vy_traj))>1.0))}/64")
+    print(f"  States with |wz|>5.0:     {int(np.sum(np.abs(np.array(wz_traj))>5.0))}/64")
+    print(f"  States outside track:      {int(np.sum(np.abs(n_arr)>3.5))}/64")
+
+    # ── §3f: H_net gradient isolation ─────────────────────────────────
+    # Test gradient through H_net directly at the warm-start state.
+    print("\n[§3f] H_net gradient isolation (at warm-start initial state):")
+    try:
+        from physics.h_net_icnn import PassiveHNet
+        # Grab vehicle's H_net directly
+        h_net  = solver._vehicle._h_net
+        h_params = solver._vehicle._h_params
+
+        def _h_net_loss(q, p, s):
+            return float(h_net.apply(h_params, q, p, s))
+
+        q0 = x0[:14]; p0 = jnp.zeros(14).at[0].set(230.0 * 10.0)
+        s0 = setup_params
+
+        # Gradient w.r.t. q (position), p (momentum), s (setup)
+        g_q = jax.grad(lambda q: h_net.apply(h_params, q, p0, s0))(q0)
+        g_p = jax.grad(lambda p: h_net.apply(h_params, q0, p, s0))(p0)
+        g_s = jax.grad(lambda s: h_net.apply(h_params, q0, p0, s))(s0)
+        print(f"  ∂H/∂q: finite={bool(jnp.all(jnp.isfinite(g_q)))}  "
+              f"‖∇‖={float(jnp.linalg.norm(g_q)):.4e}")
+        print(f"  ∂H/∂p: finite={bool(jnp.all(jnp.isfinite(g_p)))}  "
+              f"‖∇‖={float(jnp.linalg.norm(g_p)):.4e}")
+        print(f"  ∂H/∂s: finite={bool(jnp.all(jnp.isfinite(g_s)))}  "
+              f"‖∇‖={float(jnp.linalg.norm(g_s)):.4e}")
+
+        # Now test at a state that appeared mid-trajectory (step 16)
+        x16 = x_traj[16]
+        q16 = x16[:14]; p16 = x16[14:28]
+        g_q16 = jax.grad(lambda q: h_net.apply(h_params, q, p16, s0))(q16)
+        g_p16 = jax.grad(lambda p: h_net.apply(h_params, q16, p, s0))(p16)
+        print(f"  At step-16 state:")
+        print(f"  ∂H/∂q: finite={bool(jnp.all(jnp.isfinite(g_q16)))}  "
+              f"‖∇‖={float(jnp.linalg.norm(g_q16)):.4e}")
+        print(f"  ∂H/∂p: finite={bool(jnp.all(jnp.isfinite(g_p16)))}  "
+              f"‖∇‖={float(jnp.linalg.norm(g_p16)):.4e}")
     except Exception as e:
-        print(f"  [WARN] WMPC Optimization failed/skipped: {e}")
+        print(f"  H_net isolation skipped: {e}")
+
+    # ── §3g: Gradient magnitude spectrum across coefficient dims ───────
+    print("\n[§3g] Gradient spectrum — which coefficient dims are NaN?")
+    try:
+        # Force compute; ignore NaN check for inspection
+        with jax.disable_jit():
+            g_raw = jax.grad(_loss_probe)(opt_coeffs)
+
+        n_nan_per_band = {}
+        n8 = N//8
+        n4 = N//4
+        n2 = N//2
+        for ch, name in enumerate(['steer', 'force']):
+            g_ch = g_raw.reshape(N, 2)[:, ch]
+            bands = {
+                'A3(approx)':   g_ch[:n8],
+                'D3(low_det)':  g_ch[n8:n4],
+                'D2(mid_det)':  g_ch[n4:n2],
+                'D1(high_det)': g_ch[n2:],
+            }
+            for band, vals in bands.items():
+                n_nan_b = int(jnp.sum(~jnp.isfinite(vals)))
+                print(f"  ch={name}  band={band:15s}: NaN={n_nan_b}/{len(vals)}"
+                      f"  ‖∇‖={float(jnp.linalg.norm(vals[jnp.isfinite(vals)])):.2e}")
+    except Exception as e:
+        print(f"  (jit mode — gradient spectrum requires disable_jit): {e}")
+
+    # ─────────────────────────────────────────────────────────────────
+    # §4  Full WMPC solve — original test assertions
+    # ─────────────────────────────────────────────────────────────────
+    print("\n" + "─" * 60)
+    print("  §4 FULL WMPC SOLVE (original assertions)")
+    print("─" * 60)
+    WMPC_V_LOWER, WMPC_V_UPPER = 13.0, 17.5
+    try:
+        result = solver.solve(
+            track_s=np.array(track_s), track_k=np.array(track_k),
+            track_x=np.array(track_x), track_y=np.array(track_y),
+            track_psi=np.array(track_psi),
+            track_w_left=np.array(track_w_left),
+            track_w_right=np.array(track_w_right),
+        )
+        mean_v        = np.mean(result['v'])
+        max_g_comb    = result['g_combined_max']
+        compliance    = result['friction_compliance_pct']
+        max_n         = np.max(np.abs(result['n']))
+        max_steer_rate = np.max(np.abs(np.diff(result['delta']))) / solver.dt_control
+        lap_time_est  = result['time']
+
+        print(f"  mean_v={mean_v:.2f}  max_g={max_g_comb:.3f}  compliance={compliance:.1f}%"
+              f"  max_n={max_n:.2f}  lap={lap_time_est:.1f}s")
+
+        print(f"[{'PASS' if WMPC_V_LOWER < mean_v < WMPC_V_UPPER else 'FAIL'}] "
+              f"Speed in [{WMPC_V_LOWER},{WMPC_V_UPPER}] m/s: {mean_v:.2f}")
+        print(f"[{'PASS' if max_g_comb<=1.05 and compliance>85 else 'FAIL'}] "
+              f"AL friction: max_g={max_g_comb:.3f}, {compliance:.1f}%")
+        print(f"[{'PASS' if max_n<3.6 else 'FAIL'}] "
+              f"Boundaries: max_n={max_n:.2f}m")
+        print(f"[{'PASS' if lap_time_est<15 else 'FAIL'}] "
+              f"Forward progress: {lap_time_est:.1f}s")
+        print(f"[{'PASS' if max_steer_rate<15 else 'WARN'}] "
+              f"Steer smoothness: {max_steer_rate:.2f} rad/s")
+    except Exception as e:
+        print(f"  [WARN] WMPC solve failed: {e}")
         import traceback; traceback.print_exc()
 
 

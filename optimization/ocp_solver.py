@@ -354,7 +354,7 @@ class DiffWMPCSolver:
         e  = jnp.sum(node ** 2) + 1e-12
         p  = node ** 2 / e
         # softplus floor: log of very small values is bounded
-        lp = jnp.log(jnp.logaddexp(0.0, p * 1e6) / 1e6 + 1e-12)
+        lp = jnp.log(jax.nn.softplus(p * 1e6) / 1e6 + 1e-12)
         return -jnp.sum(p * lp)
 
     def _coifman_wickerhauser_basis(self, sig_1d: jax.Array, max_level: int = 3) -> jax.Array:
@@ -607,7 +607,7 @@ class DiffWMPCSolver:
             # the optimizer still finds the correct Pareto trade-off.
             v_sat_ceil = jnp.minimum(jnp.sqrt(v_fric_sq) * 1.25, self.V_limit)
             vx_raw     = x_next[STATE_VX]
-            vx_sat = vx_raw - jnp.logaddexp(0.0, vx_raw - v_sat_ceil)
+            vx_sat = vx_raw - jax.nn.softplus(vx_raw - v_sat_ceil)
             x_next     = x_next.at[STATE_VX].set(jnp.maximum(vx_sat, 0.5))
 
             # Curvilinear coordinate: lateral deviation n from track centerline
@@ -699,7 +699,7 @@ class DiffWMPCSolver:
         # This is numerically identical to the kinematic cost and gives clean
         # gradients everywhere. The factor 0.05 (= dt_control) makes the scale
         # match the old formulation at operating speed (~20 m/s).
-        s_dot_safe = jnp.logaddexp(0.0, s_dot * 20.0) / 20.0 + 1e-2  # floor at 1e-2 m/s
+        s_dot_safe = jax.nn.softplus(s_dot * 20.0) / 20.0 + 1e-2  # floor at 1e-2 m/s
         time_cost  = -jnp.sum(s_dot_safe) * self.dt_control
 
         # ── 2. Control effort (L2 + Pseudo-Huber on detail wavelet coefficients) ────────
@@ -777,8 +777,8 @@ class DiffWMPCSolver:
         raw_left  = ( n_mean + tube_radius - track_w_left ) * sp_sharp
         raw_right = (-n_mean + tube_radius - track_w_right) * sp_sharp
         
-        viol_left  = jnp.logaddexp(0.0, raw_left) / sp_sharp
-        viol_right = jnp.logaddexp(0.0, raw_right) / sp_sharp
+        viol_left  = jax.nn.softplus(raw_left) / sp_sharp
+        viol_right = jax.nn.softplus(raw_right) / sp_sharp
         
         barrier_cost = w_barrier * jnp.sum(viol_left ** 2 + viol_right ** 2)
 
@@ -835,11 +835,11 @@ class DiffWMPCSolver:
         alpha_current = delta - (vy + lf * wz_safe) / jnp.maximum(vx, 1.0)
         
         # Grip margin at each horizon step:
-        alpha_margin = alpha_peak_est - jnp.abs(alpha_current)
+        alpha_margin = alpha_peak_est - jnp.sqrt(alpha_current**2 + 1e-8)
         
         # Soft penalty when margin < 20% of alpha_peak:
         # This keeps the solver in the high-grip linear region (Batch 4 logic)
-        margin_penalty = jnp.sum(jnp.logaddexp(0.0, (0.20 * alpha_peak_est - alpha_margin) * 20.0))
+        margin_penalty = jnp.sum(jax.nn.softplus((0.20 * alpha_peak_est - alpha_margin) * 20.0))
 
         # ── 6b. Forward progress floor ────────────────────────────────────────
         # Without this, zero velocity is a fully feasible solution:
@@ -849,7 +849,7 @@ class DiffWMPCSolver:
         #     is small enough to not escape the basin in few L-BFGS-B steps.
         # Softplus-squared onset at v_min is C∞ and gradient-safe in scan backward.
         v_min_fwd  = 3.0   # [m/s] — well below any useful racing speed
-        v_min_cost = 15.0 * jnp.mean(jnp.logaddexp(0.0, v_min_fwd - vx_traj) ** 2)
+        v_min_cost = 15.0 * jnp.mean(jax.nn.softplus(v_min_fwd - vx_traj) ** 2)
 
         # Add to the final return (weighted by ~5.0 to make it influential)
         return (time_cost + effort_cost + barrier_cost + center_cost + heading_cost +
