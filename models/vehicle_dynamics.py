@@ -247,9 +247,19 @@ jax.tree_util.register_pytree_node(
     lambda _, leaves: SuspensionSetup(*leaves),
 )
 
-def safe_abs(x, eps=1e-8):
-    """C-infinity continuously differentiable absolute value."""
-    return jnp.sqrt(x**2 + eps)
+def safe_abs(x: jax.Array, beta: float = 20.0) -> jax.Array:
+    """
+    Hessian-safe absolute value.
+    1st derivative bounded in [-1, 1].
+    2nd derivative bounded to beta/2 (max 10.0).
+    Prevents 2nd-order gradient explosions in implicit RK4 solvers.
+    """
+    # softplus(x) + softplus(-x) creates a smooth V-shape.
+    raw_abs = (jax.nn.softplus(beta * x) + jax.nn.softplus(-beta * x)) / beta
+    
+    # Shift it down so that safe_abs(0) = 0.0 perfectly
+    offset = 2.0 * jnp.log(2.0) / beta
+    return jnp.maximum(raw_abs - offset, 0.0)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # §2  PhysicsNormalizer
@@ -894,27 +904,22 @@ class DifferentiableMultiBodyVehicle:
         vy = jnp.clip(vy, -30.0, 30.0)
         wz = jnp.clip(wz,  -8.0,  8.0)
         Z  = jnp.clip(Z,  -0.3,  1.5)
-        phi_roll    = jnp.clip(phi_roll,    -0.3, 0.3)
-        theta_pitch = jnp.clip(theta_pitch, -0.2, 0.2)
+        # REMOVED phi_roll and theta_pitch clips here
 
         tf2 = self.track_f / 2.0
         tr2 = self.track_r / 2.0
 
-        # Physical travel limits — 150mm bump / 80mm droop.
-        # Without clipping: bumpstop softplus(200*(z-0.025)) overflows float32 at z≈0.47m.
-        # GLRK4 Newton intermediate stages can temporarily overshoot this — one NaN
-        # poisons all 320 downstream scan steps via JAX's non-short-circuiting scan.
-        _SZ_MAX, _SZ_MIN = 0.15, -0.08
-        z_fl = jnp.clip(q[6], _SZ_MIN, _SZ_MAX)
-        z_fr = jnp.clip(q[7], _SZ_MIN, _SZ_MAX)
-        z_rl = jnp.clip(q[8], _SZ_MIN, _SZ_MAX)
-        z_rr = jnp.clip(q[9], _SZ_MIN, _SZ_MAX)
-        # Clip suspension velocities — prevents extreme damper forces at Newton overshoot
-        _SDZ_MAX = 3.0
-        dz_fl = jnp.clip(v[6], -_SDZ_MAX, _SDZ_MAX)
-        dz_fr = jnp.clip(v[7], -_SDZ_MAX, _SDZ_MAX)
-        dz_rl = jnp.clip(v[8], -_SDZ_MAX, _SDZ_MAX)
-        dz_rr = jnp.clip(v[9], -_SDZ_MAX, _SDZ_MAX)
+        # Physical travel limits — removed because stable_softplus survives overshoots safely.
+        # Let the raw states flow so the bumpstop restoring forces can prevent the car from rolling.
+        z_fl = q[6]
+        z_fr = q[7]
+        z_rl = q[8]
+        z_rr = q[9]
+        
+        dz_fl = v[6]
+        dz_fr = v[7]
+        dz_rl = v[8]
+        dz_rr = v[9]
         omega_fl, omega_fr          = v[10], v[11]
         omega_rl, omega_rr          = v[12], v[13]
 
@@ -1423,7 +1428,8 @@ class DifferentiableMultiBodyVehicle:
                     jnp.clip(dx1[14:28], -_DC, _DC),
                     jnp.clip(dx2[0:14],  -_DC, _DC),
                     jnp.clip(dx2[14:28], -_DC, _DC),
-                    dx1[28:108], dx2[28:108]), None
+                    jnp.clip(dx1[28:108], -_DC, _DC),        # <-- Added clip
+                    jnp.clip(dx2[28:108], -_DC, _DC)), None  # <-- Added clip
 
         (k1_q, k1_v, k2_q, k2_v,
          dx1_aux, dx2_aux), _ = jax.lax.scan(
@@ -1487,7 +1493,8 @@ class DifferentiableMultiBodyVehicle:
                     jnp.clip(dx1[14:28], -_DC, _DC),
                     jnp.clip(dx2[0:14],  -_DC, _DC),
                     jnp.clip(dx2[14:28], -_DC, _DC),
-                    dx1[28:108], dx2[28:108]), None
+                    jnp.clip(dx1[28:108], -_DC, _DC),        # <-- Added clip
+                    jnp.clip(dx2[28:108], -_DC, _DC)), None  # <-- Added clip
 
         (k1_q, k1_v, k2_q, k2_v,
          dx1_aux, dx2_aux), _ = jax.lax.scan(
@@ -1539,8 +1546,11 @@ class DifferentiableMultiBodyVehicle:
 
         def substep(x, _):
             return self._glrk4_step(x, controls, setup_vec, dt_sub), None
+        
+        # CRITICAL RAM FIX: Checkpoint the substep
+        substep_ckpt = jax.checkpoint(substep)
 
-        final_state, _ = jax.lax.scan(substep, state, None, length=n_substeps)
+        final_state, _ = jax.lax.scan(substep_ckpt, state, None, length=n_substeps)
         return final_state
 
     @staticmethod

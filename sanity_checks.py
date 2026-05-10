@@ -206,169 +206,310 @@ def test_circular_track():
     print(f"[{'PASS' if len(_leaves)==8 and all(l.shape==(8,) for l in _leaves) else 'FAIL'}] WPD tree shape")
 
     # ─────────────────────────────────────────────────────────────────
-    # §3  EXTENDED GRADIENT NaN DIAGNOSTICS
+    # §3  TARGETED NaN BACKWARD-PASS SURGERY
     # ─────────────────────────────────────────────────────────────────
     print("\n" + "─" * 60)
-    print("  §3 GRADIENT NaN DIAGNOSTICS (new)")
+    print("  §3 NaN BACKWARD-PASS SURGERY")
     print("─" * 60)
 
     solver = DiffWMPCSolver(N_horizon=64, mu_friction=1.40, V_limit=30.0)
     setup_params = build_default_setup_28(VP)
 
-    # Shared track arrays as JAX
-    tk  = jnp.array(track_k,       dtype=jnp.float32)
-    tx  = jnp.array(track_x,       dtype=jnp.float32)
-    ty  = jnp.array(track_y,       dtype=jnp.float32)
-    tpsi= jnp.array(np.unwrap(track_psi), dtype=jnp.float32)
-    twl = jnp.array(track_w_left,  dtype=jnp.float32)
-    twr = jnp.array(track_w_right, dtype=jnp.float32)
+    tk   = jnp.array(track_k,            dtype=jnp.float32)
+    tx   = jnp.array(track_x,            dtype=jnp.float32)
+    ty   = jnp.array(track_y,            dtype=jnp.float32)
+    tpsi = jnp.array(np.unwrap(track_psi), dtype=jnp.float32)
+    twl  = jnp.array(track_w_left,       dtype=jnp.float32)
+    twr  = jnp.array(track_w_right,      dtype=jnp.float32)
 
     from models.vehicle_dynamics import compute_equilibrium_suspension
     z_eq = compute_equilibrium_suspension(setup_params, VP)
     x0 = (DifferentiableMultiBodyVehicle.make_initial_state(T_env=25.0, vx0=16.0)
           .at[0].set(tx[0]).at[1].set(ty[0]).at[5].set(tpsi[0])
           .at[6:10].set(z_eq))
-    _T_corner_warm = jnp.array([85., 85., 85., 80., 75., 30., 40.])
-    x0 = x0.at[28:56].set(jnp.tile(_T_corner_warm, 4))
+    x0 = x0.at[28:56].set(jnp.tile(jnp.array([85., 85., 85., 80., 75., 30., 40.]), 4))
 
-    # Build warm-start coefficients
     U_warm = solver._build_physics_warmstart(tk, tpsi, x0, setup_params, tx, ty)
     wc_kin = solver._db4_dwt(U_warm)
     opt_coeffs = wc_kin.reshape(-1).astype(jnp.float32)
-    wc_kin_flat = wc_kin.reshape(-1).astype(jnp.float32)
 
-    # ── §3a: JAX NaN-checking mode ────────────────────────────────────
-    # Forces JAX to raise on first NaN, printing the exact op.
-    print("\n[§3a] Enabling jax_debug_nans — will raise on first NaN in backward pass:")
-    _orig_debug_nans = jax.config.jax_debug_nans if hasattr(jax.config, 'jax_debug_nans') else False
-    try:
-        jax.config.update("jax_debug_nans", True)
-
-        def _loss_probe(c):
-            return solver._loss_fn(
-                c.reshape(N, 2), x0, setup_params,
-                tk, tx, ty, tpsi, twl, twr,
-                jnp.ones(N) * 0.02, jnp.ones(N) * 1e-3, jnp.ones(N) * 5e-5,
-                jnp.zeros(N), jnp.array(0.1, dtype=jnp.float32),
-                jnp.array(0.13, dtype=jnp.float32),
-            )
-
-        try:
-            loss_val, grad_val = jax.value_and_grad(_loss_probe)(opt_coeffs)
-            print(f"  loss={float(loss_val):.4f}  grad_finite={bool(jnp.all(jnp.isfinite(grad_val)))}")
-            print(f"  ‖∇f‖={float(jnp.linalg.norm(grad_val)):.4f}")
-        except Exception as e:
-            print(f"  [CAUGHT NaN] Exception: {e}")
-    finally:
-        jax.config.update("jax_debug_nans", False)
-
-    # ── §3b: Per-component gradient isolation ─────────────────────────
-    # Compute gradient of each loss term independently to identify the NaN source.
-    print("\n[§3b] Per-component gradient (each term independently):")
-
-    U_opt, x_traj, n_mean, var_n, s_dot = solver._simulate_trajectory(
+    # ── §3a: Forward trajectory dump — find when n first diverges ─────
+    # The warm start forces position but _simulate_trajectory runs open-loop.
+    # We need to see exactly WHEN n first exceeds the track boundary.
+    print("\n[§3a] Open-loop trajectory breakdown (when does n diverge?):")
+    U_opt, x_traj, n_traj, var_n, s_dot = solver._simulate_trajectory(
         opt_coeffs.reshape(N, 2), x0, setup_params,
         tk, tx, ty, tpsi, twl, twr, 1.0, 0.0, solver.dt_control,
     )
-    print(f"  Forward trajectory: n∈[{float(jnp.min(n_mean)):.2f},{float(jnp.max(n_mean)):.2f}]"
-          f"  vx∈[{float(jnp.min(x_traj[:,14])):.2f},{float(jnp.max(x_traj[:,14])):.2f}]"
-          f"  s_dot_min={float(jnp.min(s_dot)):.2f}")
+    n_arr   = np.array(n_traj)
+    vx_arr  = np.array(x_traj[:, 14])
+    vy_arr  = np.array(x_traj[:, 15])
+    wz_arr  = np.array(x_traj[:, 19])
+    phi_arr = np.array(x_traj[:, 3])   # roll
+    th_arr  = np.array(x_traj[:, 4])   # pitch
+    x_arr   = np.array(x_traj[:, 0])
+    y_arr   = np.array(x_traj[:, 1])
+    z_susp  = np.array(x_traj[:, 6:10])  # suspension heave
 
-    # Each component function — shares the simulation, tests only the cost math
-    def _cost_time(c):
-        _, _, _, _, sd = solver._simulate_trajectory(
-            c.reshape(N,2), x0, setup_params, tk, tx, ty, tpsi, twl, twr, 1.0, 0.0, solver.dt_control)
-        sd_safe = jnp.logaddexp(0.0, sd * 20.0) / 20.0 + 1e-2
-        return -jnp.sum(sd_safe) * solver.dt_control
+    first_offtrack = next((i for i, n in enumerate(n_arr) if abs(n) > 3.5), None)
+    print(f"  First off-track step: {first_offtrack}  (|n|={abs(n_arr[first_offtrack]):.2f}m)"
+          if first_offtrack is not None else "  Car stays within track — n never exceeds 3.5m")
 
-    def _cost_barrier(c):
-        _, _, nm, vn, _ = solver._simulate_trajectory(
-            c.reshape(N,2), x0, setup_params, tk, tx, ty, tpsi, twl, twr, 1.0, 0.0, solver.dt_control)
-        tube = solver.kappa_safe * jnp.sqrt(jnp.maximum(vn, 1e-6))
-        viol_l = jnp.logaddexp(0.0, (nm + tube - twl) * 20.0) / 20.0
-        viol_r = jnp.logaddexp(0.0, (-nm + tube - twr) * 20.0) / 20.0
-        return 8000.0 * jnp.sum(viol_l**2 + viol_r**2)
+    print(f"\n  {'step':>5} {'vx':>7} {'vy':>7} {'wz':>7} {'n':>7} "
+          f"{'roll':>7} {'pitch':>7} {'z_fl':>7} {'z_fr':>7}")
+    probe_steps = sorted(set([0, 1, 2, 4] +
+                             ([first_offtrack-1, first_offtrack, first_offtrack+1]
+                              if first_offtrack is not None else []) +
+                             [16, 32, 63]))
+    for s in probe_steps:
+        if 0 <= s < N:
+            print(f"  {s:>5d} {vx_arr[s]:>7.2f} {vy_arr[s]:>7.3f} {wz_arr[s]:>7.3f} "
+                  f"{n_arr[s]:>7.2f} {np.rad2deg(phi_arr[s]):>7.2f}° "
+                  f"{np.rad2deg(th_arr[s]):>7.2f}° "
+                  f"{z_susp[s,0]*1000:>7.1f} {z_susp[s,1]*1000:>7.1f}")
 
-    def _cost_heading(c):
-        _, xt, _, _, _ = solver._simulate_trajectory(
-            c.reshape(N,2), x0, setup_params, tk, tx, ty, tpsi, twl, twr, 1.0, 0.0, solver.dt_control)
-        dpsi = xt[:, 5] - tpsi
-        alpha = jnp.arctan2(jnp.sin(dpsi), jnp.cos(dpsi))
-        return solver.w_heading * jnp.sum(alpha**2)
+    print(f"\n  Suspension extremes (mm):  z_fl∈[{z_susp[:,0].min()*1000:.1f},{z_susp[:,0].max()*1000:.1f}]  "
+          f"z_rl∈[{z_susp[:,2].min()*1000:.1f},{z_susp[:,2].max()*1000:.1f}]")
+    print(f"  Roll ∈ [{np.rad2deg(phi_arr.min()):.1f}°, {np.rad2deg(phi_arr.max()):.1f}°]"
+          f"  |vy|_max={np.abs(vy_arr).max():.2f}m/s  |wz|_max={np.abs(wz_arr).max():.2f}rad/s")
 
-    def _cost_center(c):
-        _, _, nm, _, _ = solver._simulate_trajectory(
-            c.reshape(N,2), x0, setup_params, tk, tx, ty, tpsi, twl, twr, 1.0, 0.0, solver.dt_control)
-        return solver.w_center * jnp.sum(nm**2)
+    # ── §3b: simulate_step gradient at extracted trajectory states ─────
+    # The cleanest test: does jax.grad(simulate_step) NaN at specific states?
+    # This bypasses the scan entirely — we're testing the single-step Jacobian.
+    print("\n[§3b] simulate_step gradient at trajectory states (bypass scan):")
 
-    def _cost_sim_only(c):
-        # Gradient w.r.t. simulation output directly (no cost math)
-        _, xt, nm, vn, sd = solver._simulate_trajectory(
-            c.reshape(N,2), x0, setup_params, tk, tx, ty, tpsi, twl, twr, 1.0, 0.0, solver.dt_control)
-        return jnp.sum(sd) + jnp.sum(nm) + jnp.sum(xt[:, 14])
+    R_w = 0.2045
+    # Use the warm-start control at each step
+    def _step_grad_at_state(x_state, step_idx):
+        u_raw = U_opt[step_idx]
+        steer = jnp.clip(u_raw[0], -0.45, 0.45)
+        force = jnp.clip(u_raw[1], -8000.0, 8000.0)
+        T_rear  = jax.nn.relu(force) * R_w / 2.0
+        F_brake = jax.nn.relu(-force)
+        u6 = jnp.array([steer, 0.0, 0.0, T_rear, T_rear, F_brake])
 
-    components = {
-        'time_cost':    _cost_time,
-        'barrier_cost': _cost_barrier,
-        'heading_cost': _cost_heading,
-        'center_cost':  _cost_center,
-        'sim_output':   _cost_sim_only,
-    }
+        def _loss(x):
+            x_next = solver._vehicle.simulate_step(
+                x, u6, setup_params, dt=solver.dt_control / solver.n_substeps
+            )
+            return jnp.sum(x_next)   # scalar: grad w.r.t. full input state
 
-    for name, fn in components.items():
+        return jax.grad(_loss)(x_state)
+
+    _step_grad_jit = jax.jit(_step_grad_at_state)
+    print(f"  {'step':>5} {'|n|':>7} {'grad_finite':>12} {'‖∇‖':>12} {'NaN_idx (first 5)':>25}")
+    for s in probe_steps:
+        if 0 <= s < N:
+            x_s = x_traj[s]
+            try:
+                g = _step_grad_jit(x_s, s)
+                finite = bool(jnp.all(jnp.isfinite(g)))
+                nan_idx = jnp.where(~jnp.isfinite(g))[0][:5].tolist()
+                print(f"  {s:>5d} {abs(n_arr[s]):>7.2f} {str(finite):>12} "
+                      f"{float(jnp.linalg.norm(g)):>12.3e} "
+                      f"{'none' if finite else str(nan_idx):>25}")
+            except Exception as e:
+                print(f"  {s:>5d} {abs(n_arr[s]):>7.2f}  EXCEPTION: {e}")
+
+    # ── §3c: Artificial state sweep — find the n threshold that triggers NaN ─
+    # Build states with controlled n-offset to find the exact transition.
+    print("\n[§3c] Artificial lateral offset sweep (find NaN threshold in n):")
+    print(f"  {'n_offset':>10} {'grad_finite':>12} {'‖∇‖':>12}")
+
+    u_nominal = jnp.array([0.08, 0.0, 0.0, 500.0, 500.0, 0.0])
+
+    def _grad_at_n(n_offset):
+        # Build a state with controlled lateral offset but otherwise normal
+        x_test = (DifferentiableMultiBodyVehicle.make_initial_state(T_env=25.0, vx0=15.0)
+                  .at[0].set(tx[N//2] + n_offset * jnp.cos(tpsi[N//2] + jnp.pi/2))
+                  .at[1].set(ty[N//2] + n_offset * jnp.sin(tpsi[N//2] + jnp.pi/2))
+                  .at[5].set(tpsi[N//2])
+                  .at[6:10].set(z_eq)
+                  .at[28:56].set(jnp.tile(jnp.array([85., 85., 85., 80., 75., 30., 40.]), 4)))
+        def _loss(x):
+            return jnp.sum(solver._vehicle.simulate_step(
+                x, u_nominal, setup_params, dt=solver.dt_control / solver.n_substeps))
+        return jax.grad(_loss)(x_test)
+
+    _grad_n_jit = jax.jit(_grad_at_n)
+    for n_off in [0.0, 1.0, 3.5, 5.0, 8.0, 12.0, 18.0, 24.0]:
         try:
-            g = jax.grad(fn)(opt_coeffs)
-            g_norm = float(jnp.linalg.norm(g))
-            n_nan  = int(jnp.sum(~jnp.isfinite(g)))
-            print(f"  {name:20s}: ‖∇‖={g_norm:>12.2f}  NaN_count={n_nan:>5d}  "
-                  f"{'[NaN!]' if n_nan > 0 else '[OK]'}")
+            g = _grad_n_jit(jnp.array(n_off))
+            finite = bool(jnp.all(jnp.isfinite(g)))
+            nan_idx = jnp.where(~jnp.isfinite(g))[0][:8].tolist()
+            print(f"  {n_off:>10.1f} {str(finite):>12} {float(jnp.linalg.norm(g)):>12.3e}"
+                  + (f"  NaN at state indices: {nan_idx}" if not finite else ""))
         except Exception as e:
-            print(f"  {name:20s}: EXCEPTION → {e}")
+            print(f"  {n_off:>10.1f}  EXCEPTION: {e}")
 
-    # ── §3c: Single-step physics gradient scan ────────────────────────
-    # Find which STEP in the scan first produces NaN gradient.
-    print("\n[§3c] Per-step physics gradient (first NaN step detection):")
+    # ── §3d: Isolate physics sub-operations via disable_jit ───────────
+    # With JIT disabled + debug_nans, we get the exact Python line that NaNs.
+    # Use a state known to fail (from §3c) and trace eager execution.
+    print("\n[§3d] Eager mode NaN trace (disable_jit + debug_nans at n=24m):")
 
-    def _scan_to_step_k(c, k_steps):
-        """Run exactly k_steps of physics, return sum of state."""
+    x_extreme = (DifferentiableMultiBodyVehicle.make_initial_state(T_env=25.0, vx0=15.0)
+                 .at[0].set(tx[32] + 24.0 * jnp.cos(tpsi[32] + jnp.pi/2))
+                 .at[1].set(ty[32] + 24.0 * jnp.sin(tpsi[32] + jnp.pi/2))
+                 .at[5].set(tpsi[32])
+                 .at[6:10].set(z_eq)
+                 .at[28:56].set(jnp.tile(jnp.array([85., 85., 85., 80., 75., 30., 40.]), 4)))
+
+    try:
+        jax.config.update("jax_debug_nans", True)
+        with jax.disable_jit():
+            def _loss_extreme(x):
+                return jnp.sum(solver._vehicle.simulate_step(
+                    x, u_nominal, setup_params,
+                    dt=solver.dt_control / solver.n_substeps))
+            val  = _loss_extreme(x_extreme)
+            print(f"  Forward at n=24m: {float(val):.4f}  finite={bool(jnp.isfinite(val))}")
+            try:
+                g = jax.grad(_loss_extreme)(x_extreme)
+                finite = bool(jnp.all(jnp.isfinite(g)))
+                print(f"  Backward at n=24m: finite={finite}  ‖∇‖={float(jnp.linalg.norm(g)):.4e}")
+                if not finite:
+                    nan_idx = jnp.where(~jnp.isfinite(g))[0].tolist()
+                    # Map indices to state names
+                    state_names = (
+                        [f"q[{i}]" for i in range(14)] +
+                        [f"p[{i}]" for i in range(14)] +
+                        [f"T_tire[{i}]" for i in range(28)] +
+                        [f"slip[{i}]" for i in range(16)] +
+                        [f"damp[{i}]" for i in range(12)] +
+                        [f"ekin[{i}]" for i in range(24)]
+                    )
+                    for idx in nan_idx[:20]:
+                        label = state_names[idx] if idx < len(state_names) else f"x[{idx}]"
+                        print(f"    NaN gradient at {label} (idx={idx})")
+            except Exception as e:
+                print(f"  [CAUGHT in backward] {type(e).__name__}: {e}")
+    finally:
+        jax.config.update("jax_debug_nans", False)
+
+    # ── §3e: H_net gradient isolation at extreme states ───────────────
+    print("\n[§3e] H_net / R_net gradient at extreme states:")
+    try:
+        h_net    = solver._vehicle._h_net
+        h_params = solver._vehicle._h_params
+
+        def _hnet_test(q_in, p_in, s_in, label):
+            try:
+                h_val = h_net.apply(h_params, q_in, p_in, s_in)
+                gq = jax.grad(lambda q: h_net.apply(h_params, q, p_in, s_in))(q_in)
+                gp = jax.grad(lambda p: h_net.apply(h_params, q_in, p, s_in))(p_in)
+                q_nan = int(jnp.sum(~jnp.isfinite(gq)))
+                p_nan = int(jnp.sum(~jnp.isfinite(gp)))
+                print(f"  {label:<30s}: H={float(h_val):.2e}  "
+                      f"∂H/∂q NaN={q_nan}/14  ∂H/∂p NaN={p_nan}/14")
+                if q_nan > 0:
+                    bad_q = jnp.where(~jnp.isfinite(gq))[0].tolist()
+                    print(f"    NaN ∂H/∂q at q indices: {bad_q}")
+            except Exception as e:
+                print(f"  {label:<30s}: EXCEPTION → {e}")
+
+        # Normal state at track centerline
+        q_normal  = x0[:14]
+        p_normal  = jnp.zeros(14).at[0].set(300.0 * 15.0)  # nominal momentum
+        # Extreme state: large lateral displacement encoded in q[0] (X position)
+        q_extreme = x0[:14].at[0].set(float(tx[32]) + 24.0)
+        # State from the actual trajectory at step 32
+        q_traj32  = x_traj[32, :14]
+        p_traj32  = x_traj[32, 14:28]
+
+        _hnet_test(q_normal,  p_normal,  setup_params, "normal state (n≈0)")
+        _hnet_test(q_extreme, p_normal,  setup_params, "extreme X position (n≈24m)")
+        _hnet_test(q_traj32,  p_traj32,  setup_params, "trajectory state at step 32")
+
+        # Also test at increasing q[0] to find the NaN threshold
+        print(f"\n  H_net gradient vs q[0] (X position) sweep:")
+        print(f"  {'q[0]':>8} {'H_finite':>10} {'∂H/∂q NaN':>12}")
+        for x_pos in [0.0, 5.0, 10.0, 20.0, 50.0, 100.0, 200.0]:
+            q_test = q_normal.at[0].set(x_pos)
+            try:
+                gq = jax.grad(lambda q: h_net.apply(h_params, q, p_normal, setup_params))(q_test)
+                h_v = float(h_net.apply(h_params, q_test, p_normal, setup_params))
+                print(f"  {x_pos:>8.1f} {str(jnp.isfinite(h_v)):>10} "
+                      f"{int(jnp.sum(~jnp.isfinite(gq))):>12}")
+            except Exception as e:
+                print(f"  {x_pos:>8.1f}  EXCEPTION: {e}")
+    except Exception as e:
+        print(f"  H_net isolation skipped: {e}")
+
+    # ── §3f: Scan backward pass — per-step NaN with state extraction ──
+    # Unlike §3c which tests single steps, this tests HOW MANY scan steps
+    # the backward pass can handle, AND dumps the state at the failing step.
+    print("\n[§3f] Scan backward pass — binary search with state extraction:")
+
+    def _scan_k_steps_with_output(c, k):
+        """Scan k steps, return (vx_sum, final_state) — both differentiable."""
         U = solver._db4_idwt(c.reshape(N, 2))
-        R_w = 0.2045
 
-        def scan_fn(x, i):
+        def body(x, i):
             u_raw = U[i]
-            steer = jnp.clip(u_raw[0], -0.45, 0.45)
-            force = jnp.clip(u_raw[1], -8000.0, 8000.0)
-            T_rear = jax.nn.relu(force) * R_w / 2.0
+            steer  = jnp.clip(u_raw[0], -0.45, 0.45)
+            force  = jnp.clip(u_raw[1], -8000.0, 8000.0)
+            T_rear  = jax.nn.relu(force) * R_w / 2.0
             F_brake = jax.nn.relu(-force)
             u6 = jnp.array([steer, 0.0, 0.0, T_rear, T_rear, F_brake])
-            x_next = solver._vehicle.simulate_step(x, u6, setup_params, dt=solver.dt_control/solver.n_substeps)
-            return x_next, x_next[14]  # carry state, emit vx
+            x_next = solver._vehicle.simulate_step(
+                x, u6, setup_params,
+                dt=solver.dt_control / solver.n_substeps)
+            return x_next, x_next[14]   # carry, emit
 
-        _, vx_hist = jax.lax.scan(scan_fn, x0, jnp.arange(k_steps))
+        x_final, vx_hist = jax.lax.scan(body, x0, jnp.arange(k))
         return jnp.sum(vx_hist)
 
     first_nan_step = None
-    for k in [1, 2, 4, 8, 16, 32, 64]:
+    prev_ok_step   = 0
+    for k in [1, 2, 4, 8, 16, 24, 32, 48, 64]:
         try:
-            g_k = jax.grad(lambda c: _scan_to_step_k(c, k))(opt_coeffs)
-            ok  = bool(jnp.all(jnp.isfinite(g_k)))
-            n_nan = int(jnp.sum(~jnp.isfinite(g_k)))
-            print(f"  steps={k:3d}: grad_finite={ok}  NaN_count={n_nan}")
+            g = jax.grad(lambda c: _scan_k_steps_with_output(c, k))(opt_coeffs)
+            ok   = bool(jnp.all(jnp.isfinite(g)))
+            n_nan = int(jnp.sum(~jnp.isfinite(g)))
+            # Report state values at step k-1 from the forward trajectory
+            n_k = float(n_arr[k-1]) if k-1 < len(n_arr) else float('nan')
+            vx_k = float(vx_arr[k-1]) if k-1 < len(vx_arr) else float('nan')
+            z_k  = z_susp[k-1] if k-1 < len(z_susp) else [0]*4
+            print(f"  k={k:>2d}: grad_ok={ok}  NaN={n_nan:>4d}  "
+                  f"n@k={n_k:>6.2f}m  vx@k={vx_k:.2f}m/s  "
+                  f"z_fl={z_k[0]*1000:.1f}mm")
             if not ok and first_nan_step is None:
                 first_nan_step = k
+            if ok:
+                prev_ok_step = k
         except Exception as e:
-            print(f"  steps={k:3d}: EXCEPTION → {e}")
+            print(f"  k={k:>2d}: EXCEPTION → {e}")
             if first_nan_step is None:
                 first_nan_step = k
 
     if first_nan_step:
-        print(f"  → NaN gradient first appears between step {first_nan_step//2 or 0} and {first_nan_step}")
+        print(f"\n  → NaN first at k={first_nan_step} steps  "
+              f"(last clean: k={prev_ok_step})  "
+              f"n at failure: {float(n_arr[first_nan_step-1]):.2f}m")
+        # Extract the exact failing state and test it directly
+        x_fail = x_traj[first_nan_step - 1]
+        print(f"  Failing state summary: vx={float(x_fail[14]):.2f}  "
+              f"vy={float(x_fail[15]):.3f}  wz={float(x_fail[19]):.3f}  "
+              f"phi={float(np.rad2deg(x_fail[3])):.1f}°  "
+              f"z_fl={float(x_fail[6])*1000:.1f}mm")
+        # Direct single-step gradient test at the failing state
+        try:
+            g_fail = jax.grad(
+                lambda x: jnp.sum(solver._vehicle.simulate_step(
+                    x, u_nominal, setup_params,
+                    dt=solver.dt_control / solver.n_substeps))
+            )(x_fail)
+            n_nan_fail = int(jnp.sum(~jnp.isfinite(g_fail)))
+            nan_idx_fail = jnp.where(~jnp.isfinite(g_fail))[0].tolist()
+            print(f"  Direct grad at failing state: NaN={n_nan_fail}/108  "
+                  f"first NaN indices: {nan_idx_fail[:10]}")
+        except Exception as e:
+            print(f"  Direct grad at failing state: EXCEPTION → {e}")
     else:
-        print(f"  → Gradient is finite through all step counts — NaN must be in cost math, not physics")
+        print("  → Gradient finite through all step counts — NaN is in cost math, not physics scan")
 
-    # ── §3d: Finite-difference gradient check ─────────────────────────
-    # Ground-truth gradient via central FD — tells us if the TRUE gradient exists.
-    print("\n[§3d] Finite-difference gradient (central diff, first 16 dims):")
+    # ── §3g: Finite-difference gradient (ground truth) ─────────────────
+    print("\n[§3g] Finite-difference gradient (16 dims, eps=1e-3):")
 
     def _full_loss_np(x_np):
         x_jax = jnp.array(x_np, dtype=jnp.float32)
@@ -379,110 +520,24 @@ def test_circular_track():
             jnp.zeros(N), jnp.array(0.1), jnp.array(0.13),
         ))
 
-    x_np0 = np.array(opt_coeffs, dtype=np.float64)
-    eps_fd = 1e-3
+    x_np0   = np.array(opt_coeffs, dtype=np.float64)
+    eps_fd  = 1e-3
     fd_grads = np.full(16, np.nan)
     for i in range(16):
-        xp = x_np0.copy(); xp[i] += eps_fd
-        xm = x_np0.copy(); xm[i] -= eps_fd
+        xp, xm = x_np0.copy(), x_np0.copy()
+        xp[i] += eps_fd; xm[i] -= eps_fd
         fp, fm = _full_loss_np(xp), _full_loss_np(xm)
         if np.isfinite(fp) and np.isfinite(fm):
             fd_grads[i] = (fp - fm) / (2 * eps_fd)
-    n_finite_fd = int(np.sum(np.isfinite(fd_grads)))
-    print(f"  FD gradient (first 16 dims, eps={eps_fd}): {np.round(fd_grads, 2)}")
-    print(f"  FD finite count: {n_finite_fd}/16  ‖FD‖={np.linalg.norm(fd_grads[np.isfinite(fd_grads)]):.2f}")
-    if n_finite_fd == 16:
-        print("  → TRUE gradient is finite: NaN is an AD artifact (backward pass bug)")
-    elif n_finite_fd == 0:
-        print("  → TRUE gradient also NaN: forward pass has a discontinuity/singularity here")
+
+    n_fd_finite = int(np.sum(np.isfinite(fd_grads)))
+    print(f"  FD finite: {n_fd_finite}/16  values: {np.round(fd_grads, 1)}")
+    if n_fd_finite == 16:
+        print("  → TRUE gradient is finite: NaN is a pure AD/backward-pass artifact")
+    elif n_fd_finite == 0:
+        print("  → TRUE gradient also NaN: discontinuity in the forward loss (check barrier)")
     else:
-        print(f"  → Mixed: {16-n_finite_fd} dims have NaN TRUE gradient (genuine singularity)")
-
-    # ── §3e: State trajectory breakdown at warm-start ─────────────────
-    print("\n[§3e] Warm-start trajectory statistics (per-step):")
-    print(f"  {'step':>5} {'vx':>7} {'vy':>7} {'wz':>7} {'n':>7} {'yaw_err':>8} {'g_circ':>8}")
-    vx_traj = x_traj[:, 14]; vy_traj = x_traj[:, 15]; wz_traj = x_traj[:, 19]
-    dpsi_traj = x_traj[:, 5] - tpsi
-    alpha_traj = np.array(jnp.arctan2(jnp.sin(dpsi_traj), jnp.cos(dpsi_traj)))
-    n_arr = np.array(n_mean)
-    vx_arr = np.array(vx_traj)
-    vx_prev = np.concatenate([[float(x0[14])], vx_arr[:-1]])
-    a_lat = vx_arr**2 * np.abs(np.array(tk))
-    a_lon = np.abs(vx_arr - vx_prev) / solver.dt_control
-    g_circ = np.sqrt(a_lat**2 + a_lon**2) / (solver.mu_friction * 9.81)
-    for step in [0, 4, 8, 16, 32, 48, 63]:
-        print(f"  {step:>5d} {float(vx_arr[step]):>7.2f} {float(vy_traj[step]):>7.3f}"
-              f" {float(wz_traj[step]):>7.3f} {float(n_arr[step]):>7.3f}"
-              f" {float(alpha_traj[step]):>8.4f} {float(g_circ[step]):>8.4f}")
-    print(f"  States with |vx|>V_limit: {int(np.sum(vx_arr > solver.V_limit))}/64")
-    print(f"  States with |vy|>1.0:     {int(np.sum(np.abs(np.array(vy_traj))>1.0))}/64")
-    print(f"  States with |wz|>5.0:     {int(np.sum(np.abs(np.array(wz_traj))>5.0))}/64")
-    print(f"  States outside track:      {int(np.sum(np.abs(n_arr)>3.5))}/64")
-
-    # ── §3f: H_net gradient isolation ─────────────────────────────────
-    # Test gradient through H_net directly at the warm-start state.
-    print("\n[§3f] H_net gradient isolation (at warm-start initial state):")
-    try:
-        from physics.h_net_icnn import PassiveHNet
-        # Grab vehicle's H_net directly
-        h_net  = solver._vehicle._h_net
-        h_params = solver._vehicle._h_params
-
-        def _h_net_loss(q, p, s):
-            return float(h_net.apply(h_params, q, p, s))
-
-        q0 = x0[:14]; p0 = jnp.zeros(14).at[0].set(230.0 * 10.0)
-        s0 = setup_params
-
-        # Gradient w.r.t. q (position), p (momentum), s (setup)
-        g_q = jax.grad(lambda q: h_net.apply(h_params, q, p0, s0))(q0)
-        g_p = jax.grad(lambda p: h_net.apply(h_params, q0, p, s0))(p0)
-        g_s = jax.grad(lambda s: h_net.apply(h_params, q0, p0, s))(s0)
-        print(f"  ∂H/∂q: finite={bool(jnp.all(jnp.isfinite(g_q)))}  "
-              f"‖∇‖={float(jnp.linalg.norm(g_q)):.4e}")
-        print(f"  ∂H/∂p: finite={bool(jnp.all(jnp.isfinite(g_p)))}  "
-              f"‖∇‖={float(jnp.linalg.norm(g_p)):.4e}")
-        print(f"  ∂H/∂s: finite={bool(jnp.all(jnp.isfinite(g_s)))}  "
-              f"‖∇‖={float(jnp.linalg.norm(g_s)):.4e}")
-
-        # Now test at a state that appeared mid-trajectory (step 16)
-        x16 = x_traj[16]
-        q16 = x16[:14]; p16 = x16[14:28]
-        g_q16 = jax.grad(lambda q: h_net.apply(h_params, q, p16, s0))(q16)
-        g_p16 = jax.grad(lambda p: h_net.apply(h_params, q16, p, s0))(p16)
-        print(f"  At step-16 state:")
-        print(f"  ∂H/∂q: finite={bool(jnp.all(jnp.isfinite(g_q16)))}  "
-              f"‖∇‖={float(jnp.linalg.norm(g_q16)):.4e}")
-        print(f"  ∂H/∂p: finite={bool(jnp.all(jnp.isfinite(g_p16)))}  "
-              f"‖∇‖={float(jnp.linalg.norm(g_p16)):.4e}")
-    except Exception as e:
-        print(f"  H_net isolation skipped: {e}")
-
-    # ── §3g: Gradient magnitude spectrum across coefficient dims ───────
-    print("\n[§3g] Gradient spectrum — which coefficient dims are NaN?")
-    try:
-        # Force compute; ignore NaN check for inspection
-        with jax.disable_jit():
-            g_raw = jax.grad(_loss_probe)(opt_coeffs)
-
-        n_nan_per_band = {}
-        n8 = N//8
-        n4 = N//4
-        n2 = N//2
-        for ch, name in enumerate(['steer', 'force']):
-            g_ch = g_raw.reshape(N, 2)[:, ch]
-            bands = {
-                'A3(approx)':   g_ch[:n8],
-                'D3(low_det)':  g_ch[n8:n4],
-                'D2(mid_det)':  g_ch[n4:n2],
-                'D1(high_det)': g_ch[n2:],
-            }
-            for band, vals in bands.items():
-                n_nan_b = int(jnp.sum(~jnp.isfinite(vals)))
-                print(f"  ch={name}  band={band:15s}: NaN={n_nan_b}/{len(vals)}"
-                      f"  ‖∇‖={float(jnp.linalg.norm(vals[jnp.isfinite(vals)])):.2e}")
-    except Exception as e:
-        print(f"  (jit mode — gradient spectrum requires disable_jit): {e}")
+        print(f"  → Mixed ({n_fd_finite} finite): some dims have genuine singularity")
 
     # ─────────────────────────────────────────────────────────────────
     # §4  Full WMPC solve — original test assertions

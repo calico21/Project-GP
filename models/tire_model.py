@@ -84,9 +84,19 @@ from functools import partial
 # ─────────────────────────────────────────────────────────────────────────────
 # §1  Spectral normalization utility
 # ─────────────────────────────────────────────────────────────────────────────
-def safe_abs(x, eps=1e-8):
-    """C-infinity continuously differentiable absolute value."""
-    return jnp.sqrt(x**2 + eps)
+def safe_abs(x: jax.Array, beta: float = 20.0) -> jax.Array:
+    """
+    Hessian-safe absolute value.
+    1st derivative bounded in [-1, 1].
+    2nd derivative bounded to beta/2 (max 10.0).
+    Prevents 2nd-order gradient explosions in implicit RK4 solvers.
+    """
+    # softplus(x) + softplus(-x) creates a smooth V-shape.
+    raw_abs = (jax.nn.softplus(beta * x) + jax.nn.softplus(-beta * x)) / beta
+    
+    # Shift it down so that safe_abs(0) = 0.0 perfectly
+    offset = 2.0 * jnp.log(2.0) / beta
+    return jnp.maximum(raw_abs - offset, 0.0)
 
 class SpectralDense(nn.Module):
     """

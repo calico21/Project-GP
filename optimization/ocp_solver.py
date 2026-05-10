@@ -254,31 +254,11 @@ class DiffWMPCSolver:
 
     def _dwt_1d_single_level(self, sig):
         sig = sig.reshape(-1)
-        n   = sig.shape[0]
-        # Periodic (circular) boundary extension: append the first L-1=3 samples
-        # of the signal to its end before convolving.
-        #
-        # WHY THE PREVIOUS CODE CORRUPTS L-BFGS-B:
-        # mode='full' zero-pads both ends of the signal before convolving.
-        # The 2 boundary wavelet coefficients at each DWT level are therefore
-        # computed against zeros, not against the wrapped signal. L-BFGS-B
-        # builds its quasi-Newton Hessian from the last m=10 curvature pairs
-        # {s_i, y_i}. When any of those pairs were evaluated at a point where
-        # boundary coefficients dominated the gradient, the memorised curvature
-        # encodes phantom structure that is never physically realised. This
-        # contaminates every subsequent search direction for the entire AL solve.
-        #
-        # WHY THIS FIX WORKS:
-        # Appending sig[:3] makes the convolution equivalent to a circular
-        # (periodic) convolution over the signal domain. The resulting DWT
-        # matrix W is exactly orthogonal: W^T W = I. The gradient condition
-        # number through the wavelet basis is 1.0 — identical to optimising
-        # in the time domain. The analysis slicing [3::2][:n//2] is unchanged;
-        # it was already the correct causal-periodized offset. Only the 2
-        # boundary values change: they now wrap from the signal itself.
-        ext = jnp.concatenate([sig, sig[:3]])              # (n+3,)
-        lo  = jnp.convolve(ext, _DB4_LO, mode='full').reshape(-1)[3::2][:n // 2]
-        hi  = jnp.convolve(ext, _DB4_HI, mode='full').reshape(-1)[3::2][:n // 2]
+        # Periodic boundary: append the first 3 samples
+        padded = jnp.concatenate([sig, sig[:3]])
+        # mode='valid' automatically aligns the phase without messy slicing
+        lo = jnp.convolve(padded, _DB4_LO, mode='valid')[::2]
+        hi = jnp.convolve(padded, _DB4_HI, mode='valid')[::2]
         return lo, hi
 
     def _idwt_1d_single_level(self, lo, hi):
@@ -286,16 +266,19 @@ class DiffWMPCSolver:
         hi = hi.reshape(-1)
         n  = lo.shape[0]
 
+        # Upsample by inserting zeros
         lo_up  = jnp.zeros(2 * n).at[::2].set(lo)
         hi_up  = jnp.zeros(2 * n).at[::2].set(hi)
 
-        lo_ext  = jnp.concatenate([lo_up, lo_up[:3]])     # (2n+3,)
-        hi_ext  = jnp.concatenate([hi_up, hi_up[:3]])     # (2n+3,)
-        sig_lo  = jnp.convolve(lo_ext, _DB4_LO_R, mode='full').reshape(-1)
-        sig_hi  = jnp.convolve(hi_ext, _DB4_HI_R, mode='full').reshape(-1)
+        # Periodic wrap backward: PREPEND the last 3 samples (this was the bug!)
+        lo_pad = jnp.concatenate([lo_up[-3:], lo_up])
+        hi_pad = jnp.concatenate([hi_up[-3:], hi_up])
         
-        # CORRECTED: Reverted to [2: 2n+2] to guarantee exact Db4 orthogonality
-        return sig_lo[2: 2*n + 2] + sig_hi[2: 2*n + 2]   # (2n,) exact
+        # mode='valid' perfectly reconstructs the original signal with 0 shift
+        sig_lo = jnp.convolve(lo_pad, _DB4_LO_R, mode='valid')
+        sig_hi = jnp.convolve(hi_pad, _DB4_HI_R, mode='valid')
+        
+        return sig_lo + sig_hi
 
     def _dwt_1d_3level(self, sig_1d):
         lo1, hi1 = self._dwt_1d_single_level(sig_1d)
@@ -656,8 +639,11 @@ class DiffWMPCSolver:
         init_carry = (x0, jnp.array(0.01), jnp.array(0.001))
         step_data  = (U_time, track_k, track_x, track_y, track_psi)
 
+        # CRITICAL RAM FIX: Checkpoint the horizon step
+        scan_fn_ckpt = jax.checkpoint(scan_fn)
+
         _, (x_traj, n_traj, var_n_traj, s_dot_traj) = jax.lax.scan(
-            scan_fn, init_carry, step_data
+            scan_fn_ckpt, init_carry, step_data
         )
         return U_time, x_traj, n_traj, var_n_traj, s_dot_traj
 
