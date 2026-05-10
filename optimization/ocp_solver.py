@@ -89,9 +89,15 @@ _DB4_HI = jnp.array([
 
 _DB4_LO_R = _DB4_LO[::-1]
 _DB4_HI_R = _DB4_HI[::-1]
-
-import jax.numpy as jnp
  
+def stable_softplus(x):
+    """
+    Float32-safe softplus.
+    For x > 10, softplus(x) is numerically identical to x.
+    This prevents exp(300) from blowing up the autodiff tape!
+    """
+    return jnp.where(x > 10.0, x, jax.nn.softplus(x))
+
 def _pseudo_huber(c: jnp.ndarray, delta: float = 0.01) -> jnp.ndarray:
     """
     Pseudo-Huber loss: C∞ approximation to |c| with quadratic core.
@@ -558,7 +564,7 @@ class DiffWMPCSolver:
             # → no Wolfe-satisfying step exists in 20 probes → ABNORMAL nit=0.
             # Physical wz at κ=0.05, vx=16: wz_phys = 16×0.05 = 0.8 rad/s.
             # Cap at 4× the kinematic rate to allow transient dynamics.
-            wz_max = x_next[STATE_VX] * (jnp.abs(k_c) + 0.05) * 4.0
+            wz_max = x_next[STATE_VX] * (jnp.sqrt(k_c**2 + 1e-8) + 0.05) * 4.0
             x_next = x_next.at[19].set(
                 jnp.clip(x_next[19], -wz_max, wz_max)
             )
@@ -571,7 +577,7 @@ class DiffWMPCSolver:
                 jnp.clip(x_next[STATE_VY], -vy_max, vy_max)
             )
 
-            v_fric_sq  = (self.mu_friction * 9.81) / (jnp.abs(k_c) + 1e-4)
+            v_fric_sq  = (self.mu_friction * 9.81) / (jnp.sqrt(k_c**2 + 1e-8) + 1e-4)
             # BUGFIX: previous version saturated at V_limit=30 m/s — completely
             # inactive at the 15–20 m/s operating range. The per-step Jacobian
             # eigenvalue was never damped, allowing gradient magnitude to grow as
@@ -685,7 +691,7 @@ class DiffWMPCSolver:
         # This is numerically identical to the kinematic cost and gives clean
         # gradients everywhere. The factor 0.05 (= dt_control) makes the scale
         # match the old formulation at operating speed (~20 m/s).
-        s_dot_safe = jax.nn.softplus(s_dot * 20.0) / 20.0 + 1e-2  # floor at 1e-2 m/s
+        s_dot_safe = stable_softplus(s_dot * 20.0) / 20.0 + 1e-2  # floor at 1e-2 m/s
         time_cost  = -jnp.sum(s_dot_safe) * self.dt_control
 
         # ── 2. Control effort (L2 + Pseudo-Huber on detail wavelet coefficients) ────────
@@ -750,21 +756,14 @@ class DiffWMPCSolver:
         # violations produce stronger restoring forces everywhere.
         # ── 3. Track limits — smooth quadratic violation penalty ─────────────
         sp_sharp    = 20.0   
-        w_barrier   = 8000.0   # <-- TWEAK 1: Revert from 800.0 to 8000.0
+        w_barrier   = 8000.0   
         tube_radius = self.kappa_safe * jnp.sqrt(jnp.maximum(n_var, 1e-6))
 
-        # CRITICAL FIX (GP-vX9): Replaced jnp.where/softplus with safe logaddexp.
-        # JAX evaluates both branches of jnp.where, meaning softplus(130) was still
-        # overflowing to inf in the background and poisoning the gradient with NaN,
-        # causing L-BFGS-B to abort (nit=0).
-        # Fix: jnp.logaddexp(0.0, x) is mathematically identical to softplus
-        # but 100% immune to float32 overflow, preserving the restoring gradient
-        # without triggering XLA branch-evaluation NaN poisoning.
         raw_left  = ( n_mean + tube_radius - track_w_left ) * sp_sharp
         raw_right = (-n_mean + tube_radius - track_w_right) * sp_sharp
         
-        viol_left  = jax.nn.softplus(raw_left) / sp_sharp
-        viol_right = jax.nn.softplus(raw_right) / sp_sharp
+        viol_left  = stable_softplus(raw_left) / sp_sharp
+        viol_right = stable_softplus(raw_right) / sp_sharp
         
         barrier_cost = w_barrier * jnp.sum(viol_left ** 2 + viol_right ** 2)
 
@@ -791,14 +790,14 @@ class DiffWMPCSolver:
         # ── 4. Terminal speed cost  ───────────────────────────────────────────
         v_terminal  = x_traj[-1, STATE_VX]
         k_terminal  = track_k[-1]
-        v_safe_term = jnp.sqrt((self.mu_friction * 9.81) / (jnp.abs(k_terminal) + 1e-4))
+        v_safe_term = jnp.sqrt((self.mu_friction * 9.81) / (jnp.sqrt(k_terminal**2 + 1e-8) + 1e-4))
         term_cost   = 50.0 * jax.nn.relu(v_terminal - v_safe_term) ** 2
 
         # ── 5. Friction circle — Augmented Lagrangian (UPGRADE-1) ─────────────
         # Constraint: g_i = (a_lat²_i + a_lon²_i) / (μ·g)² - 1 ≤ 0
         g_val       = 9.81
         vx_traj = x_traj[:, STATE_VX].reshape(-1)                       # guaranteed (N,)
-        a_lat_sq    = (vx_traj ** 2 * jnp.abs(track_k)) ** 2
+        a_lat_sq    = (vx_traj ** 2 * jnp.sqrt(track_k**2 + 1e-8)) ** 2 # centripetal accel: a_lat = v²·κ, κ=0 → a_lat=0, no NaN
         vx_prev = jnp.concatenate([x0[STATE_VX:STATE_VX + 1].ravel(), vx_traj[:-1]])  # (N,)
         a_lon_sq    = ((vx_traj - vx_prev) / (self.dt_control + 1e-6)) ** 2
         circle_lim  = (self.mu_friction * g_val) ** 2 + 1e-4
@@ -825,17 +824,12 @@ class DiffWMPCSolver:
         
         # Soft penalty when margin < 20% of alpha_peak:
         # This keeps the solver in the high-grip linear region (Batch 4 logic)
-        margin_penalty = jnp.sum(jax.nn.softplus((0.20 * alpha_peak_est - alpha_margin) * 20.0))
+        # Grip margin penalty
+        margin_penalty = jnp.sum(stable_softplus((0.20 * alpha_peak_est - alpha_margin) * 20.0))
 
-        # ── 6b. Forward progress floor ────────────────────────────────────────
-        # Without this, zero velocity is a fully feasible solution:
-        #   · friction constraint: a_lat=a_lon=0 → g_circle=-1 → λ_max stays 0
-        #   · center_cost: car doesn't move → n_mean stays ≈ 0
-        #   · time_cost: penalized by 1/s_dot_safe but gradient through physics
-        #     is small enough to not escape the basin in few L-BFGS-B steps.
-        # Softplus-squared onset at v_min is C∞ and gradient-safe in scan backward.
-        v_min_fwd  = 3.0   # [m/s] — well below any useful racing speed
-        v_min_cost = 15.0 * jnp.mean(jax.nn.softplus(v_min_fwd - vx_traj) ** 2)
+        # Forward progress floor
+        v_min_fwd  = 3.0   
+        v_min_cost = 15.0 * jnp.mean(stable_softplus(v_min_fwd - vx_traj) ** 2)
 
         # Add to the final return (weighted by ~5.0 to make it influential)
         return (time_cost + effort_cost + barrier_cost + center_cost + heading_cost +

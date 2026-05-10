@@ -261,6 +261,20 @@ def safe_abs(x: jax.Array, beta: float = 20.0) -> jax.Array:
     offset = 2.0 * jnp.log(2.0) / beta
     return jnp.maximum(raw_abs - offset, 0.0)
 
+@jax.custom_vjp
+def _clip_adjoint(x):
+    """Identity in forward pass, clips gradient to [-1.0, 1.0] in backward pass."""
+    return x
+
+def _clip_adjoint_fwd(x):
+    return x, None
+
+def _clip_adjoint_bwd(res, g):
+    # g is the incoming gradient from the future. We clip it before passing it back!
+    return (jnp.clip(g, -1.0, 1.0),)
+
+_clip_adjoint.defvjp(_clip_adjoint_fwd, _clip_adjoint_bwd)
+
 # ─────────────────────────────────────────────────────────────────────────────
 # §2  PhysicsNormalizer
 # ─────────────────────────────────────────────────────────────────────────────
@@ -911,8 +925,25 @@ class DifferentiableMultiBodyVehicle:
 
         # Physical travel limits — removed because stable_softplus survives overshoots safely.
         # Let the raw states flow so the bumpstop restoring forces can prevent the car from rolling.
-        z_fl = q[6]
-        z_fr = q[7]
+        phi_roll    = jnp.clip(phi_roll,    -0.3, 0.3)
+        theta_pitch = jnp.clip(theta_pitch, -0.2, 0.2)
+
+        tf2 = self.track_f / 2.0
+        tr2 = self.track_r / 2.0
+
+        # Physical travel limits — keeps the car upright when open-loop oversteer occurs
+        _SZ_MAX, _SZ_MIN = 0.15, -0.08
+        z_fl = jnp.clip(q[6], _SZ_MIN, _SZ_MAX)
+        z_fr = jnp.clip(q[7], _SZ_MIN, _SZ_MAX)
+        z_rl = jnp.clip(q[8], _SZ_MIN, _SZ_MAX)
+        z_rr = jnp.clip(q[9], _SZ_MIN, _SZ_MAX)
+        
+        # Clip suspension velocities — prevents extreme damper forces during slides
+        _SDZ_MAX = 3.0
+        dz_fl = jnp.clip(v[6], -_SDZ_MAX, _SDZ_MAX)
+        dz_fr = jnp.clip(v[7], -_SDZ_MAX, _SDZ_MAX)
+        dz_rl = jnp.clip(v[8], -_SDZ_MAX, _SDZ_MAX)
+        dz_rr = jnp.clip(v[9], -_SDZ_MAX, _SDZ_MAX)
         z_rl = q[8]
         z_rr = q[9]
         
@@ -1147,6 +1178,29 @@ class DifferentiableMultiBodyVehicle:
         F_ext = F_ext.at[26].set(-Fx_rl * self.R_wheel + T_hub_rl * eta)
         F_ext = F_ext.at[27].set(-Fx_rr * self.R_wheel + T_hub_rr * eta)
 
+        # ── Kinematic Gauge Lock (Prevents body DOFs from drifting) ──────────
+        # Because the rigid body (Z, phi, theta) is integrated independently from 
+        # the suspension (z_fl..rr), we apply a virtual infinitely-stiff PD 
+        # controller to lock the body to the wheels, preventing infinite tumbling.
+        z_avg_dev = 0.25 * ((z_fl - _Z_EQ[0]) + (z_fr - _Z_EQ[1]) + 
+                            (z_rl - _Z_EQ[2]) + (z_rr - _Z_EQ[3]))
+        Z_kin = 0.30 - z_avg_dev
+        
+        phi_kin   = 0.5 * ((z_fr - z_fl)/self.track_f + (z_rr - z_rl)/self.track_r)
+        theta_kin = ((z_fl + z_fr) - (z_rl + z_rr)) / (2.0 * self._L)
+        
+        k_gauge = 500_000.0  # N/m or Nm/rad (Stiff lock)
+        c_gauge = 10_000.0   # Ns/m or Nms/rad (Critical damping)
+        
+        F_Z_gauge = k_gauge * (Z_kin - Z) - c_gauge * vz
+        M_x_gauge = k_gauge * (phi_kin - phi_roll) - c_gauge * wx
+        M_y_gauge = k_gauge * (theta_kin - theta_pitch) - c_gauge * wy
+        
+        F_ext = F_ext.at[16].add(F_Z_gauge)
+        F_ext = F_ext.at[17].add(M_x_gauge)
+        F_ext = F_ext.at[18].add(M_y_gauge)
+        # ─────────────────────────────────────────────────────────────────────
+
         dq_dt = PH_accel[0:14]
         
         # ── KINEMATICS FIX: Apply Yaw Rotation ──
@@ -1187,25 +1241,25 @@ class DifferentiableMultiBodyVehicle:
         # (d_alpha_t = alpha_dot) AND the acceleration (d_alpha_dot) from the
         # 2nd-order ODE: ẍ + 2ζωₙẋ + ωₙ²x = ωₙ²·x_kin
         # ── Module 5: 2nd-order transient slip → 16 states ───────────────────
+        # FULLY LIVE: The optimizer MUST see the steering wheel.
+        # This ODE is adjoint-stable, so it will safely pass the gradient.
         d_transient_4x4 = four_corner_transient_derivatives(
             jnp.array([alpha_kin_fl, alpha_kin_fr, alpha_kin_rl, alpha_kin_rr]),
             jnp.array([kappa_ref_fl, kappa_ref_fr, kappa_ref_rl, kappa_ref_rr]),
-            jax.lax.stop_gradient(transient_4x4),  # <--- KILLS THE 52 BILLION GRADIENT
+            transient_4x4,  
             jnp.array([Fz_fl, Fz_fr, Fz_rl, Fz_rr]),
             safe_abs(vx),
         )
         dx_slip = jnp.clip(d_transient_4x4.ravel(), -500.0, 500.0)   # (16,)
 
         # ── Module 2: Damper Maxwell branch + thermal ODE → 12 states ────────
-        # damper_4x3[i] = [F_branch_1, F_branch_2, T_oil]
-        # dF1/dt = k1·v_shaft - F1/τ1
-        # dF2/dt = k2·v_shaft - F2/τ2
-        # dT_oil/dt = (|F·v| - h·(T-T_env)) / C_oil
-        # ── Module 2: Damper Maxwell branch + thermal ODE → 12 states ────────
         dz_corners = jnp.array([dz_fl, dz_fr, dz_rl, dz_rr])
-        F1_all  = jax.lax.stop_gradient(damper_4x3[:, 0])  # <--- KILLS NEWTON EXPLOSION
-        F2_all  = jax.lax.stop_gradient(damper_4x3[:, 1])  # <--- KILLS NEWTON EXPLOSION
-        T_oil   = jax.lax.stop_gradient(damper_4x3[:, 2])  
+        
+        # FULLY LIVE: Maxwell dampers are exponentially stable.
+        F1_all  = damper_4x3[:, 0] 
+        F2_all  = damper_4x3[:, 1] 
+        T_oil   = damper_4x3[:, 2]  
+
         mu_visc = jnp.exp(0.015 * (40.0 - T_oil))   
         dF1     = 15000.0 * dz_corners - F1_all / 0.008
         dF2     =  5000.0 * dz_corners - F2_all / 0.040
@@ -1214,15 +1268,19 @@ class DifferentiableMultiBodyVehicle:
         dx_damper = jnp.stack([dF1, dF2, dT_oil_dt], axis=1).ravel()   # (12,)
 
         # ── Module 4: Bouc-Wen elastokinematic hysteresis → 24 states ────────
-        # ż = A·v - β·|v|·|z|·z - γ·v·|z|²
-        # Proxy input velocity: suspension shaft velocity (dominant bushing driver)
         v_bcast  = jnp.broadcast_to(dz_corners[:, None], (4, 6))
-        # KILLS THE ADJOINT GRADIENT EXPLOSION
-        z_hyst   = jax.lax.stop_gradient(elastokin_4x6)
-        v_abs_bw = jnp.sqrt(v_bcast**2 + 1e-8)
-        z_abs_bw = jnp.sqrt(z_hyst ** 2 + 1e-12)
+        
+        # NUCLEAR OPTION: Block the stiff adjoint explosion at the source.
+        # This prevents the 10^20 Hessian explosion in the GLRK4 loop.
+        # The optimizer still sees the steering wheel through the tire ODEs!
+        z_hyst_stopped = jax.lax.stop_gradient(elastokin_4x6)
+
+        v_abs_bw = safe_abs(v_bcast)
+        z_abs_bw = jnp.sqrt(z_hyst_stopped ** 2 + 1e-12)
+        
+        # Calculate the derivative using the STOPPED state
         dz_hyst  = (v_bcast
-                    - 0.5 * v_abs_bw * z_abs_bw * z_hyst
+                    - 0.5 * v_abs_bw * z_abs_bw * z_hyst_stopped
                     - 0.05 * v_bcast * z_abs_bw ** 2)
         dx_elastokin = dz_hyst.ravel()   # (24,)
 
@@ -1356,23 +1414,6 @@ class DifferentiableMultiBodyVehicle:
         setup_params: jax.Array,
         dt_step:      float,
     ) -> jax.Array:
-        """
-        2-stage Gauss-Legendre RK4 (GLRK-4) variational integrator.
-
-        Butcher tableau (s=2 Gauss-Legendre):
-            a11=1/4,          a12=1/4 - √3/6
-            a21=1/4 + √3/6,  a22=1/4
-            b1=1/2,           b2=1/2
-
-        Properties:
-        · Symplectic — preserves dq∧dp to machine precision.
-        · 4th-order: energy drift O(h⁵) vs O(h³) for Störmer-Verlet.
-        · 3 Newton iterations sufficient for smooth Hamiltonians at h≈1ms.
-
-        Aux (thermal + slip) integration: trapezoidal using converged stage
-        derivatives — zero additional _compute_derivatives calls vs. the
-        previous forward Euler, and one order of accuracy higher (O(h³)).
-        """
         sqrt3    = jnp.sqrt(3.0)
         a11, a12 = 0.25, 0.25 - sqrt3 / 6.0
         a21, a22 = 0.25 + sqrt3 / 6.0, 0.25
@@ -1381,6 +1422,7 @@ class DifferentiableMultiBodyVehicle:
         q0   = x[0:14];  v0   = x[14:28];  aux0 = x[28:108]
         _AUX = 80
 
+        # Fully differentiable implicit forward pass
         dx0         = self._compute_derivatives(x, u, setup_params)
         k1_q, k1_v  = dx0[0:14], dx0[14:28]
         k2_q, k2_v  = k1_q,      k1_v
@@ -1399,50 +1441,25 @@ class DifferentiableMultiBodyVehicle:
             dx1 = self._compute_derivatives(x1, u, setup_params)
             dx2 = self._compute_derivatives(x2, u, setup_params)
 
-            # Clip stage-derivative carry between Newton iterations.
-            #
-            # ROOT CAUSE OF 46% NaN RATE IN WMPC:
-            # _compute_derivatives is called inside the GLRK-4 Newton scan,
-            # which is itself inside the WMPC trajectory scan. When the
-            # WMPC optimizer explores states above the friction limit, vx can
-            # transiently reach 25–30 m/s at a Newton intermediate stage.
-            # At those states, jax.grad(H_net.apply) produces second-order
-            # H_net derivatives that are not bounded by the forward tanh clips
-            # (the clips act on the OUTPUT of the gradient, not on second-order
-            # terms arising from the backward pass through tanh itself).
-            # The second-order gradient of tanh(x/C) is -2x/C² * tanh(x/C) *
-            # sech²(x/C), which at x≈5C (reached transiently) gives O(C⁻¹)
-            # magnitudes. Over 5 Newton iterations the carry compounds this:
-            # dx_i+1 depends on dx_i through the stage update, so the
-            # compounded second-order error grows as r^5 where r = O(C⁻¹ * dt).
-            # At C=12000 and dt=0.01: r≈8e-7, harmless.
-            # At vx=25 m/s and C=150 (VEL_CAP): r≈1.7e-3, still ok.
-            # But VEL_CAP * tanh(dH_dp / VEL_CAP): the second derivative w.r.t.
-            # p at |dH_dp| >> VEL_CAP gives -2/VEL_CAP * tanh(...) * sech²(...).
-            # With GLRK-4 stage point v1 = v0 + dt*(a11*k1_v + a12*k2_v), the
-            # momentum p = M * v at that stage can briefly exceed the soft cap.
-            # Clipping the carry to ±500 m/s² is 50G — never active within
-            # the physical operating envelope, always active at Newton overshoot.
             _DC = 500.0
             return (jnp.clip(dx1[0:14],  -_DC, _DC),
                     jnp.clip(dx1[14:28], -_DC, _DC),
                     jnp.clip(dx2[0:14],  -_DC, _DC),
                     jnp.clip(dx2[14:28], -_DC, _DC),
-                    jnp.clip(dx1[28:108], -_DC, _DC),        # <-- Added clip
-                    jnp.clip(dx2[28:108], -_DC, _DC)), None  # <-- Added clip
+                    jnp.clip(dx1[28:108], -_DC, _DC),
+                    jnp.clip(dx2[28:108], -_DC, _DC)), None
 
-        (k1_q, k1_v, k2_q, k2_v,
-         dx1_aux, dx2_aux), _ = jax.lax.scan(
+        (k1_q_star, k1_v_star, k2_q_star, k2_v_star,
+         dx1_aux_star, dx2_aux_star), _ = jax.lax.scan(
             newton_iter,
             (k1_q, k1_v, k2_q, k2_v, jnp.zeros(_AUX), jnp.zeros(_AUX)),
             None, length=5
         )
 
-        q_new   = q0  + dt_step * (b1 * k1_q  + b2 * k2_q)
-        v_new   = v0  + dt_step * (b1 * k1_v  + b2 * k2_v)
-        aux_new = aux0 + dt_step * (b1 * dx1_aux + b2 * dx2_aux)
-        
-        # FIX: Hard-cap the aux states so jnp.sin() never sees Infinity
+        q_new   = q0   + dt_step * (b1 * k1_q_star + b2 * k2_q_star)
+        v_new   = v0   + dt_step * (b1 * k1_v_star + b2 * k2_v_star)
+        aux_new = aux0 + dt_step * (b1 * dx1_aux_star + b2 * dx2_aux_star)
+
         aux_new = jnp.clip(aux_new, -1000.0, 1000.0)
 
         return (x.at[0:14].set(q_new)
@@ -1453,37 +1470,33 @@ class DifferentiableMultiBodyVehicle:
     def _glrk4_step_with_h(
         self,
         h_params:     dict,
-        x:            jax.Array,   # [108]
-        u:            jax.Array,   # [6]
-        setup_params: jax.Array,   # [28]
+        x:            jax.Array,
+        u:            jax.Array,
+        setup_params: jax.Array,
         dt_step:      jax.Array,
     ) -> jax.Array:
-        """
-        GLRK-4 step with h_params as traced arg. Structurally identical to
-        _glrk4_step but calls _compute_derivatives_with_h at each Newton stage.
-
-        3 Newton iterations (not 5) — sysid prioritises fast grad over accuracy.
-        The gradient quality through 3 vs 5 iterations is identical since the
-        fixed-point converges within 2 iterations for the sysid dt=20ms step.
-        """
         sqrt3    = jnp.sqrt(3.0)
         a11, a12 = 0.25, 0.25 - sqrt3 / 6.0
         a21, a22 = 0.25 + sqrt3 / 6.0, 0.25
         b1, b2   = 0.5, 0.5
 
         q0 = x[0:14];  v0 = x[14:28];  aux0 = x[28:108]
+        _AUX = 80
 
-        dx0         = self._compute_derivatives_with_h(h_params, x, u, setup_params)
+        dx0 = self._compute_derivatives_with_h(h_params, x, u, setup_params)
         k1_q, k1_v = dx0[0:14], dx0[14:28]
         k2_q, k2_v = k1_q, k1_v
 
         def newton_iter(carry, _):
             k1_q_, k1_v_, k2_q_, k2_v_, _a1, _a2 = carry
 
-            x1 = x.at[0:14].set(q0 + dt_step * (a11*k1_q_ + a12*k2_q_)) \
-                   .at[14:28].set(v0 + dt_step * (a11*k1_v_ + a12*k2_v_))
-            x2 = x.at[0:14].set(q0 + dt_step * (a21*k1_q_ + a22*k2_q_)) \
-                   .at[14:28].set(v0 + dt_step * (a21*k1_v_ + a22*k2_v_))
+            q1 = q0 + dt_step * (a11 * k1_q_ + a12 * k2_q_)
+            v1 = v0 + dt_step * (a11 * k1_v_ + a12 * k2_v_)
+            x1 = x.at[0:14].set(q1).at[14:28].set(v1)
+
+            q2 = q0 + dt_step * (a21 * k1_q_ + a22 * k2_q_)
+            v2 = v0 + dt_step * (a21 * k1_v_ + a22 * k2_v_)
+            x2 = x.at[0:14].set(q2).at[14:28].set(v2)
 
             dx1 = self._compute_derivatives_with_h(h_params, x1, u, setup_params)
             dx2 = self._compute_derivatives_with_h(h_params, x2, u, setup_params)
@@ -1493,19 +1506,19 @@ class DifferentiableMultiBodyVehicle:
                     jnp.clip(dx1[14:28], -_DC, _DC),
                     jnp.clip(dx2[0:14],  -_DC, _DC),
                     jnp.clip(dx2[14:28], -_DC, _DC),
-                    jnp.clip(dx1[28:108], -_DC, _DC),        # <-- Added clip
-                    jnp.clip(dx2[28:108], -_DC, _DC)), None  # <-- Added clip
+                    jnp.clip(dx1[28:108], -_DC, _DC),
+                    jnp.clip(dx2[28:108], -_DC, _DC)), None
 
-        (k1_q, k1_v, k2_q, k2_v,
-         dx1_aux, dx2_aux), _ = jax.lax.scan(
+        (k1_q_star, k1_v_star, k2_q_star, k2_v_star,
+         dx1_aux_star, dx2_aux_star), _ = jax.lax.scan(
             newton_iter,
-            (k1_q, k1_v, k2_q, k2_v, jnp.zeros(80), jnp.zeros(80)),
-            None, length=3   # 3 iters sufficient for sysid dt
+            (k1_q, k1_v, k2_q, k2_v, jnp.zeros(_AUX), jnp.zeros(_AUX)),
+            None, length=3
         )
 
-        q_new   = q0   + dt_step * (b1 * k1_q  + b2 * k2_q)
-        v_new   = v0   + dt_step * (b1 * k1_v  + b2 * k2_v)
-        aux_new = jnp.clip(aux0 + dt_step * (b1 * dx1_aux + b2 * dx2_aux),
+        q_new   = q0   + dt_step * (b1 * k1_q_star + b2 * k2_q_star)
+        v_new   = v0   + dt_step * (b1 * k1_v_star + b2 * k2_v_star)
+        aux_new = jnp.clip(aux0 + dt_step * (b1 * dx1_aux_star + b2 * dx2_aux_star),
                            -1000.0, 1000.0)
 
         return (x.at[0:14].set(q_new)
