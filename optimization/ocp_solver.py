@@ -91,12 +91,9 @@ _DB4_LO_R = _DB4_LO[::-1]
 _DB4_HI_R = _DB4_HI[::-1]
  
 def stable_softplus(x):
-    """
-    Float32-safe softplus.
-    For x > 10, softplus(x) is numerically identical to x.
-    This prevents exp(300) from blowing up the autodiff tape!
-    """
-    return jnp.where(x > 10.0, x, jax.nn.softplus(x))
+    # The jnp.where bypasses logaddexp for large values, 
+    # preventing JAX VJP NaN explosions at extreme boundaries.
+    return jnp.where(x > 10.0, x, jnp.logaddexp(0.0, x))
 
 def _pseudo_huber(c: jnp.ndarray, delta: float = 0.01) -> jnp.ndarray:
     """
@@ -332,18 +329,13 @@ class DiffWMPCSolver:
         return [tree[(max_level, j)] for j in range(2 ** max_level)]
 
     def _shannon_entropy(self, node: jax.Array) -> jax.Array:
-        """
-        Shannon entropy of a wavelet packet node: H = -Σ p_i log(p_i)
-        where p_i = c_i² / ‖c‖².  The best-basis minimises total entropy
-        (Coifman & Wickerhauser 1992 additive cost criterion).
-
-        Implementation note: the softplus floor on p_i prevents log(0).
-        This is a C∞ approximation — safe inside jax.lax.cond.
-        """
-        e  = jnp.sum(node ** 2) + 1e-12
-        p  = node ** 2 / e
-        # softplus floor: log of very small values is bounded
-        lp = jnp.log(jax.nn.softplus(p * 1e6) / 1e6 + 1e-12)
+        e = jnp.sum(node ** 2) + 1e-12
+        p = node ** 2 / e
+        # Standard XLogX entropy: safe_p replaces 0 with 1 so log(1)=0 in the
+        # masked branch. jnp.where evaluates both branches, so we must make sure
+        # log() is never called with 0 or negative values — not just masked out.
+        safe_p = jnp.where(p > 0, p, 1.0)
+        lp     = jnp.where(p > 0, jnp.log(safe_p), 0.0)
         return -jnp.sum(p * lp)
 
     def _coifman_wickerhauser_basis(self, sig_1d: jax.Array, max_level: int = 3) -> jax.Array:
@@ -596,7 +588,7 @@ class DiffWMPCSolver:
             # the optimizer still finds the correct Pareto trade-off.
             v_sat_ceil = jnp.minimum(jnp.sqrt(v_fric_sq) * 1.25, self.V_limit)
             vx_raw     = x_next[STATE_VX]
-            vx_sat = vx_raw - jax.nn.softplus(vx_raw - v_sat_ceil)
+            vx_sat = v_sat_ceil - jax.nn.softplus(v_sat_ceil - vx_raw)
             x_next     = x_next.at[STATE_VX].set(jnp.maximum(vx_sat, 0.5))
 
             # Curvilinear coordinate: lateral deviation n from track centerline
@@ -638,7 +630,10 @@ class DiffWMPCSolver:
             new_var_n_full = (new_var_n
                               + dt_c ** 2 * vx_curr ** 2 * new_var_alpha
                               + 2.0 * dt_c * vx_curr * cov_n_alpha)
-            new_var_n_full = jnp.maximum(new_var_n_full, 1e-6)
+            
+            # Use clip instead of maximum to cap the variance at 25.0 (5m std dev)
+            # This prevents the barrier soft-tube from exploding to infinity
+            new_var_n_full = jnp.clip(new_var_n_full, 1e-6, 25.0)
 
             return (x_next, new_var_n_full, new_var_alpha), (x_next, n, new_var_n_full, s_dot)
 
@@ -899,7 +894,7 @@ class DiffWMPCSolver:
         wb = self.vp.get('lf', 0.8525) + self.vp.get('lr', 0.6975)
         Kp = 6000.0   # N / (m/s)
 
-        k_safe   = jnp.abs(track_k).ravel() + 1e-4
+        k_safe   = jnp.sqrt(track_k**2 + 1e-8).ravel() + 1e-4
         v_target = jnp.minimum(
             jnp.sqrt((self.mu_friction * g) / k_safe),
             self.V_limit * 0.92,   # 8% safety margin below friction limit
@@ -937,7 +932,7 @@ class DiffWMPCSolver:
 
             v_err = v_curr - v_tgt_i
             m_veh      = self.vp.get('m', 235.0)
-            F_lat_curr = m_veh * v_tgt_i ** 2 * jnp.abs(k_i)
+            F_lat_curr = m_veh * v_tgt_i ** 2 * jnp.sqrt(k_i**2 + 1e-8)
             F_fric_tot = self.mu_friction * 9.81 * m_veh          
             F_lon_max  = jnp.sqrt(jnp.maximum(F_fric_tot ** 2 - F_lat_curr ** 2, 0.0))
             
@@ -1150,8 +1145,8 @@ class DiffWMPCSolver:
         )
         _vx_ws = _x_ws[:, STATE_VX]
         _vx_prev_ws = jnp.concatenate([x0[STATE_VX:STATE_VX+1].ravel(), _vx_ws[:-1]])
-        _a_lat_ws = _vx_ws ** 2 * jnp.abs(track_k)
-        _a_lon_ws = jnp.abs(_vx_ws - _vx_prev_ws) / self.dt_control
+        _a_lat_ws = _vx_ws ** 2 * jnp.sqrt(track_k**2 + 1e-8)
+        _a_lon_ws = jnp.sqrt((_vx_ws - _vx_prev_ws)**2 + 1e-8) / self.dt_control
         _g_ws = ((_a_lat_ws**2 + _a_lon_ws**2) / ((self.mu_friction*9.81)**2 + 1e-4)) - 1.0
         print(f"[DEBUG WS] n: min={float(jnp.min(_n_ws)):.2f}  max={float(jnp.max(_n_ws)):.2f}  "
               f"mean={float(jnp.mean(_n_ws)):.2f}")
@@ -1241,15 +1236,17 @@ class DiffWMPCSolver:
                     return loss_fb, grad_fb
 
                 grad_np = np.array(grad_jax, dtype=np.float64)
-                # NO gradient clipping here.
-                # GP-vX9: gradient clipping at 500 was the root cause of ABNORMAL.
-                # When ‖∇f‖ is clipped, scipy's Wolfe sufficient decrease condition
-                # f(x+αd) ≤ f(x) + c₁·α·∇f·d uses the CLIPPED gradient to compute
-                # the expected decrease, but evaluates the REAL function. The mismatch
-                # means the Wolfe condition is never satisfied → all 31 line-search
-                # evals fail → ABNORMAL nit=0 → 46s wasted per AL iter.
-                # With λ capped at 20, max gradient ≈ (20+50)×14.5×√32 ≈ 5700.
-                # L-BFGS-B handles this via its internal scaling — no clipping needed.
+                
+                # --- APPLY GLOBAL NORM CLIPPING ---
+                # We clip the overall magnitude to 1e8, but preserve the exact direction.
+                # This stops the 10^15 AD explosion from causing float overflow in L-BFGS-B, 
+                # but because 1e8 is still larger than the true FD gradient (~1e7), 
+                # it doesn't break the Wolfe condition math like the old clip=500 did.
+                g_norm = np.linalg.norm(grad_np)
+                if g_norm > 1e8:
+                    grad_np = grad_np * (1e8 / g_norm)
+                # ----------------------------------
+
                 # Debug: print first 3 calls per AL iter
                 if total_calls[0] <= 3:
                     print(f"[DEBUG OBJ] call={total_calls[0]}  "
@@ -1328,7 +1325,7 @@ class DiffWMPCSolver:
             )
             vx_al    = x_al[:, STATE_VX].reshape(-1)
             track_k_1d = track_k.reshape(-1)
-            a_lat_sq = (vx_al ** 2 * jnp.abs(track_k_1d)) ** 2
+            a_lat_sq = (vx_al ** 2 * jnp.sqrt(track_k_1d**2 + 1e-8)) ** 2
             vx_prev  = jnp.concatenate([
                 x0[STATE_VX : STATE_VX + 1].reshape(-1),
                 vx_al[:-1],

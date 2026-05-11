@@ -255,7 +255,7 @@ def safe_abs(x: jax.Array, beta: float = 20.0) -> jax.Array:
     Prevents 2nd-order gradient explosions in implicit RK4 solvers.
     """
     # softplus(x) + softplus(-x) creates a smooth V-shape.
-    raw_abs = (jax.nn.softplus(beta * x) + jax.nn.softplus(-beta * x)) / beta
+    raw_abs = (jnp.logaddexp(0.0, beta * x) + jnp.logaddexp(0.0, -beta * x)) / beta
     
     # Shift it down so that safe_abs(0) = 0.0 perfectly
     offset = 2.0 * jnp.log(2.0) / beta
@@ -367,7 +367,7 @@ def compute_bumpstop_force(z_corner: jax.Array, gap: jax.Array, k_bs: float = 50
     above. Replaces hard clip — gradient-alive through contact.
     F_bs = k_bs · softplus((z - gap)·β) / β
     """
-    return k_bs * jax.nn.softplus(beta * (z_corner - gap)) / beta
+    return k_bs * jnp.logaddexp(0.0, beta * (z_corner - gap)) / beta
 
 
 def compute_castor_trail(castor_deg: jax.Array, Fy: jax.Array, tire_radius: float) -> jax.Array:
@@ -386,7 +386,7 @@ def _softplus_floor(x: jax.Array, floor: float = 10.0) -> jax.Array:
     Replaces jnp.maximum(..., floor) whose sub-gradient is zero below the
     floor — kills optimizer signal exactly when a corner goes light.
     """
-    return floor + jax.nn.softplus(x - floor)
+    return floor + jnp.logaddexp(0.0, x - floor)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -504,7 +504,7 @@ class NeuralEnergyLandscape(nn.Module):
         x = FiLMLayer(64)(x, setup_emb)
         x = nn.swish(x)
 
-        H_raw = jnp.squeeze(jax.nn.softplus(nn.Dense(1)(x))) * self.h_scale
+        H_raw = jnp.squeeze(jnp.logaddexp(0.0, nn.Dense(1)(x))) * self.h_scale
         H_res = jnp.minimum(H_raw, self.H_RESIDUAL_CAP)
 
         # BUGFIX-5: gate at physical equilibrium _Z_EQ, not at z=0.
@@ -553,7 +553,7 @@ class NeuralDissipationMatrix(nn.Module):
         R_chol = jnp.dot(L, L.T)
 
         log_d   = self.param('log_d', jax.nn.initializers.constant(-3.0), (self.dim,))
-        R_diag  = jnp.diag(jax.nn.softplus(log_d))
+        R_diag  = jnp.diag(jnp.logaddexp(0.0, log_d))
         R_dense = R_chol + R_diag
 
         mask = jnp.array([0., 0., 1., 1., 1., 0., 1., 1., 1., 1., 0., 0., 0., 0.])
@@ -795,7 +795,7 @@ class DifferentiableMultiBodyVehicle:
         eta    = self.vp.get('drivetrain_efficiency', 0.92)
         v_max  = self.vp.get('v_max', 35.0)
         F_max_tq = throttle * T_peak * ratio * eta / self.R_wheel
-        F_power  = jax.nn.softplus(v_max - vx) / v_max * F_max_tq
+        F_power  = jnp.logaddexp(0.0, v_max - vx) / v_max * F_max_tq
         return jnp.minimum(F_max_tq, F_power)
 
     def _DEPRECATED_compute_brake_forces(self, brake_force, Fz_f, Fz_r, vx, brake_bias_f):
@@ -1216,9 +1216,9 @@ class DifferentiableMultiBodyVehicle:
 
         # (Continue with existing dv_dt code...)
         dv_dt = (PH_accel[14:28] + F_ext[14:28]) / self.M_diag
-        # 500 m/s² ≈ 51G — physically unreachable, only active at Newton overshoot states.
-        # Clipping is inactive near the optimum so gradient quality is unaffected there.
-        dv_dt = jnp.clip(dv_dt, -500.0, 500.0)
+        # Use smooth tanh bounding. This limits the acceleration to ±500 m/s² 
+        # to prevent explosion, but NEVER drops the gradient to exactly 0.0.
+        dv_dt = 500.0 * jnp.tanh(dv_dt / 500.0)
         dx_mech = jnp.concatenate([dq_dt, dv_dt])
 
         # ── Module 3: 3D per-corner thermal ODE → 28 states ──────────────────
@@ -1241,24 +1241,23 @@ class DifferentiableMultiBodyVehicle:
         # (d_alpha_t = alpha_dot) AND the acceleration (d_alpha_dot) from the
         # 2nd-order ODE: ẍ + 2ζωₙẋ + ωₙ²x = ωₙ²·x_kin
         # ── Module 5: 2nd-order transient slip → 16 states ───────────────────
-        # FULLY LIVE: The optimizer MUST see the steering wheel.
-        # This ODE is adjoint-stable, so it will safely pass the gradient.
         d_transient_4x4 = four_corner_transient_derivatives(
             jnp.array([alpha_kin_fl, alpha_kin_fr, alpha_kin_rl, alpha_kin_rr]),
             jnp.array([kappa_ref_fl, kappa_ref_fr, kappa_ref_rl, kappa_ref_rr]),
-            transient_4x4,  
+            transient_4x4,  # REMOVED stop_gradient: Steering is now connected!
             jnp.array([Fz_fl, Fz_fr, Fz_rl, Fz_rr]),
             safe_abs(vx),
         )
-        dx_slip = jnp.clip(d_transient_4x4.ravel(), -500.0, 500.0)   # (16,)
+        # Smooth limit instead of hard clip
+        dx_slip = 500.0 * jnp.tanh(d_transient_4x4.ravel() / 500.0)   # (16,)
 
         # ── Module 2: Damper Maxwell branch + thermal ODE → 12 states ────────
         dz_corners = jnp.array([dz_fl, dz_fr, dz_rl, dz_rr])
         
-        # FULLY LIVE: Maxwell dampers are exponentially stable.
+        # PUT THESE BACK!
         F1_all  = damper_4x3[:, 0] 
         F2_all  = damper_4x3[:, 1] 
-        T_oil   = damper_4x3[:, 2]  
+        T_oil   = damper_4x3[:, 2]
 
         mu_visc = jnp.exp(0.015 * (40.0 - T_oil))   
         dF1     = 15000.0 * dz_corners - F1_all / 0.008
@@ -1270,17 +1269,17 @@ class DifferentiableMultiBodyVehicle:
         # ── Module 4: Bouc-Wen elastokinematic hysteresis → 24 states ────────
         v_bcast  = jnp.broadcast_to(dz_corners[:, None], (4, 6))
         
-        # NUCLEAR OPTION: Block the stiff adjoint explosion at the source.
-        # This prevents the 10^20 Hessian explosion in the GLRK4 loop.
-        # The optimizer still sees the steering wheel through the tire ODEs!
-        z_hyst_stopped = jax.lax.stop_gradient(elastokin_4x6)
+        # NUCLEAR OPTION RESTORED: The Bouc-Wen ODE is too stiff for unrolled AD.
+        # By stopping the gradient here, we kill the float32 overflow, but the 
+        # optimizer still sees the steering wheel through the tires (transient_4x4).
+        z_hyst = jax.lax.stop_gradient(elastokin_4x6)
 
         v_abs_bw = safe_abs(v_bcast)
-        z_abs_bw = jnp.sqrt(z_hyst_stopped ** 2 + 1e-12)
+        z_abs_bw = jnp.sqrt(z_hyst ** 2 + 1e-12)
         
-        # Calculate the derivative using the STOPPED state
+        # Derivative uses live state
         dz_hyst  = (v_bcast
-                    - 0.5 * v_abs_bw * z_abs_bw * z_hyst_stopped
+                    - 0.5 * v_abs_bw * z_abs_bw * z_hyst
                     - 0.05 * v_bcast * z_abs_bw ** 2)
         dx_elastokin = dz_hyst.ravel()   # (24,)
 
@@ -1449,16 +1448,25 @@ class DifferentiableMultiBodyVehicle:
                     jnp.clip(dx1[28:108], -_DC, _DC),
                     jnp.clip(dx2[28:108], -_DC, _DC)), None
 
-        (k1_q_star, k1_v_star, k2_q_star, k2_v_star,
-         dx1_aux_star, dx2_aux_star), _ = jax.lax.scan(
+        # 1. Run 4 iterations and discard the backward tape
+        carry_converged, _ = jax.lax.scan(
             newton_iter,
             (k1_q, k1_v, k2_q, k2_v, jnp.zeros(_AUX), jnp.zeros(_AUX)),
-            None, length=5
+            None, length=4
         )
+        
+        # 2. Sever the Jacobian chain (kills the 10^15 explosion)
+        carry_stopped = jax.tree_util.tree_map(jax.lax.stop_gradient, carry_converged)
 
-        q_new   = q0   + dt_step * (b1 * k1_q_star + b2 * k2_q_star)
-        v_new   = v0   + dt_step * (b1 * k1_v_star + b2 * k2_v_star)
-        aux_new = aux0 + dt_step * (b1 * dx1_aux_star + b2 * dx2_aux_star)
+        # 3. Take ONE final Newton step WITH gradients enabled. 
+        # This reattaches the converged state to the controls (u) and x0.
+        (k1_q_final, k1_v_final, k2_q_final, k2_v_final,
+         dx1_aux_final, dx2_aux_final), _ = newton_iter(carry_stopped, None)
+
+        # 4. Integrate
+        q_new   = q0   + dt_step * (b1 * k1_q_final + b2 * k2_q_final)
+        v_new   = v0   + dt_step * (b1 * k1_v_final + b2 * k2_v_final)
+        aux_new = aux0 + dt_step * (b1 * dx1_aux_final + b2 * dx2_aux_final)
 
         aux_new = jnp.clip(aux_new, -1000.0, 1000.0)
 
@@ -1509,17 +1517,26 @@ class DifferentiableMultiBodyVehicle:
                     jnp.clip(dx1[28:108], -_DC, _DC),
                     jnp.clip(dx2[28:108], -_DC, _DC)), None
 
-        (k1_q_star, k1_v_star, k2_q_star, k2_v_star,
-         dx1_aux_star, dx2_aux_star), _ = jax.lax.scan(
+        # 1. Run 2 iterations and discard the backward tape
+        carry_converged, _ = jax.lax.scan(
             newton_iter,
             (k1_q, k1_v, k2_q, k2_v, jnp.zeros(_AUX), jnp.zeros(_AUX)),
-            None, length=3
+            None, length=2
         )
+        
+        # 2. Sever the Jacobian chain (kills the 10^15 explosion)
+        carry_stopped = jax.tree_util.tree_map(jax.lax.stop_gradient, carry_converged)
 
-        q_new   = q0   + dt_step * (b1 * k1_q_star + b2 * k2_q_star)
-        v_new   = v0   + dt_step * (b1 * k1_v_star + b2 * k2_v_star)
-        aux_new = jnp.clip(aux0 + dt_step * (b1 * dx1_aux_star + b2 * dx2_aux_star),
-                           -1000.0, 1000.0)
+        # 3. Take ONE final Newton step WITH gradients enabled. 
+        (k1_q_final, k1_v_final, k2_q_final, k2_v_final,
+         dx1_aux_final, dx2_aux_final), _ = newton_iter(carry_stopped, None)
+
+        # 4. Integrate
+        q_new   = q0   + dt_step * (b1 * k1_q_final + b2 * k2_q_final)
+        v_new   = v0   + dt_step * (b1 * k1_v_final + b2 * k2_v_final)
+        aux_new = aux0 + dt_step * (b1 * dx1_aux_final + b2 * dx2_aux_final)
+
+        aux_new = jnp.clip(aux_new, -1000.0, 1000.0)
 
         return (x.at[0:14].set(q_new)
                   .at[14:28].set(v_new)
