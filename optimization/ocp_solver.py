@@ -309,34 +309,29 @@ class DiffWMPCSolver:
     # ─────────────────────────────────────────────────────────────────────────
 
     def _wpd_full_tree(self, sig_1d: jax.Array, max_level: int = 3) -> list:
-        """
-        Full wavelet packet binary tree up to max_level.
-        Returns flat list of (2**max_level) leaf node arrays, left-to-right.
-        Each leaf has length N // 2**max_level.
-
-        At level l, node j has length N // 2^l.
-        Children of node (l, j): low → (l+1, 2j), high → (l+1, 2j+1).
-        Root: (0, 0) = sig_1d.
-        """
-        tree = {(0, 0): sig_1d}
-        for l in range(max_level):
-            nodes_at_l = [(l, j) for j in range(2 ** l) if (l, j) in tree]
-            for (ll, jj) in nodes_at_l:
-                lo, hi = self._dwt_1d_single_level(tree[(ll, jj)])
-                tree[(ll + 1, 2 * jj)]     = lo
-                tree[(ll + 1, 2 * jj + 1)] = hi
-        # Return leaves in order
-        return [tree[(max_level, j)] for j in range(2 ** max_level)]
+        """JAX-pure WPD: no Python dicts with traced values as keys."""
+        # Use a fixed-shape array indexed by (level, node) encoded as flat index
+        # Total nodes: 2^0 + 2^1 + ... + 2^max_level = 2^(max_level+1) - 1
+        # But we only need the leaves, so build level-by-level with static shapes
+        
+        current_level = [sig_1d]  # level 0: one node of length N
+        
+        for _ in range(max_level):
+            next_level = []
+            for node in current_level:
+                lo, hi = self._dwt_1d_single_level(node)
+                next_level.extend([lo, hi])
+            current_level = next_level
+        
+        return current_level  # 2^max_level leaves, each length N//2^max_level
 
     def _shannon_entropy(self, node: jax.Array) -> jax.Array:
         e = jnp.sum(node ** 2) + 1e-12
         p = node ** 2 / e
-        # Standard XLogX entropy: safe_p replaces 0 with 1 so log(1)=0 in the
-        # masked branch. jnp.where evaluates both branches, so we must make sure
-        # log() is never called with 0 or negative values — not just masked out.
-        safe_p = jnp.where(p > 0, p, 1.0)
-        lp     = jnp.where(p > 0, jnp.log(safe_p), 0.0)
-        return -jnp.sum(p * lp)
+        
+        # Safe masking prevents -inf in the backward pass
+        safe_p = jnp.maximum(p, 1e-30)
+        return -jnp.sum(p * jnp.log(safe_p))
 
     def _coifman_wickerhauser_basis(self, sig_1d: jax.Array, max_level: int = 3) -> jax.Array:
         """
@@ -635,7 +630,41 @@ class DiffWMPCSolver:
             # This prevents the barrier soft-tube from exploding to infinity
             new_var_n_full = jnp.clip(new_var_n_full, 1e-6, 25.0)
 
-            return (x_next, new_var_n_full, new_var_alpha), (x_next, n, new_var_n_full, s_dot)
+            # ──────────────────────────────────────────────────────────────────────────────
+            # ROOT CAUSE (§3h confirmed): The 64-step backward scan Jacobian chain overflows
+            # float32 for any cost with all 64 gradient-active steps.
+            # 
+            # VX is already safe (softplus eigenvalue ~0.78%/step).
+            # STATE_YAW carry eigenvalue ≈ sech²(dpsi/0.08) × H_net_yaw_jac ≈ 1.5–3.5/step
+            # → 1.7^63 ≈ 6e14, cross-multiplied by position accumulators → float32 overflow.
+            # STATE_X/Y have no saturation; cross-terms with YAW chain cause overflow even
+            # for VX-only costs (∂vx/∂yaw × (overflowed yaw chain) = NaN).
+            # 
+            # Fix: carry uses stop_gradient copies of overflow-prone indices.
+            #   • Forward dynamics: UNCHANGED (stop_gradient preserves values).
+            #   • Backward pass: cross-step carry gradient = 0 instead of NaN/overflow.
+            #   • Per-step cost gradients: PRESERVED via emitted x_next (full gradient).
+            # This gives truncated-BPTT behaviour for these components, which is finite
+            # and gives the optimizer a useful descent direction vs. the current 100% NaN.
+            # ──────────────────────────────────────────────────────────────────────────────
+            _CARRY_STOP_GRAD = [
+                STATE_X,    # 0  — world position
+                STATE_Y,    # 1  — world position
+                STATE_Z,    # 2  — height
+                STATE_PHI,  # 3  — roll angle
+                STATE_TH,   # 4  — pitch angle
+                STATE_YAW,  # 5  — forced heading
+                STATE_VY,   # 15 — lateral velocity
+                17,         # wx — roll rate
+                18,         # wy — pitch rate
+                19,         # wz — yaw rate (CRITICAL FIX)
+            ]
+            
+            carry_x = x_next
+            for _sg in _CARRY_STOP_GRAD:
+                carry_x = carry_x.at[_sg].set(jax.lax.stop_gradient(carry_x[_sg]))
+
+            return (carry_x, new_var_n_full, new_var_alpha), (x_next, n, new_var_n_full, s_dot)
 
         init_carry = (x0, jnp.array(0.01), jnp.array(0.001))
         step_data  = (U_time, track_k, track_x, track_y, track_psi)
@@ -715,26 +744,28 @@ class DiffWMPCSolver:
         # not of the coefficient vector — this is differentiable through _db4_idwt.
         def _cw_entropy_cost(sig_1d):
             leaves = self._wpd_full_tree(sig_1d, max_level=self._cw_max_level)
-            # Penalise high-entropy leaf nodes — encourages energy concentration
-            return jnp.sum(jnp.array([self._shannon_entropy(leaf) for leaf in leaves]))
+            # Stack leaves into a 2D array BEFORE differentiation — single XLA node
+            # Python list → jnp.array materializes traced values, severing the grad tape
+            leaves_stacked = jnp.stack(leaves, axis=0)  # (2^L, N//2^L)
+            entropies = jax.vmap(self._shannon_entropy)(leaves_stacked)
+            return jnp.sum(entropies)
 
-        cw_entropy_cost = (_cw_entropy_cost(U_opt[:, 0])
-                           + _cw_entropy_cost(U_opt[:, 1]))
+        CW_ENTROPY_WEIGHT = 0.0  # re-enable after xlogy fix validated
 
-        effort_cost   = (jnp.sum(w_steer * U_opt[:, 0] ** 2) * 1e-3
-                         # Force effort: normalized to [-1,1] before squaring.
-                         # BUG FIX (GP-vX5): previous formula used
-                         #   jnp.sum(w_accel * F²) × w_effort
-                         # with w_accel=5e-5 per step and w_effort=5e-5, giving
-                         # effective weight 2.5e-9 per F². At F=6000N (warm-start
-                         # braking) over N=32 steps: effort_cost=2.88 vs time_cost≈0.11.
-                         # The gradient toward F=0 dominated by 26×, causing L-BFGS-B
-                         # to drain force to zero in 6 steps → 558s lap time.
-                         # Fix: normalize F by F_max → effort weight = w_effort × (F/F_max)²
-                         # At F=6000N: 5e-5 × (6000/8000)² × 32 = 9e-4 ≈ 0.8% of time_cost.
-                         + self.w_effort * jnp.sum((U_opt[:, 1] / 8000.0) ** 2)
-                         + self.w_l1_detail * l1_detail_cost
-                         + 1e-3 * cw_entropy_cost)   # CW entropy weight: small, exploratory
+        # CRITICAL: CW_ENTROPY_WEIGHT is a Python-level constant, so this if-branch
+        # is resolved at JIT trace time. When weight=0, _cw_entropy_cost is never
+        # traced → its NaN VJP never enters the computation graph.
+        # Do NOT use `0.0 * cw_entropy_cost` as a gate: in JAX, 0.0 * NaN_grad = NaN.
+        if CW_ENTROPY_WEIGHT > 0.0:
+            cw_entropy_cost = (_cw_entropy_cost(U_opt[:, 0])
+                            + _cw_entropy_cost(U_opt[:, 1]))
+        else:
+            cw_entropy_cost = jnp.array(0.0)
+
+        effort_cost = (jnp.sum(w_steer * U_opt[:, 0] ** 2) * 1e-3
+            + self.w_effort * jnp.sum((U_opt[:, 1] / 8000.0) ** 2)
+            + self.w_l1_detail * l1_detail_cost
+            + CW_ENTROPY_WEIGHT * cw_entropy_cost)
 
         # ── 3. Track limits — smooth quadratic violation penalty ─────────────
         # CRITICAL FIX (GP-vX5): the log-barrier −ε·log(softplus(dist·50)/50+1e-5)

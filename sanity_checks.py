@@ -539,44 +539,425 @@ def test_circular_track():
     else:
         print(f"  → Mixed ({n_fd_finite} finite): some dims have genuine singularity")
 
-    # ─────────────────────────────────────────────────────────────────
-    # §4  Full WMPC solve — original test assertions
-    # ─────────────────────────────────────────────────────────────────
+    from optimization.ocp_solver import stable_softplus, _pseudo_huber
+
+    _VX  = 14   # STATE_VX
+    _VY  = 15   # STATE_VY
+    _YAW = 5    # STATE_YAW
+    _R_w = 0.2045
+
+    # ─────────────────────────────────────────────────────────────────────────────
+    # §3h  Per-term AD gradient decomposition
+    #      This is the primary diagnostic: each cost term is individually tested
+    #      via value_and_grad so we get exact attribution of any NaN gradient.
+    # ─────────────────────────────────────────────────────────────────────────────
     print("\n" + "─" * 60)
-    print("  §4 FULL WMPC SOLVE (original assertions)")
+    print("  §3h  Per-term AD gradient decomposition")
     print("─" * 60)
-    WMPC_V_LOWER, WMPC_V_UPPER = 13.0, 17.5
-    try:
-        result = solver.solve(
-            track_s=np.array(track_s), track_k=np.array(track_k),
-            track_x=np.array(track_x), track_y=np.array(track_y),
-            track_psi=np.array(track_psi),
-            track_w_left=np.array(track_w_left),
-            track_w_right=np.array(track_w_right),
+    print("  Each term tested independently. 'NaN GRAD ←' identifies the culprit.\n")
+    print(f"  {'Term':<32}  {'Value':>14}  {'‖∇‖':>14}  {'fin_val':>7}  {'fin_grad':>8}")
+    print("  " + "─" * 82)
+
+    def _sim(c):
+        """Thin wrapper so each probe re-runs the simulation (gradient flows through it)."""
+        return solver._simulate_trajectory(
+            c.reshape(N, 2), x0, setup_params,
+            tk, tx, ty, tpsi, twl, twr, 1.0, 0.0, solver.dt_control,
         )
-        mean_v        = np.mean(result['v'])
-        max_g_comb    = result['g_combined_max']
-        compliance    = result['friction_compliance_pct']
-        max_n         = np.max(np.abs(result['n']))
-        max_steer_rate = np.max(np.abs(np.diff(result['delta']))) / solver.dt_control
-        lap_time_est  = result['time']
+    _sim_jit = jax.jit(_sim)
 
-        print(f"  mean_v={mean_v:.2f}  max_g={max_g_comb:.3f}  compliance={compliance:.1f}%"
-              f"  max_n={max_n:.2f}  lap={lap_time_est:.1f}s")
+    def _probe(label, fn, coeffs=None):
+        """Run value_and_grad(fn)(coeffs), print result row."""
+        if coeffs is None:
+            coeffs = opt_coeffs
+        try:
+            val, g = jax.jit(jax.value_and_grad(fn))(coeffs)
+            fv = bool(jnp.isfinite(val))
+            fg = bool(jnp.all(jnp.isfinite(g)))
+            gn = float(jnp.linalg.norm(g)) if fg else float('nan')
+            flag = "  ← NaN GRAD" if not fg else ""
+            print(f"  {label:<32}  {float(val):>14.4e}  {gn:>14.4e}  {str(fv):>7}  {str(fg):>8}{flag}")
+            return val, g, fg
+        except Exception as exc:
+            print(f"  {label:<32}  EXCEPTION: {exc}")
+            return None, None, False
 
-        print(f"[{'PASS' if WMPC_V_LOWER < mean_v < WMPC_V_UPPER else 'FAIL'}] "
-              f"Speed in [{WMPC_V_LOWER},{WMPC_V_UPPER}] m/s: {mean_v:.2f}")
-        print(f"[{'PASS' if max_g_comb<=1.05 and compliance>85 else 'FAIL'}] "
-              f"AL friction: max_g={max_g_comb:.3f}, {compliance:.1f}%")
-        print(f"[{'PASS' if max_n<3.6 else 'FAIL'}] "
-              f"Boundaries: max_n={max_n:.2f}m")
-        print(f"[{'PASS' if lap_time_est<15 else 'FAIL'}] "
-              f"Forward progress: {lap_time_est:.1f}s")
-        print(f"[{'PASS' if max_steer_rate<15 else 'WARN'}] "
-              f"Steer smoothness: {max_steer_rate:.2f} rad/s")
-    except Exception as e:
-        print(f"  [WARN] WMPC solve failed: {e}")
-        import traceback; traceback.print_exc()
+    # 1. time_cost  ────────────────────────────────────────────────────────────────
+    _probe("time_cost", lambda c: (
+        lambda sd: -jnp.sum(stable_softplus(sd * 20.0) / 20.0 + 1e-2) * solver.dt_control
+    )(_sim_jit(c)[4]))
+
+    # 2. barrier_cost ─────────────────────────────────────────────────────────────
+    def _barrier(c):
+        _, _, nm, nv, _ = _sim_jit(c)
+        tube  = solver.kappa_safe * jnp.sqrt(jnp.maximum(nv, 1e-6))
+        vl    = stable_softplus((nm + tube - twl) * 20.0) / 20.0
+        vr    = stable_softplus((-nm + tube - twr) * 20.0) / 20.0
+        return 8000.0 * jnp.sum(vl ** 2 + vr ** 2)
+    _probe("barrier_cost", _barrier)
+
+    # 3. center_cost ──────────────────────────────────────────────────────────────
+    _probe("center_cost", lambda c: solver.w_center * jnp.sum(_sim_jit(c)[2] ** 2))
+
+    # 4. heading_cost ─────────────────────────────────────────────────────────────
+    def _heading(c):
+        _, xt, _, _, _ = _sim_jit(c)
+        dpsi  = xt[:, _YAW] - tpsi
+        alpha = jnp.arctan2(jnp.sin(dpsi), jnp.cos(dpsi))
+        return solver.w_heading * jnp.sum(alpha ** 2)
+    _probe("heading_cost", _heading)
+
+    # 5. terminal speed cost ──────────────────────────────────────────────────────
+    def _term_cost(c):
+        _, xt, _, _, _ = _sim_jit(c)
+        v_safe = jnp.sqrt((solver.mu_friction * 9.81) /
+                          (jnp.sqrt(tk[-1] ** 2 + 1e-8) + 1e-4))
+        return 50.0 * jax.nn.relu(xt[-1, _VX] - v_safe) ** 2
+    _probe("term_cost", _term_cost)
+
+    # 6. AL friction (lambda=0, rho=0.1) ──────────────────────────────────────────
+    def _al_fric(c):
+        _, xt, _, _, _ = _sim_jit(c)
+        vt    = xt[:, _VX].reshape(-1)
+        vp    = jnp.concatenate([x0[_VX:_VX+1].ravel(), vt[:-1]])
+        a_lat_sq = (vt ** 2 * jnp.sqrt(tk ** 2 + 1e-8)) ** 2
+        a_lon_sq = ((vt - vp) / (solver.dt_control + 1e-6)) ** 2
+        g_c   = (a_lat_sq + a_lon_sq) / ((solver.mu_friction * 9.81) ** 2 + 1e-4) - 1.0
+        # lambda=0, rho=0.1  (first AL iter conditions)
+        return 0.5 * 0.1 * jnp.sum(jnp.maximum(g_c, 0.0) ** 2)
+    _probe("al_friction (λ=0, ρ=0.1)", _al_fric)
+
+    # 7. l1_detail_cost (pseudo-Huber on wavelet detail bands) ────────────────────
+    def _l1detail(c):
+        c2 = c.reshape(N, 2)
+        def _hd(ch):
+            n8, n4, n2 = N // 8, N // 4, N // 2
+            return (0.5 * jnp.sum(_pseudo_huber(ch[n8:n4],  delta=0.01)) +
+                    1.0 * jnp.sum(_pseudo_huber(ch[n4:n2],  delta=0.01)) +
+                    2.0 * jnp.sum(_pseudo_huber(ch[n2:],    delta=0.005)))
+        return solver.w_l1_detail * (_hd(c2[:, 0]) + _hd(c2[:, 1]))
+    _probe("l1_detail_cost", _l1detail)
+
+    # 8. effort_cost (steer + accel L2) ───────────────────────────────────────────
+    def _effort_l2(c):
+        U_o, _, _, _, _ = _sim_jit(c)
+        w_s = jnp.ones(N) * 1e-3
+        return (jnp.sum(w_s * U_o[:, 0] ** 2) * 1e-3
+                + solver.w_effort * jnp.sum((U_o[:, 1] / 8000.0) ** 2))
+    _probe("effort_cost (L2 only, no CW)", _effort_l2)
+
+    # 9. CW entropy — tested EVEN IF weight=0 to confirm xlogy VJP ─────────────────
+    def _cw_entropy_term(c):
+        U_o, _, _, _, _ = _sim_jit(c)
+        def _ent(sig):
+            leaves = solver._wpd_full_tree(sig, max_level=solver._cw_max_level)
+            ls     = jnp.stack(leaves, axis=0)
+            return jnp.sum(jax.vmap(solver._shannon_entropy)(ls))
+        return _ent(U_o[:, 0]) + _ent(U_o[:, 1])
+    _probe("cw_entropy (value only, weight=0)", _cw_entropy_term)
+
+    # 10. margin_penalty ──────────────────────────────────────────────────────────
+    def _margin(c):
+        U_o, xt, _, _, _ = _sim_jit(c)
+        lf    = solver.vp.get('lf', 0.8525)
+        vx    = xt[:, _VX]
+        vy    = xt[:, _VY]
+        delta = U_o[:, 0]
+        wz_s  = jnp.diff(xt[:, _YAW], prepend=x0[_YAW]) / solver.dt_control
+        ac    = delta - (vy + lf * wz_s) / jnp.maximum(vx, 1.0)
+        alpha_peak = jnp.array(0.13)
+        margin = alpha_peak - jnp.sqrt(ac ** 2 + 1e-8)
+        return 5.0 * jnp.sum(stable_softplus((0.20 * alpha_peak - margin) * 20.0))
+    _probe("margin_penalty", _margin)
+
+    # 11. v_min_cost ──────────────────────────────────────────────────────────────
+    _probe("v_min_cost", lambda c: (
+        lambda xt: 15.0 * jnp.mean(stable_softplus(3.0 - xt[:, _VX]) ** 2)
+    )(_sim_jit(c)[1]))
+
+    # 12. coeff_reg (from _obj wrapper) ───────────────────────────────────────────
+    _probe("coeff_reg (5e-5‖c−wc_kin‖²)", lambda c:
+        5e-5 * jnp.sum((jnp.clip(c.reshape(N, 2), -25000., 25000.) - wc_kin) ** 2))
+
+    print("  " + "─" * 82)
+    # 13. Full loss (assembled) ────────────────────────────────────────────────────
+    _probe("FULL _loss_fn (assembled)", lambda c: solver._loss_fn(
+        c.reshape(N, 2), x0, setup_params,
+        tk, tx, ty, tpsi, twl, twr,
+        jnp.ones(N) * 0.02, jnp.ones(N) * 1e-3, jnp.ones(N) * 5e-5,
+        jnp.zeros(N), jnp.array(0.1), jnp.array(0.13),
+    ))
+
+    # ─────────────────────────────────────────────────────────────────────────────
+    # §3i  Shannon entropy / xlogy VJP direct probe
+    #      Tests _shannon_entropy gradient at each WPD leaf from the warm-start
+    #      trajectory, and probes jax.scipy.special.xlogy's VJP at the p→0 boundary.
+    # ─────────────────────────────────────────────────────────────────────────────
+    print("\n" + "─" * 60)
+    print("  §3i  Shannon entropy / xlogy VJP probe")
+    print("─" * 60)
+
+    U_ws_sim, _, _, _, _ = _sim_jit(opt_coeffs)
+
+    print(f"\n  WPD leaf gradient check (warm-start U[:,0] and U[:,1]):")
+    print(f"  {'leaf':>5}  {'ch':>3}  {'min_val':>9}  {'max_val':>9}  "
+          f"{'all_zero':>8}  {'‖∇H‖':>12}  {'finite':>8}")
+    for ch_idx, sig in [(0, U_ws_sim[:, 0]), (1, U_ws_sim[:, 1])]:
+        leaves = solver._wpd_full_tree(sig, max_level=solver._cw_max_level)
+        for i, leaf in enumerate(leaves):
+            try:
+                g  = jax.grad(solver._shannon_entropy)(leaf)
+                fg = bool(jnp.all(jnp.isfinite(g)))
+                gn = float(jnp.linalg.norm(g)) if fg else float('nan')
+                all_zero = bool(jnp.all(leaf == 0.0))
+                flag = "  ← NaN!" if not fg else ""
+                print(f"  {i:>5d}  {ch_idx:>3d}  {float(jnp.min(leaf)):>9.4f}  "
+                      f"{float(jnp.max(leaf)):>9.4f}  {str(all_zero):>8}  "
+                      f"{gn:>12.4e}  {str(fg):>8}{flag}")
+            except Exception as exc:
+                print(f"  leaf {i} ch {ch_idx}: EXCEPTION: {exc}")
+
+    print(f"\n  xlogy VJP at boundary values (p=0 is the critical case):")
+    print(f"  {'p_val':>12}  {'xlogy(p,p+ε)':>14}  {'d/dp':>14}  {'finite':>8}")
+    for p_val in [0.0, 1e-45, 1e-30, 1e-15, 1e-7, 0.01, 0.5, 1.0]:
+        p_t = jnp.array(p_val, dtype=jnp.float32)
+        try:
+            val = float(jax.scipy.special.xlogy(p_t, p_t + jnp.array(1e-30)))
+            g   = float(jax.grad(lambda p: jax.scipy.special.xlogy(p, p + jnp.array(1e-30)))(p_t))
+            print(f"  {p_val:>12.2e}  {val:>14.6f}  {g:>14.6f}  {str(np.isfinite(g)):>8}")
+        except Exception as exc:
+            print(f"  {p_val:>12.2e}  EXCEPTION: {exc}")
+
+    # Also check: does 0.0 * NaN = NaN in JAX grad context?
+    print(f"\n  Confirming 0.0 × NaN_grad = NaN (JAX IEEE-754 VJP behaviour):")
+    def _zero_times_nan_grad(x):
+        # Manufacture a function with NaN gradient via log(0)
+        bad = jnp.log(x)          # grad = 1/x → ∞ at x=0, NaN in float32
+        return 0.0 * bad           # forward value = 0 (finite), backward = 0*NaN
+
+    try:
+        val = float(_zero_times_nan_grad(jnp.array(0.0)))
+        g   = float(jax.grad(_zero_times_nan_grad)(jnp.array(0.0)))
+        print(f"  val = {val}  grad = {g}  (expected: val=0, grad=NaN)")
+    except Exception as exc:
+        print(f"  EXCEPTION: {exc}")
+
+    # ─────────────────────────────────────────────────────────────────────────────
+    # §3j  Warm-start quality and open-loop trajectory gap analysis
+    #      Answers: why does n reach 8.71m in the open-loop trajectory?
+    # ─────────────────────────────────────────────────────────────────────────────
+    print("\n" + "─" * 60)
+    print("  §3j  Warm-start quality and trajectory gap analysis")
+    print("─" * 60)
+
+    # ── 3j.1: Control distribution of U_warm
+    print(f"\n  U_warm control distribution (steer=ch0, force=ch1):")
+    print(f"  {'channel':>10}  {'min':>10}  {'max':>10}  {'mean':>10}  {'std':>10}  {'nonzero':>8}")
+    for ch, name in [(0, 'steer [rad]'), (1, 'force [N]')]:
+        col = np.array(U_warm[:, ch])
+        nz  = int(np.sum(np.abs(col) > 1e-3))
+        print(f"  {name:>10}  {col.min():>10.4f}  {col.max():>10.4f}  "
+              f"{col.mean():>10.4f}  {col.std():>10.4f}  {nz:>8d}/{N}")
+
+    # ── 3j.2: DWT→IDWT round-trip fidelity on U_warm
+    U_recon = np.array(solver._db4_idwt(wc_kin))
+    print(f"\n  DWT→IDWT round-trip error on U_warm:")
+    for ch, name in [(0, 'steer'), (1, 'force')]:
+        err = np.abs(np.array(U_warm[:, ch]) - U_recon[:, ch])
+        print(f"  {name}: max|err|={err.max():.4f}  mean|err|={err.mean():.4f}  "
+              f"max_original={np.abs(np.array(U_warm[:, ch])).max():.4f}")
+
+    # ── 3j.3: Step-by-step n comparison: P-ctrl forced vs open-loop optimizer
+    print(f"\n  Per-step lateral deviation: P-ctrl (forced) vs open-loop (optimizer):")
+    print(f"  {'step':>5}  {'n_Pctrl(forced)':>16}  {'n_openloop':>12}  "
+          f"{'Δn':>8}  {'vx_WS':>7}  {'vx_OL':>7}  {'steer_WS':>10}  {'force_WS':>10}")
+    print("  " + "─" * 85)
+
+    # Replay U_warm open-loop WITHOUT position forcing to see natural drift
+    x_replay = x0
+    n_replay  = []
+    for step in range(N):
+        u_raw  = U_warm[step]
+        steer  = float(jnp.clip(u_raw[0], -0.45, 0.45))
+        force  = float(jnp.clip(u_raw[1], -8000., 8000.))
+        T_r    = max(force, 0.) * _R_w / 2.
+        F_b    = max(-force, 0.)
+        u6     = jnp.array([steer, 0., 0., T_r, T_r, F_b])
+        dt_sub = solver.dt_control / solver.n_substeps
+        for _ in range(solver.n_substeps):
+            x_replay = solver._vehicle.simulate_step(
+                x_replay, u6, setup_params, dt=dt_sub, n_substeps=1)
+        dx = float(x_replay[0]) - float(tx[step])
+        dy = float(x_replay[1]) - float(ty[step])
+        psi_r = float(tpsi[step])
+        n_r   = -np.sin(psi_r) * dx + np.cos(psi_r) * dy
+        n_replay.append(n_r)
+
+    n_replay = np.array(n_replay)
+    # "n_Pctrl" would be ~0 since warm-start forces x/y — show the gap
+    # Print every 4th step + first-divergence steps
+    first_off_replay = next((i for i, n in enumerate(n_replay) if abs(n) > 3.5), N)
+    probe = sorted(set([0, 1, 2, 4, 8, 12, 16, 32, 48, 63,
+                         first_off_replay - 1, first_off_replay,
+                         first_off_replay + 1]))
+    for s in probe:
+        if 0 <= s < N:
+            print(f"  {s:>5d}  {'~0.0 (forced)':>16}  {n_arr[s]:>12.3f}  "
+                  f"{n_replay[s]-n_arr[s]:>8.3f}  "
+                  f"{float(U_warm[s, 0]):>7.3f}  "     # vx not available from forced run easily
+                  f"{float(U_warm[s, 1]):>10.1f}")
+
+    print(f"\n  Open-loop replay (U_warm without position forcing):")
+    print(f"  First |n| > 3.5m at step {first_off_replay} (|n|={abs(n_replay[first_off_replay]):.2f}m "
+          f"if first_off_replay < N else '(never)')")
+    print(f"  n_replay max={n_replay.max():.2f}  mean={n_replay.mean():.2f}  "
+          f"  (same controls, physics free to drift)")
+
+    # ── 3j.4: Friction circle status of warm-start trajectory
+    vx_ws = np.array(x_traj[:, _VX])   # from §3a U_opt
+    vx_prev_ws = np.concatenate([[float(x0[_VX])], vx_ws[:-1]])
+    a_lat = vx_ws ** 2 * np.abs(np.array(tk))
+    a_lon = np.abs(vx_ws - vx_prev_ws) / solver.dt_control
+    g_ws_per_step = np.sqrt(a_lat ** 2 + a_lon ** 2) / (solver.mu_friction * 9.81)
+
+    print(f"\n  Friction circle of warm-start (open-loop) trajectory:")
+    print(f"  steps violating μ=1.4: {int(np.sum(g_ws_per_step > 1.0))}/{N}")
+    print(f"  g_combined: min={g_ws_per_step.min():.3f}  max={g_ws_per_step.max():.3f}  "
+          f"mean={g_ws_per_step.mean():.3f}")
+    print(f"  Steps with g > 1.0: {np.where(g_ws_per_step > 1.0)[0].tolist()}")
+    print(f"  Steps with g > 0.9: {int(np.sum(g_ws_per_step > 0.9))}/{N}")
+
+    # ─────────────────────────────────────────────────────────────────────────────
+    # §3k  Gradient scale audit
+    #      Shows the relative gradient magnitude of each cost term.
+    #      If any term is 1000× larger than the others it dominates and
+    #      forces the optimizer to satisfy only that constraint.
+    # ─────────────────────────────────────────────────────────────────────────────
+    print("\n" + "─" * 60)
+    print("  §3k  Gradient scale audit (relative magnitudes)")
+    print("─" * 60)
+    print(f"\n  Reference: ‖∇(time_cost)‖ = baseline\n")
+    print(f"  {'Term':<28}  {'‖∇‖':>14}  {'ratio to time':>16}  {'dominates?':>12}")
+    print("  " + "─" * 72)
+
+    # Collect finite gradients from §3h re-runs (recompute for table)
+    _scale_terms = [
+        ("time_cost",        lambda c: -jnp.sum(stable_softplus(_sim_jit(c)[4] * 20.) / 20. + 1e-2) * solver.dt_control),
+        ("barrier_cost",     _barrier),
+        ("center_cost",      lambda c: solver.w_center * jnp.sum(_sim_jit(c)[2] ** 2)),
+        ("heading_cost",     _heading),
+        ("al_friction",      _al_fric),
+        ("l1_detail_cost",   _l1detail),
+        ("effort_L2",        _effort_l2),
+        ("margin_penalty",   _margin),
+        ("v_min_cost",       lambda c: 15.0 * jnp.mean(stable_softplus(3.0 - _sim_jit(c)[1][:, _VX]) ** 2)),
+        ("coeff_reg",        lambda c: 5e-5 * jnp.sum((jnp.clip(c.reshape(N,2),-25000.,25000.) - wc_kin)**2)),
+    ]
+    gnorms = {}
+    for lbl, fn in _scale_terms:
+        try:
+            _, g = jax.jit(jax.value_and_grad(fn))(opt_coeffs)
+            if bool(jnp.all(jnp.isfinite(g))):
+                gnorms[lbl] = float(jnp.linalg.norm(g))
+        except Exception:
+            pass
+
+    ref = gnorms.get("time_cost", 1.0)
+    for lbl, fn in _scale_terms:
+        gn = gnorms.get(lbl, None)
+        if gn is not None:
+            ratio = gn / max(ref, 1e-30)
+            dom   = "*** DOMINANT ***" if ratio > 100 else ("large" if ratio > 10 else "ok")
+            print(f"  {lbl:<28}  {gn:>14.4e}  {ratio:>16.2f}x  {dom:>12}")
+        else:
+            print(f"  {lbl:<28}  {'NaN or failed':>14}  {'—':>16}  {'—':>12}")
+
+    # ─────────────────────────────────────────────────────────────────────────────
+    # §4  Full WMPC solve — enhanced diagnostics
+    # ─────────────────────────────────────────────────────────────────────────────
+    print("\n\n" + "─" * 60)
+    print("  §4 FULL WMPC SOLVE (enhanced diagnostics)")
+    print("─" * 60)
+
+    import time as _time
+
+    solver2 = DiffWMPCSolver(N_horizon=64, mu_friction=1.40, V_limit=30.0)
+
+    # ── §4a: Instrument the objective call to record every evaluation ─────────────
+    _call_log = []   # list of dicts, one per scipy_obj call
+
+    _orig_val_grad = solver2._val_grad_fn
+
+    def _instrumented_val_grad(flat_c, *args, **kwargs):
+        t0  = _time.perf_counter()
+        res = _orig_val_grad(flat_c, *args, **kwargs)
+        dt  = _time.perf_counter() - t0
+        val, g = res
+        _call_log.append({
+            'loss':       float(val)       if jnp.isfinite(val) else float('nan'),
+            'gnorm':      float(jnp.linalg.norm(g)) if jnp.all(jnp.isfinite(g)) else float('nan'),
+            'finite_val': bool(jnp.isfinite(val)),
+            'finite_g':   bool(jnp.all(jnp.isfinite(g))),
+            'dt_s':       dt,
+        })
+        return res
+
+    solver2._val_grad_fn = _instrumented_val_grad
+
+    result = solver2.solve(
+        track_s=np.array(track_s), track_k=np.array(track_k),
+        track_x=np.array(track_x), track_y=np.array(track_y),
+        track_psi=np.array(track_psi),
+        track_w_left=np.array(track_w_left),
+        track_w_right=np.array(track_w_right),
+    )
+
+    # ── §4b: Per-call log summary ──────────────────────────────────────────────────
+    print(f"\n[§4b] Objective call log ({len(_call_log)} total calls):")
+    print(f"  {'call':>5}  {'loss':>14}  {'‖∇f‖':>14}  {'fin_v':>7}  {'fin_g':>7}  {'dt_ms':>8}")
+    print("  " + "─" * 65)
+    for i, rec in enumerate(_call_log):
+        fv = rec['finite_val']; fg = rec['finite_g']
+        flag = " NaN" if not (fv and fg) else ""
+        print(f"  {i:>5d}  {rec['loss']:>14.4e}  {rec['gnorm']:>14.4e}  "
+              f"{str(fv):>7}  {str(fg):>7}  {rec['dt_s']*1000:>8.1f}{flag}")
+
+    nan_calls = sum(1 for r in _call_log if not (r['finite_val'] and r['finite_g']))
+    finite_calls = len(_call_log) - nan_calls
+    if finite_calls > 0:
+        avg_finite_loss  = np.mean([r['loss']  for r in _call_log if r['finite_val']])
+        min_finite_loss  = np.min( [r['loss']  for r in _call_log if r['finite_val']])
+        avg_gnorm        = np.mean([r['gnorm'] for r in _call_log if r['finite_g']])
+        print(f"\n  Summary: {finite_calls} finite / {nan_calls} NaN calls")
+        print(f"  Loss:  min={min_finite_loss:.4e}  mean={avg_finite_loss:.4e}")
+        print(f"  ‖∇f‖:  mean={avg_gnorm:.4e}")
+        print(f"  Avg eval time: {np.mean([r['dt_s'] for r in _call_log])*1000:.1f} ms")
+
+    # ── §4c: Final result assertions ───────────────────────────────────────────────
+    print(f"\n[§4c] Final result:")
+    mean_v   = result.get("v", np.array([0.])).mean()
+    max_n    = np.abs(result.get("n", np.array([0.]))).max()
+    max_g    = result.get("g_combined_max", float('nan'))
+    pct_fric = result.get("friction_compliance_pct", 0.)
+    lap_t    = result.get("time", float('nan'))
+    steer    = np.array(result.get("delta", [0.]))
+    steer_rate = float(np.max(np.abs(np.diff(steer)) / solver.dt_control)) if len(steer) > 1 else 0.
+
+    print(f"  mean_v={mean_v:.2f} m/s  max_n={max_n:.2f} m  "
+          f"max_g={max_g:.3f}  friction_compliance={pct_fric:.1f}%  lap={lap_t:.1f}s")
+    print(f"  steer_rate_max={steer_rate:.2f} rad/s")
+    print()
+    tests = [
+        ("Speed in [13.0,17.5] m/s",   13.0 <= mean_v <= 17.5,    f"{mean_v:.2f}"),
+        ("AL friction (max_g < 1.05)", max_g < 1.05,               f"max_g={max_g:.3f}"),
+        ("Friction compliance > 95%",  pct_fric >= 95.0,           f"{pct_fric:.1f}%"),
+        ("Boundaries (max_n < 3.5m)",   max_n < 3.5,               f"max_n={max_n:.2f}m"),
+        ("Forward progress (lap<30s)",  lap_t < 30.0,              f"{lap_t:.1f}s"),
+        ("Steer smoothness (<3 rad/s)", steer_rate < 3.0,          f"{steer_rate:.2f} rad/s"),
+    ]
+    for label, passed, info in tests:
+        tag = "PASS" if passed else "FAIL"
+        print(f"  [{tag}] {label}: {info}")
 
 
 def test_friction_circle():
