@@ -105,14 +105,20 @@ _SG_MASK_NP[0:3]   = 1.0   # X, Y, Z
 # roll/pitch not in any cost
 _SG_MASK_NP[3:6]   = 1.0   # phi, theta, psi
 
+_SG_MASK_NP[6:14]  = 1.0   # q[6:13]  suspension DOFs (discrete oscillator |λ|>1)
+
 # Momenta corresponding to stopped positions — their Jacobian chains
 # are equally explosive
 _SG_MASK_NP[17:20] = 1.0   # p_phi, p_theta, p_psi (angular momenta)
+
+_SG_MASK_NP[20:28] = 1.0   # p[20:27] suspension momenta (same oscillator)
 
 # Thermal states — 28 nodes [28:56]; slow ODE, gradient contribution
 # is negligible at the 1.5s horizon but their Jacobian rows accumulate
 # multiplicatively with the position chain
 _SG_MASK_NP[28:56] = 1.0   # T_tire (all 4×7 nodes)
+
+_SG_MASK_NP[56:72] = 1.0   # slip[0:15] tire slip (stiff relaxation + force feedback)
 
 # Damper auxiliary states [72:84] — hysteresis states, not in cost
 _SG_MASK_NP[72:84] = 1.0
@@ -742,10 +748,8 @@ class DiffWMPCSolver:
         step_data  = (U_time, track_k, track_x, track_y, track_psi)
 
         # CRITICAL RAM FIX: Checkpoint the horizon step
-        scan_fn_ckpt = jax.checkpoint(scan_fn)
-
         _, (x_traj, n_traj, var_n_traj, s_dot_traj) = jax.lax.scan(
-            scan_fn_ckpt, init_carry, step_data
+            scan_fn, init_carry, step_data
         )
         return U_time, x_traj, n_traj, var_n_traj, s_dot_traj
 
@@ -853,8 +857,8 @@ class DiffWMPCSolver:
         # This gradient is PROPORTIONAL to the violation magnitude — larger
         # violations produce stronger restoring forces everywhere.
         # ── 3. Track limits — smooth quadratic violation penalty ─────────────
-        sp_sharp    = 20.0   
-        w_barrier   = 8000.0   
+        sp_sharp    = 10.0    # was 20.0
+        w_barrier   = 2000.0  # was 8000.0  
         tube_radius = self.kappa_safe * jnp.sqrt(jnp.maximum(n_var, 1e-4))
 
         raw_left  = ( n_mean + tube_radius - track_w_left ) * sp_sharp
