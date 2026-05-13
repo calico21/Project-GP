@@ -1,0 +1,585 @@
+
+============================================================
+TEST 3: WMPC CIRCULAR TRACK OPTIMIZATION
+============================================================
+[VehicleDynamics] H_net train scale (diagnostic): 4977.7896 J  [NOT applied to architecture]
+[VehicleDynamics] Loaded h_net.bytes
+[VehicleDynamics] Loaded r_net.bytes
+   [DEBUG §1] 200-step rollout clean. Final vx=15.865 m/s
+[VehicleDynamics] H_net train scale (diagnostic): 4977.7896 J  [NOT applied to architecture]
+[VehicleDynamics] Loaded h_net.bytes
+[VehicleDynamics] Loaded r_net.bytes
+[PASS] DWT round-trip: max|err|=0.0000
+[PASS] CW entropy: 1.775 vs 3.836+0.5
+[PASS] WPD tree shape
+
+────────────────────────────────────────────────────────────
+  §3 NaN BACKWARD-PASS SURGERY
+────────────────────────────────────────────────────────────
+[VehicleDynamics] H_net train scale (diagnostic): 4977.7896 J  [NOT applied to architecture]
+[VehicleDynamics] Loaded h_net.bytes
+[VehicleDynamics] Loaded r_net.bytes
+
+[§3a] Open-loop trajectory breakdown (when does n diverge?):
+  First off-track step: 14  (|n|=3.57m)
+
+   step      vx      vy      wz       n    roll   pitch    z_fl    z_fr
+      0   15.86   0.105  -3.499   -0.01    0.04°    0.03°    17.6     8.8
+      1   15.31   0.162  -6.127   -0.20   -0.40°   -0.05°    20.3     8.1
+      2   15.09   0.236  -6.039   -0.41   -0.46°    0.00°    20.2     7.3
+      4   14.58   0.459  -5.834   -0.59   -0.47°   -0.01°    20.0     7.2
+     13   13.11   2.622  -5.244    2.79   -0.48°   -0.02°    18.4     7.2
+     14   13.00   2.601  -5.202    3.57   -0.48°   -0.01°    18.4     7.1
+     15   12.91   2.581  -5.163    4.40   -0.48°   -0.01°    18.4     7.1
+     16   12.83   2.566  -5.132    5.28   -0.48°   -0.01°    18.3     7.1
+     32   12.30   2.460  -4.919   21.09   -0.48°    0.01°    18.3     7.1
+     63   12.34   2.469  -4.937   12.06   -0.47°    0.01°    18.3     7.1
+
+  Suspension extremes (mm):  z_fl∈[17.6,20.3]  z_rl∈[18.1,21.5]
+  Roll ∈ [-0.5°, 0.0°]  |vy|_max=2.64m/s  |wz|_max=6.13rad/s
+
+[§3b] simulate_step gradient at trajectory states (bypass scan):
+   step     |n|  grad_finite          ‖∇‖         NaN_idx (first 5)
+      0    0.01         True    3.771e+03                      none
+      1    0.20         True    1.146e+04                      none
+      2    0.41         True    1.170e+04                      none
+      4    0.59         True    1.168e+04                      none
+     13    2.79         True    1.189e+04                      none
+     14    3.57         True    1.187e+04                      none
+     15    4.40         True    1.182e+04                      none
+     16    5.28         True    1.184e+04                      none
+     32   21.09         True    1.175e+04                      none
+     63   12.06         True    1.165e+04                      none
+
+[§3c] Artificial lateral offset sweep (find NaN threshold in n):
+    n_offset  grad_finite          ‖∇‖
+         0.0         True    5.914e+03
+         1.0         True    5.915e+03
+         3.5         True    5.916e+03
+         5.0         True    5.916e+03
+         8.0         True    5.917e+03
+        12.0         True    5.918e+03
+        18.0         True    5.919e+03
+        24.0         True    5.920e+03
+
+[§3d] Eager mode NaN trace (disable_jit + debug_nans at n=24m):
+  Forward at n=24m: 2407.1211  finite=True
+  Backward at n=24m: finite=True  ‖∇‖=5.9195e+03
+
+[§3e] H_net / R_net gradient at extreme states:
+  H_net isolation skipped: 'DifferentiableMultiBodyVehicle' object has no attribute '_h_net'
+
+[§3f] Scan backward pass — binary search with state extraction:
+  k= 1: grad_ok=True  NaN=   0  n@k= -0.01m  vx@k=15.86m/s  z_fl=17.6mm
+  k= 2: grad_ok=True  NaN=   0  n@k= -0.20m  vx@k=15.31m/s  z_fl=20.3mm
+  k= 4: grad_ok=True  NaN=   0  n@k= -0.52m  vx@k=14.78m/s  z_fl=20.2mm
+  k= 8: grad_ok=True  NaN=   0  n@k= -0.24m  vx@k=13.97m/s  z_fl=19.4mm
+  k=16: grad_ok=True  NaN=   0  n@k=  4.40m  vx@k=12.91m/s  z_fl=18.4mm
+  k=24: grad_ok=True  NaN=   0  n@k= 12.33m  vx@k=12.45m/s  z_fl=18.3mm
+  k=32: grad_ok=True  NaN=   0  n@k= 20.26m  vx@k=12.30m/s  z_fl=18.3mm
+  k=48: grad_ok=True  NaN=   0  n@k= 25.05m  vx@k=12.30m/s  z_fl=18.3mm
+  k=64: grad_ok=True  NaN=   0  n@k= 12.06m  vx@k=12.34m/s  z_fl=18.3mm
+  → Gradient finite through all step counts — NaN is in cost math, not physics scan
+
+[§3g] Finite-difference gradient (16 dims, eps=1e-3):
+  FD finite: 16/16  values: [ 1.2532e+07  0.0000e+00  2.5240e+06  0.0000e+00  1.6000e+04  0.0000e+00
+ -1.1600e+05  0.0000e+00  4.0000e+04  0.0000e+00  3.2000e+04  0.0000e+00
+ -6.6320e+06  0.0000e+00  3.9860e+07  0.0000e+00]
+  → TRUE gradient is finite: NaN is a pure AD/backward-pass artifact
+
+────────────────────────────────────────────────────────────
+  §3h  Per-term AD gradient decomposition
+────────────────────────────────────────────────────────────
+  Each term tested independently. 'NaN GRAD ←' identifies the culprit.
+
+  Term                                       Value             ‖∇‖  fin_val  fin_grad
+  ──────────────────────────────────────────────────────────────────────────────────
+  time_cost                            -4.1360e+01             nan     True     False  ← NaN GRAD
+  barrier_cost                          1.1319e+08             nan     True     False  ← NaN GRAD
+  center_cost                           9.3637e+01             nan     True     False  ← NaN GRAD
+  heading_cost                          3.2421e+00             nan     True     False  ← NaN GRAD
+  term_cost                             0.0000e+00      0.0000e+00     True      True
+  al_friction (λ=0, ρ=0.1)              6.7015e-03      1.0689e-01     True      True
+  l1_detail_cost                        9.5299e-04      9.1698e-06     True      True
+  effort_cost (L2 only, no CW)          6.8245e-06      3.7371e-06     True      True
+  cw_entropy (value only, weight=0)      9.8805e+00      7.0707e+01     True      True
+  margin_penalty                        1.5141e+02             nan     True     False  ← NaN GRAD
+  v_min_cost                            8.8107e-08             nan     True     False  ← NaN GRAD
+  coeff_reg (5e-5‖c−wc_kin‖²)           0.0000e+00      0.0000e+00     True      True
+  ──────────────────────────────────────────────────────────────────────────────────
+  FULL _loss_fn (assembled)             1.1323e+08             nan     True     False  ← NaN GRAD
+
+────────────────────────────────────────────────────────────
+  §3h-A  _simulate_trajectory per-output gradient
+────────────────────────────────────────────────────────────
+                                    output           value             ‖∇‖  fin_grad
+  ────────────────────────────────────────────────────────────────────────────────
+                              U_opt  (N×2)      1.6441e+04      1.1314e+01      True
+                            x_traj (N×108)      1.9543e+05             nan     False  ← NaN GRAD
+                               n_traj (N,)      9.1488e+02             nan     False  ← NaN GRAD
+                               var_n  (N,)      3.5624e+00             nan     False  ← NaN GRAD
+                               s_dot  (N,)      8.2656e+02             nan     False  ← NaN GRAD
+
+  NaN-gradient outputs: indices [1, 2, 3, 4]
+
+────────────────────────────────────────────────────────────
+  §3h-B  Per-timestep gradient for NaN-gradient outputs (vmap)
+────────────────────────────────────────────────────────────
+
+  Output 1 = x_traj(sum):
+    Full sum: val=195430.12  grad_finite=False
+    NaN coeff dims (first 16): [0, 1, 2, 3, 4, 5, 6, 7, 12, 13, 14, 15, 16, 17, 18, 19]
+    NaN coeff dims (total): 78/128
+
+    Binary search: first timestep where x_traj grad NaNs...
+       k   grad_finite    NaN_coeff_dims
+       1          True                 0
+       2          True                 0
+       4          True                 0
+       8          True                 0
+      16          True                 0
+      24          True                 0
+      32         False                22
+
+    → NaN first appears when summing up to k=32 steps
+      (last clean: k=24)
+      n@k=20.26m  vx@k=12.30m/s
+
+    Fine search between k=24 and k=32:
+    k=24: grad_ok=True  NaN_dims=0  first_NaN_coeffs=[]
+    k=25: grad_ok=True  NaN_dims=0  first_NaN_coeffs=[]
+    k=26: grad_ok=True  NaN_dims=0  first_NaN_coeffs=[]
+    k=27: grad_ok=True  NaN_dims=0  first_NaN_coeffs=[]
+    k=28: grad_ok=True  NaN_dims=0  first_NaN_coeffs=[]
+    k=29: grad_ok=True  NaN_dims=0  first_NaN_coeffs=[]
+    k=30: grad_ok=True  NaN_dims=0  first_NaN_coeffs=[]
+    k=31: grad_ok=False  NaN_dims=11  first_NaN_coeffs=[1, 13, 15, 17, 29, 31, 33, 61]
+    *** EXACT TRANSITION at k=31 ***
+        n=19.379m  vx=12.300m/s  wz=-4.9200rad/s
+
+  Output 2 = n_traj:
+    Binary search over k steps:
+       k   grad_finite    NaN_coeff_dims
+       1          True                 0
+       2          True                 0
+       4          True                 0
+       8          True                 0
+      16          True                 0
+      24          True                 0
+      32          True                 0
+      48         False                30
+    → First NaN at k=48  (last clean: k=32)
+
+  Output 3 = var_n:
+    Binary search over k steps:
+       k   grad_finite    NaN_coeff_dims
+       1          True                 0
+       2          True                 0
+       4          True                 0
+       8          True                 0
+      16          True                 0
+      24          True                 0
+      32          True                 0
+      48         False                29
+    → First NaN at k=48  (last clean: k=32)
+
+  Output 4 = s_dot:
+    Binary search over k steps:
+       k   grad_finite    NaN_coeff_dims
+       1          True                 0
+       2          True                 0
+       4          True                 0
+       8          True                 0
+      16          True                 0
+      24          True                 0
+      32          True                 0
+      48         False                38
+    → First NaN at k=48  (last clean: k=32)
+
+────────────────────────────────────────────────────────────
+  §3h-C  x_traj per-state-dimension gradient (fast jacobian)
+────────────────────────────────────────────────────────────
+  Computing jacobian of x_traj column sums w.r.t. coeffs (single JIT)...
+
+   dim            name       val_sum           ‖∇‖  fin  flag
+  ──────────────────────────────────────────────────────────
+     0               X     2.878e+02           nan    F   NaN
+     1               Y     5.239e+02           nan    F   NaN
+     2               Z     1.943e+01           nan    F   NaN
+     3            roll    -5.196e-01           nan    F   NaN
+     4           pitch     2.530e-04           nan    F   NaN
+     5             yaw     1.549e+02           nan    F   NaN
+     6            q[6]     1.185e+00           nan    F   NaN
+     7            q[7]     4.588e-01           nan    F   NaN
+     8            q[8]     1.359e+00           nan    F   NaN
+     9            q[9]     4.567e-01           nan    F   NaN
+    10           q[10]     7.603e+03           nan    F   NaN
+    11           q[11]     7.482e+03           nan    F   NaN
+    12           q[12]     7.779e+03           nan    F   NaN
+    13           q[13]     7.557e+03           nan    F   NaN
+    14              vx     8.179e+02           nan    F   NaN
+    15              vy     1.401e+02           nan    F   NaN
+    16              vz     8.217e-02           nan    F   NaN
+    17               p    -3.894e-01           nan    F   NaN
+    18           q_dot     7.743e-02           nan    F   NaN
+    19               r    -3.243e+02           nan    F   NaN
+    20           p[20]     2.925e-01           nan    F   NaN
+    21           p[21]     3.695e-01           nan    F   NaN
+    22           p[22]     3.334e-01           nan    F   NaN
+    23           p[23]    -6.668e-01           nan    F   NaN
+    24           p[24]     5.142e+03           nan    F   NaN
+    25           p[25]     5.018e+03           nan    F   NaN
+    26           p[26]     5.298e+03           nan    F   NaN
+    27           p[27]     5.108e+03           nan    F   NaN
+    28       T_tire[0]     6.330e+03           nan    F   NaN
+    29       T_tire[1]     6.529e+03           nan    F   NaN
+    30       T_tire[2]     6.728e+03           nan    F   NaN
+    31       T_tire[3]     5.120e+03           nan    F   NaN
+    32       T_tire[4]     4.801e+03           nan    F   NaN
+    33       T_tire[5]     2.054e+03           nan    F   NaN
+    34       T_tire[6]     2.530e+03           nan    F   NaN
+    35       T_tire[7]     6.103e+03           nan    F   NaN
+    36       T_tire[8]     6.016e+03           nan    F   NaN
+    37       T_tire[9]     5.930e+03           nan    F   NaN
+    38      T_tire[10]     5.120e+03           nan    F   NaN
+    39      T_tire[11]     4.800e+03           nan    F   NaN
+    40      T_tire[12]     2.054e+03           nan    F   NaN
+    41      T_tire[13]     2.530e+03           nan    F   NaN
+    42      T_tire[14]     6.443e+03           nan    F   NaN
+    43      T_tire[15]     6.609e+03           nan    F   NaN
+    44      T_tire[16]     6.775e+03           nan    F   NaN
+    45      T_tire[17]     5.120e+03           nan    F   NaN
+    46      T_tire[18]     4.802e+03           nan    F   NaN
+    47      T_tire[19]     2.054e+03           nan    F   NaN
+    48      T_tire[20]     2.530e+03           nan    F   NaN
+    49      T_tire[21]     5.940e+03           nan    F   NaN
+    50      T_tire[22]     5.876e+03           nan    F   NaN
+    51      T_tire[23]     5.812e+03           nan    F   NaN
+    52      T_tire[24]     5.120e+03           nan    F   NaN
+    53      T_tire[25]     4.800e+03           nan    F   NaN
+    54      T_tire[26]     2.054e+03           nan    F   NaN
+    55      T_tire[27]     2.530e+03           nan    F   NaN
+    56         slip[0]     3.164e+01           nan    F   NaN
+    57         slip[1]     1.014e+01           nan    F   NaN
+    58         slip[2]    -3.803e+00           nan    F   NaN
+    59         slip[3]    -3.795e+01           nan    F   NaN
+    60         slip[4]     4.513e+01           nan    F   NaN
+    61         slip[5]     3.194e+01           nan    F   NaN
+    62         slip[6]     5.148e+01           nan    F   NaN
+    63         slip[7]     1.029e+02           nan    F   NaN
+    64         slip[8]    -2.632e+01           nan    F   NaN
+    65         slip[9]    -5.793e+01           nan    F   NaN
+    66        slip[10]    -1.518e+00           nan    F   NaN
+    67        slip[11]    -3.613e+01           nan    F   NaN
+    68        slip[12]    -4.627e+01           nan    F   NaN
+    69        slip[13]    -1.489e+01           nan    F   NaN
+    70        slip[14]     7.728e+01           nan    F   NaN
+    71        slip[15]     1.342e+02           nan    F   NaN
+    72         damp[0]     6.160e+00           nan    F   NaN
+    73         damp[1]     5.595e+00           nan    F   NaN
+    74         damp[2]     2.535e+03           nan    F   NaN
+    75         damp[3]    -1.082e+01           nan    F   NaN
+    76         damp[4]    -1.579e+01           nan    F   NaN
+    77         damp[5]     2.535e+03           nan    F   NaN
+    78         damp[6]     1.866e+01           nan    F   NaN
+    79         damp[7]     3.219e+01           nan    F   NaN
+    80         damp[8]     2.535e+03           nan    F   NaN
+    81         damp[9]     2.028e-01           nan    F   NaN
+    82        damp[10]    -6.045e+00           nan    F   NaN
+    83        damp[11]     2.535e+03           nan    F   NaN
+    84         ekin[0]     3.609e-01           nan    F   NaN
+    85         ekin[1]     3.609e-01           nan    F   NaN
+    86         ekin[2]     3.609e-01           nan    F   NaN
+    87         ekin[3]     3.609e-01           nan    F   NaN
+    88         ekin[4]     3.609e-01           nan    F   NaN
+    89         ekin[5]     3.609e-01           nan    F   NaN
+    90         ekin[6]    -3.654e-01           nan    F   NaN
+    91         ekin[7]    -3.654e-01           nan    F   NaN
+    92         ekin[8]    -3.654e-01           nan    F   NaN
+    93         ekin[9]    -3.654e-01           nan    F   NaN
+    94        ekin[10]    -3.654e-01           nan    F   NaN
+    95        ekin[11]    -3.654e-01           nan    F   NaN
+    96        ekin[12]     6.957e-01           nan    F   NaN
+    97        ekin[13]     6.957e-01           nan    F   NaN
+    98        ekin[14]     6.957e-01           nan    F   NaN
+    99        ekin[15]     6.957e-01           nan    F   NaN
+   100        ekin[16]     6.957e-01           nan    F   NaN
+   101        ekin[17]     6.957e-01           nan    F   NaN
+   102        ekin[18]    -2.070e-01           nan    F   NaN
+   103        ekin[19]    -2.070e-01           nan    F   NaN
+   104        ekin[20]    -2.070e-01           nan    F   NaN
+   105        ekin[21]    -2.070e-01           nan    F   NaN
+   106        ekin[22]    -2.070e-01           nan    F   NaN
+   107        ekin[23]    -2.070e-01           nan    F   NaN
+
+  NaN-gradient state dims (108): [(0, 'X'), (1, 'Y'), (2, 'Z'), (3, 'roll'), (4, 'pitch'), (5, 'yaw'), (6, 'q[6]'), (7, 'q[7]'), (8, 'q[8]'), (9, 'q[9]'), (10, 'q[10]'), (11, 'q[11]'), (12, 'q[12]'), (13, 'q[13]'), (14, 'vx'), (15, 'vy'), (16, 'vz'), (17, 'p'), (18, 'q_dot'), (19, 'r'), (20, 'p[20]'), (21, 'p[21]'), (22, 'p[22]'), (23, 'p[23]'), (24, 'p[24]'), (25, 'p[25]'), (26, 'p[26]'), (27, 'p[27]'), (28, 'T_tire[0]'), (29, 'T_tire[1]'), (30, 'T_tire[2]'), (31, 'T_tire[3]'), (32, 'T_tire[4]'), (33, 'T_tire[5]'), (34, 'T_tire[6]'), (35, 'T_tire[7]'), (36, 'T_tire[8]'), (37, 'T_tire[9]'), (38, 'T_tire[10]'), (39, 'T_tire[11]'), (40, 'T_tire[12]'), (41, 'T_tire[13]'), (42, 'T_tire[14]'), (43, 'T_tire[15]'), (44, 'T_tire[16]'), (45, 'T_tire[17]'), (46, 'T_tire[18]'), (47, 'T_tire[19]'), (48, 'T_tire[20]'), (49, 'T_tire[21]'), (50, 'T_tire[22]'), (51, 'T_tire[23]'), (52, 'T_tire[24]'), (53, 'T_tire[25]'), (54, 'T_tire[26]'), (55, 'T_tire[27]'), (56, 'slip[0]'), (57, 'slip[1]'), (58, 'slip[2]'), (59, 'slip[3]'), (60, 'slip[4]'), (61, 'slip[5]'), (62, 'slip[6]'), (63, 'slip[7]'), (64, 'slip[8]'), (65, 'slip[9]'), (66, 'slip[10]'), (67, 'slip[11]'), (68, 'slip[12]'), (69, 'slip[13]'), (70, 'slip[14]'), (71, 'slip[15]'), (72, 'damp[0]'), (73, 'damp[1]'), (74, 'damp[2]'), (75, 'damp[3]'), (76, 'damp[4]'), (77, 'damp[5]'), (78, 'damp[6]'), (79, 'damp[7]'), (80, 'damp[8]'), (81, 'damp[9]'), (82, 'damp[10]'), (83, 'damp[11]'), (84, 'ekin[0]'), (85, 'ekin[1]'), (86, 'ekin[2]'), (87, 'ekin[3]'), (88, 'ekin[4]'), (89, 'ekin[5]'), (90, 'ekin[6]'), (91, 'ekin[7]'), (92, 'ekin[8]'), (93, 'ekin[9]'), (94, 'ekin[10]'), (95, 'ekin[11]'), (96, 'ekin[12]'), (97, 'ekin[13]'), (98, 'ekin[14]'), (99, 'ekin[15]'), (100, 'ekin[16]'), (101, 'ekin[17]'), (102, 'ekin[18]'), (103, 'ekin[19]'), (104, 'ekin[20]'), (105, 'ekin[21]'), (106, 'ekin[22]'), (107, 'ekin[23]')]
+  Finite-gradient state dims (0): []
+
+────────────────────────────────────────────────────────────
+  §3h-D  Operation decomposition: v_min_cost vs al_friction
+────────────────────────────────────────────────────────────
+                                          expression             ‖∇‖  fin
+  ──────────────────────────────────────────────────────────────────────
+                                       sum(xt[:,VX])             nan  False  ← NaN
+                                 sum(3.0 - xt[:,VX])             nan  False  ← NaN
+                           sum(stable_softplus(...))             nan  False  ← NaN
+                         sum(stable_softplus(...)^2)             nan  False  ← NaN
+                   mean(stable_softplus(...)^2) * 15             nan  False  ← NaN
+
+                       sum(xt[:,VX]) [same as above]             nan  False  ← NaN
+                                  vt^2 * |k| (a_lat)             nan  False  ← NaN
+                              ((vt-vp)/dt)^2 (a_lon)             nan  False  ← NaN
+                g_c = (a_lat^2+a_lon^2)/(mu*g)^2 - 1             nan  False  ← NaN
+                          max(g_c, 0)^2 (AL penalty)      0.0000e+00  True
+
+────────────────────────────────────────────────────────────
+  §3h-E  Full single-step Jacobian: simulate_step output w.r.t. input
+────────────────────────────────────────────────────────────
+  Jacobian shape: (108, 108)
+  Total NaN entries: 0 / 11664
+  Single-step Jacobian is fully finite — NaN only appears across multiple steps
+
+────────────────────────────────────────────────────────────
+  §3h-F  Multi-step gradient per state dimension
+────────────────────────────────────────────────────────────
+  Probing dims: [(14, 'vx'), (0, 'X'), (1, 'Y'), (2, 'Z'), (3, 'roll'), (4, 'pitch'), (5, 'yaw')]
+
+   dim            name  k= 1  k= 2  k= 4  k= 8  k=16  k=32  k=64
+  ───────────────────────────────────────────────────────────────────────────
+    14              vx    OK    OK    OK    OK    OK    OK    OK
+     0               X    OK    OK    OK    OK    OK    OK    OK
+     1               Y    OK    OK    OK    OK    OK    OK    OK
+     2               Z    OK    OK    OK    OK    OK    OK    OK
+     3            roll    OK    OK    OK    OK    OK    OK    OK
+     4           pitch    OK    OK    OK    OK    OK    OK    OK
+     5             yaw    OK    OK    OK    OK    OK    OK    OK
+
+────────────────────────────────────────────────────────────
+  §3h-G  Primitive VJP boundary checks
+────────────────────────────────────────────────────────────
+
+  stable_softplus grad at realistic values (vx range = 12.3–15.9):
+             x         sp(x)        d(sp)/dx  finite
+        -50.00        0.0000        0.000000  True
+        -10.00        0.0000        0.000045  True
+         -3.00        0.0486        0.047426  True
+          0.00        0.6931        0.500000  True
+          1.00        1.3133        0.731058  True
+          3.00        3.0486        0.952574  True
+         10.00       10.0000        0.999954  True
+         13.00       13.0000        1.000000  True
+         15.00       15.0000        1.000000  True
+         17.00       17.0000        1.000000  True
+         30.00       30.0000        1.000000  True
+         50.00       50.0000        1.000000  True
+
+  jnp.sqrt gradient near 0 (var_n can be ~0 when trajectory is centered):
+  sqrt'(0.0e+00) = inf  finite=False
+  sqrt'(1.0e-30) = 5.000000e+14  finite=True
+  sqrt'(1.0e-15) = 1.581139e+07  finite=True
+  sqrt'(1.0e-08) = 5.000000e+03  finite=True
+  sqrt'(1.0e-06) = 5.000000e+02  finite=True
+  sqrt'(1.0e-04) = 5.000000e+01  finite=True
+  sqrt'(1.0e-02) = 5.000000e+00  finite=True
+  sqrt'(1.0e+00) = 5.000000e-01  finite=True
+
+  jnp.arctan2 gradient at (sin≈0, cos≈0) — heading_cost uses arctan2:
+  arctan2(0.0e+00,0.0e+00): ∂/∂sin=nan ∂/∂cos=nan  finite=False
+  arctan2(1.0e-30,1.0e-30): ∂/∂sin=inf ∂/∂cos=-inf  finite=False
+  arctan2(0.0e+00,1.0e+00): ∂/∂sin=1.0000e+00 ∂/∂cos=0.0000e+00  finite=True
+  arctan2(1.0e+00,0.0e+00): ∂/∂sin=0.0000e+00 ∂/∂cos=-1.0000e+00  finite=True
+  arctan2(1.0e-04,1.0e-04): ∂/∂sin=5.0000e+03 ∂/∂cos=-5.0000e+03  finite=True
+
+  n_traj values from trajectory (barrier_cost uses these directly):
+  n range: [-0.586, 25.759]
+  var_n range: [1.079e-02, 1.228e-01]
+  stable_softplus inputs in barrier_cost:
+  (n+tube-w_L): min=-3.729  max=23.064  (large positive = large barrier activation)
+  (-n+tube-w_R): min=-28.454  max=-2.557
+
+────────────────────────────────────────────────────────────
+  §3h-H  stop_gradient surgery: isolate which trajectory component is poisoning grad
+────────────────────────────────────────────────────────────
+  Strategy: stopgrad each output of _simulate_trajectory in turn,
+  re-run the full loss. Whichever stopgrad FIXES the NaN is the culprit.
+
+  configuration                                      val             ‖∇‖  fin_grad  note
+  ─────────────────────────────────────────────────────────────────────────────────────
+  all gradients (no SG)                       1.1319e+08             nan     False
+  SG on n_traj only                           1.1319e+08             nan     False
+  SG on var_n only                            1.1319e+08             nan     False
+  SG on s_dot only                            1.1319e+08             nan     False
+  SG on x_traj only                           1.1319e+08             nan     False
+  SG on U_opt only                            1.1319e+08             nan     False
+  SG on n+vn                                  1.1319e+08             nan     False
+  SG on n+vn+sd                               1.1319e+08             nan     False
+  SG on x only                                1.1319e+08             nan     False
+  SG on x+n+vn+sd (keep U)                    1.1319e+08      3.0297e+02      True  ← FIXED!
+  SG on ALL (only U flows)                    1.1319e+08      3.0297e+02      True  ← FIXED!
+
+────────────────────────────────────────────────────────────
+  §3i  Shannon entropy / xlogy VJP probe
+────────────────────────────────────────────────────────────
+
+  WPD leaf gradient check (warm-start U[:,0] and U[:,1]):
+   leaf   ch    min_val    max_val  all_zero          ‖∇H‖    finite
+      0    0     0.6060     0.6686     False    6.2292e-02      True
+      1    0    -0.0000     0.0210     False    2.8462e+01      True
+      2    0    -0.0412     0.0013     False    7.4024e+00      True
+      3    0    -0.1022     0.0111     False    1.0733e+01      True
+      4    0    -0.0000     0.0489     False    2.1320e+01      True
+      5    0    -0.0131     0.0539     False    2.7323e+01      True
+      6    0    -0.0274     0.0047     False    5.0627e+01      True
+      7    0    -0.0006     0.0209     False    1.5976e+01      True
+      0    1   679.8586   735.9348     False    4.9891e-05      True
+      1    1   -97.7497    15.0255     False    1.1608e-02      True
+      2    1    -1.3421    15.6484     False    2.7885e-02      True
+      3    1    -5.0085    23.7006     False    6.7627e-02      True
+      4    1   -53.7517     5.9910     False    1.8793e-02      True
+      5    1   -45.6995    22.3585     False    2.9115e-02      True
+      6    1  -140.5019    22.3586     False    9.2554e-03      True
+      7    1    -2.3245    83.4433     False    8.6963e-03      True
+
+  xlogy VJP at boundary values (p=0 is the critical case):
+         p_val    xlogy(p,p+ε)            d/dp    finite
+      0.00e+00        0.000000      -69.077553      True
+      1.00e-45       -0.000000      -69.077553      True
+      1.00e-30       -0.000000      -67.884407      True
+      1.00e-15       -0.000000      -33.538776      True
+      1.00e-07       -0.000002      -15.118095      True
+      1.00e-02       -0.046052       -3.605170      True
+      5.00e-01       -0.346574        0.306853      True
+      1.00e+00        0.000000        1.000000      True
+
+  Confirming 0.0 × NaN_grad = NaN (JAX IEEE-754 VJP behaviour):
+  val = nan  grad = nan  (expected: val=0, grad=NaN)
+
+────────────────────────────────────────────────────────────
+  §3j  Warm-start quality and trajectory gap analysis
+────────────────────────────────────────────────────────────
+
+  U_warm control distribution (steer=ch0, force=ch1):
+     channel         min         max        mean         std   nonzero
+  steer [rad]      0.0775      0.2353      0.2327      0.0196        64/64
+   force [N]     33.5323    260.1922    256.6507     28.1103        64/64
+
+  DWT→IDWT round-trip error on U_warm:
+  steer: max|err|=0.0000  mean|err|=0.0000  max_original=0.2353
+  force: max|err|=0.0000  mean|err|=0.0000  max_original=260.1922
+
+  Per-step lateral deviation: P-ctrl (forced) vs open-loop (optimizer):
+   step   n_Pctrl(forced)    n_openloop        Δn    vx_WS    vx_OL    steer_WS    force_WS
+  ─────────────────────────────────────────────────────────────────────────────────────
+      0     ~0.0 (forced)        -0.006     0.000    0.078       260.2
+      1     ~0.0 (forced)        -0.199    -0.005    0.235       260.2
+      2     ~0.0 (forced)        -0.408    -0.286    0.235       260.2
+      4     ~0.0 (forced)        -0.586    -0.143    0.235       260.2
+      8     ~0.0 (forced)         0.042     1.996    0.235       260.2
+      9     ~0.0 (forced)         0.412     2.432    0.235       260.2
+     10     ~0.0 (forced)         0.873     3.099    0.235       260.2
+     11     ~0.0 (forced)         1.427     3.772    0.235       260.2
+     12     ~0.0 (forced)         2.073     4.401    0.235       260.2
+     16     ~0.0 (forced)         5.280     6.818    0.235       260.2
+     32     ~0.0 (forced)        21.090    15.419    0.235       260.2
+     48     ~0.0 (forced)        24.673    12.843    0.235       260.2
+     63     ~0.0 (forced)        12.060     3.522    0.235       260.2
+
+  Open-loop replay (U_warm without position forcing):
+  First |n| > 3.5m at step 10 (|n|=3.97m if first_off_replay < N else '(never)')
+  n_replay max=41.24  mean=23.58    (same controls, physics free to drift)
+
+  Friction circle of warm-start (open-loop) trajectory:
+  steps violating μ=1.4: 1/64
+  g_combined: min=0.547  max=1.169  mean=0.613
+  Steps with g > 1.0: [1]
+  Steps with g > 0.9: 3/64
+
+────────────────────────────────────────────────────────────
+  §3k  Gradient scale audit (relative magnitudes)
+────────────────────────────────────────────────────────────
+
+  Reference: ‖∇(time_cost)‖ = baseline
+
+  Term                                     ‖∇‖     ratio to time    dominates?
+  ────────────────────────────────────────────────────────────────────────
+  time_cost                      NaN or failed                 —             —
+  barrier_cost                   NaN or failed                 —             —
+  center_cost                    NaN or failed                 —             —
+  heading_cost                   NaN or failed                 —             —
+  al_friction                       1.0689e-01              0.11x            ok
+  l1_detail_cost                    9.1698e-06              0.00x            ok
+  effort_L2                         3.7371e-06              0.00x            ok
+  margin_penalty                 NaN or failed                 —             —
+  v_min_cost                     NaN or failed                 —             —
+  coeff_reg                         0.0000e+00              0.00x            ok
+
+
+────────────────────────────────────────────────────────────
+  §4 FULL WMPC SOLVE (enhanced diagnostics)
+────────────────────────────────────────────────────────────
+[VehicleDynamics] H_net train scale (diagnostic): 4977.7896 J  [NOT applied to architecture]
+[VehicleDynamics] Loaded h_net.bytes
+[VehicleDynamics] Loaded r_net.bytes
+[Diff-WMPC] Built canonical 28-param setup (k_f=35030, arb_f=200)
+[Diff-WMPC] Physics P-ctrl warm start (N=64, Kp=6000 N/(m/s)).
+[DEBUG WS] loss=2248078.2500  ‖∇f‖=nan  finite_loss=True  finite_grad=False
+[DEBUG WS] n: min=-2.36  max=8.79  mean=1.14
+[DEBUG WS] vx: min=12.56  max=16.41  mean=13.11
+[DEBUG WS] g_circle: min=-0.6700  max=0.4868  n_violated=2/64
+[DEBUG WS] s_dot: min=12.72  max=16.39
+[DEBUG WS] Wolfe probe at ε=0.001: Δf_actual=nan  Δf_expected(c1=1)=nan  ratio=nan
+[DEBUG WS] Wolfe c1=0.0001 threshold: need Δf > nan  VIOLATED — this is why ABNORMAL
+[Diff-WMPC] JIT compiled — starting AL loop.
+[Diff-WMPC] AL iter 1/5 — ρ=0.1, λ_max=0.000
+[Diff-WMPC] Optimising 3-level Db4 basis over N=64 via L-BFGS-B…
+[Diff-WMPC] NaN #1 (AL iter 0): warm-start fallback
+[Diff-WMPC] NaN rate 100% > 30% — resetting opt_coeffs to physics warm start.
+[Diff-WMPC] Constraint max violation: 0.4868 (0=feasible). Updated λ_max=0.049
+[Diff-WMPC] AL iter 2/5 — ρ=1.0, λ_max=0.049
+[Diff-WMPC] Optimising 3-level Db4 basis over N=64 via L-BFGS-B…
+[Diff-WMPC] NaN #1 (AL iter 1): warm-start fallback
+[Diff-WMPC] NaN rate 100% > 30% — resetting opt_coeffs to physics warm start.
+[Diff-WMPC] Constraint max violation: 0.4868 (0=feasible). Updated λ_max=0.535
+[Diff-WMPC] AL iter 3/5 — ρ=10.0, λ_max=0.535
+[Diff-WMPC] Optimising 3-level Db4 basis over N=64 via L-BFGS-B…
+[Diff-WMPC] NaN #1 (AL iter 2): warm-start fallback
+[Diff-WMPC] NaN rate 100% > 30% — resetting opt_coeffs to physics warm start.
+[Diff-WMPC] Constraint max violation: 0.4868 (0=feasible). Updated λ_max=5.403
+[Diff-WMPC] AL iter 4/5 — ρ=50.0, λ_max=5.403
+[Diff-WMPC] Optimising 3-level Db4 basis over N=64 via L-BFGS-B…
+[Diff-WMPC] NaN #1 (AL iter 3): warm-start fallback
+[Diff-WMPC] NaN rate 100% > 30% — resetting opt_coeffs to physics warm start.
+[Diff-WMPC] Constraint max violation: 0.4868 (0=feasible). Updated λ_max=29.743
+[Diff-WMPC] AL iter 5/5 — ρ=200.0, λ_max=29.743
+[Diff-WMPC] Optimising 3-level Db4 basis over N=64 via L-BFGS-B…
+[Diff-WMPC] NaN #1 (AL iter 4): warm-start fallback
+[Diff-WMPC] NaN rate 100% > 30% — resetting opt_coeffs to physics warm start.
+[Diff-WMPC] Constraint max violation: 0.4868 (0=feasible). Updated λ_max=127.102
+[Diff-WMPC] AL iter 5 result: nit=0  nfev=1  NaN=1/1 (100%)  CONVERGED
+[Diff-WMPC] Friction circle: 96.9% inside μ=1.4 (max G_combined=1.219)
+[Diff-WMPC] NaN rate: 1/1 (100.0%).
+[Diff-WMPC] HIGH NaN RATE: H_net weights may not be converged.
+
+[§4b] Objective call log (9 total calls):
+   call            loss            ‖∇f‖    fin_v    fin_g     dt_ms
+  ─────────────────────────────────────────────────────────────────
+      0      2.2481e+06             nan     True    False   91905.3 NaN
+      1      2.2481e+06             nan     True    False    2157.4 NaN
+      2             nan             nan    False    False    2269.1 NaN
+      3      2.2481e+06             nan     True    False    2303.6 NaN
+      4      2.2481e+06             nan     True    False    2515.3 NaN
+      5      2.2481e+06             nan     True    False    2413.9 NaN
+      6      2.2481e+06             nan     True    False    2330.1 NaN
+      7      2.2481e+06             nan     True    False    2559.9 NaN
+      8      2.2481e+06             nan     True    False    2052.3 NaN
+
+[§4c] Final result:
+  mean_v=13.11 m/s  max_n=8.80 m  max_g=1.219  friction_compliance=96.9%  lap=7.5s
+  steer_rate_max=1.68 rad/s
+
+  [PASS] Speed in [13.0,17.5] m/s: 13.11
+  [FAIL] AL friction (max_g < 1.05): max_g=1.219
+  [PASS] Friction compliance > 95%: 96.9%
+  [FAIL] Boundaries (max_n < 3.5m): max_n=8.80m
+  [PASS] Forward progress (lap<30s): 7.5s
+  [PASS] Steer smoothness (<3 rad/s): 1.68 rad/s

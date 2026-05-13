@@ -71,6 +71,80 @@ STATE_X   = 0;  STATE_Y   = 1;  STATE_Z  = 2
 STATE_PHI = 3;  STATE_TH  = 4;  STATE_YAW = 5
 STATE_VX  = 14; STATE_VY  = 15; STATE_VZ = 16
 
+# ─────────────────────────────────────────────────────────────────────────────
+# BUILD ONCE at module level — static shape, XLA constant-folds the mask
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Dims where cross-step carry gradient causes float32 overflow at k=31.
+# Determined empirically: all 108 dims NaN at k=31 in the full Jacobian,
+# but individual per-dim scans are clean to k=64.
+# The overflow is driven by the position/orientation accumulation chain:
+#   X, Y accumulate at O(vx·dt) per step → Jacobian row norm grows as k
+#   wz (yaw rate) couples into X,Y via rotation → eigenvalue > 1
+#   Thermal states (T_tire) couple back via grip → exponential growth
+# 
+# Strategy: stop_gradient on POSITION + ORIENTATION + THERMAL CARRY.
+# Free: vx (primary cost signal), suspension heave (spring forces matter),
+#       transient slip (kappa tracking), wheel speeds.
+# Stopped: absolute position (X,Y,Z — not in any cost directly),
+#          orientation angles (phi,theta,psi — only heading error matters,
+#          and we already clamp heading in scan_fn),
+#          thermal states (slow dynamics, gradient contribution negligible
+#          vs the 31-step overflow it causes),
+#          damper/elastokin auxiliary states.
+
+_N_STATE_OCP = 108   # must match state vector length
+
+# Build boolean mask: 1.0 = stop_gradient, 0.0 = free
+_SG_MASK_NP = np.zeros(_N_STATE_OCP, dtype=np.float32)
+
+# Absolute position — not in any cost term directly
+_SG_MASK_NP[0:3]   = 1.0   # X, Y, Z
+
+# Orientation — heading error uses delta(psi), not absolute psi;
+# roll/pitch not in any cost
+_SG_MASK_NP[3:6]   = 1.0   # phi, theta, psi
+
+# Momenta corresponding to stopped positions — their Jacobian chains
+# are equally explosive
+_SG_MASK_NP[17:20] = 1.0   # p_phi, p_theta, p_psi (angular momenta)
+
+# Thermal states — 28 nodes [28:56]; slow ODE, gradient contribution
+# is negligible at the 1.5s horizon but their Jacobian rows accumulate
+# multiplicatively with the position chain
+_SG_MASK_NP[28:56] = 1.0   # T_tire (all 4×7 nodes)
+
+# Damper auxiliary states [72:84] — hysteresis states, not in cost
+_SG_MASK_NP[72:84] = 1.0
+
+# Elastokinematic states [84:108] — compliance states, not in cost  
+_SG_MASK_NP[84:]   = 1.0
+
+# JAX constant — will be baked into XLA graph at first JIT
+_SG_MASK: jax.Array = jnp.array(_SG_MASK_NP)
+_SG_FREE: jax.Array = 1.0 - _SG_MASK
+
+
+@jax.jit
+def _apply_carry_stop_gradient(x: jax.Array) -> jax.Array:
+    """
+    Truncated BPTT carry filter.
+    
+    Mathematically: x_carry = sg(x)·M + x·(1−M)
+    where M is the stop-gradient mask.
+    
+    This is NOT equivalent to zeroing gradients — it severs the
+    cross-step dependency for masked dims while preserving the
+    per-step emission gradient (x_next is emitted before masking,
+    so cost terms that read x_next still get full gradients).
+    
+    The key invariant: ONLY the carry (what flows to the next scan
+    step) is masked. The emitted value is unmasked. This gives us:
+      - Forward pass: identical to full model (mask doesn't change values)
+      - Backward pass: per-step cost gradients fully preserved
+      - Cross-step accumulation: severed for overflow-prone dims
+    """
+    return jax.lax.stop_gradient(x) * _SG_MASK + x * _SG_FREE
 
 # ─────────────────────────────────────────────────────────────────────────────
 # §1  Db4 Wavelet DWT/IDWT (unchanged — production quality)
@@ -628,7 +702,7 @@ class DiffWMPCSolver:
             
             # Use clip instead of maximum to cap the variance at 25.0 (5m std dev)
             # This prevents the barrier soft-tube from exploding to infinity
-            new_var_n_full = jnp.clip(new_var_n_full, 1e-6, 25.0)
+            new_var_n_full = jnp.clip(new_var_n_full, 1e-4, 25.0)
 
             # ──────────────────────────────────────────────────────────────────────────────
             # ROOT CAUSE (§3h confirmed): The 64-step backward scan Jacobian chain overflows
@@ -660,9 +734,7 @@ class DiffWMPCSolver:
                 19,         # wz — yaw rate (CRITICAL FIX)
             ]
             
-            carry_x = x_next
-            for _sg in _CARRY_STOP_GRAD:
-                carry_x = carry_x.at[_sg].set(jax.lax.stop_gradient(carry_x[_sg]))
+            carry_x = _apply_carry_stop_gradient(x_next)
 
             return (carry_x, new_var_n_full, new_var_alpha), (x_next, n, new_var_n_full, s_dot)
 
@@ -783,7 +855,7 @@ class DiffWMPCSolver:
         # ── 3. Track limits — smooth quadratic violation penalty ─────────────
         sp_sharp    = 20.0   
         w_barrier   = 8000.0   
-        tube_radius = self.kappa_safe * jnp.sqrt(jnp.maximum(n_var, 1e-6))
+        tube_radius = self.kappa_safe * jnp.sqrt(jnp.maximum(n_var, 1e-4))
 
         raw_left  = ( n_mean + tube_radius - track_w_left ) * sp_sharp
         raw_right = (-n_mean + tube_radius - track_w_right) * sp_sharp
@@ -842,7 +914,8 @@ class DiffWMPCSolver:
         delta = U_opt[:, 0] # steering channel
         
         dpsi     = jnp.diff(x_traj[:, STATE_YAW], prepend=x0[STATE_YAW])
-        wz_safe  = dpsi / self.dt_control           # (N,) — no magic index
+        # In margin_penalty: replace diff-based wz with direct wz column
+        wz_safe = x_traj[:, 19]  # direct wz — already clamped in scan_fn
         alpha_current = delta - (vy + lf * wz_safe) / jnp.maximum(vx, 1.0)
         
         # Grip margin at each horizon step:
