@@ -231,15 +231,18 @@ class DiffWMPCSolver:
         self._vehicle = DifferentiableMultiBodyVehicle(VP, self._load_tire_coeffs())
         self._prev_solution = None
 
-        # Augmented Lagrangian state
-        # Augmented Lagrangian state
+        # Augmented Lagrangian state - Friction
         self._al_lambda     = None   # Lagrange multipliers (N,)
         self._al_rho        = 0.1    # starts permissive, grows per schedule below
         self._al_rho_scale  = 2.0
-        
-        # Softened schedule to allow tolerance checking and avoid the gradient cliffs 
-        # that were reaching 12,800x the lap-time gradient.
         self._AL_RHO_SCHEDULE = [0.1, 1.0, 10.0, 50.0, 200.0]
+
+        # Augmented Lagrangian state - Spatial (Track Boundaries)
+        self._al_lambda_left  = None
+        self._al_lambda_right = None
+        # Cap rho at 50.0. The lambda multiplier will handle the rest of the work
+        # without shattering the L-BFGS-B Hessian approximation.
+        self._AL_RHO_SPAT_SCHEDULE = [0.1, 1.0, 5.0, 20.0, 50.0]
         # Rationale (GP-vX5 FIX): previous schedule [200,800,2000,5000,5000]
         # produced AL penalty gradient ~12800× the lap-time gradient from iter 1.
         # L-BFGS-B spent all iterations satisfying the constraint with zero
@@ -303,8 +306,9 @@ class DiffWMPCSolver:
         w_accel_s= jnp.ones(N, dtype=jnp.float32) * 5e-5
 
         def _obj(flat_coeffs, wc_kin_flat, al_lambda, al_rho,
+                 al_lambda_left, al_lambda_right, al_rho_spatial,
                  x0, setup_params,
-                 track_k, track_x, track_y, track_psi,
+                 track_k, track_x, track_y, track_psi, track_s_r,  # <-- Added
                  track_wl, track_wr, alpha_peak):
             coeffs      = flat_coeffs.reshape((N, 2))
             coeffs_safe = jnp.clip(coeffs, -25000.0, 25000.0)
@@ -312,10 +316,12 @@ class DiffWMPCSolver:
             coeff_reg   = 5e-5 * jnp.sum((coeffs_safe - wc_kin) ** 2)
             loss = loss_fn(
                 coeffs_safe, x0, setup_params,
-                track_k, track_x, track_y, track_psi,
+                track_k, track_x, track_y, track_psi, track_s_r,   # <-- Added
                 track_wl, track_wr,
                 w_mu_s, w_steer_s, w_accel_s,
-                al_lambda, al_rho, alpha_peak,
+                al_lambda, al_rho, 
+                al_lambda_left, al_lambda_right, al_rho_spatial,
+                alpha_peak,
             )
             return loss + coeff_reg
 
@@ -576,12 +582,13 @@ class DiffWMPCSolver:
         track_k, track_x, track_y, track_psi,
         track_w_left, track_w_right,
         lmuy_scale, wind_yaw, dt_control=0.05,
+        track_s_r=None,   # ADD: arc-length array for n projection
     ):
         U_time = self._db4_idwt(wavelet_coeffs)
         dt_sub = dt_control / self.n_substeps
 
         def scan_fn(carry, step_data):
-            x, var_n, var_alpha = carry
+            x, var_n, var_alpha, s_carry = carry   # add arc-length carry
             u_raw, k_c, x_ref, y_ref, psi_ref = step_data
 
             # ── CRITICAL FIX: expand 2-channel optimizer → 6-channel physics ──
@@ -607,71 +614,46 @@ class DiffWMPCSolver:
 
             x_next, _ = jax.lax.scan(substep_fn, x, None, length=self.n_substeps)
 
-            # ── Absolute heading error clamp (GP-vX7) ────────────────────────
-            # DIAGNOSIS: H_net phantom torque drives +0.20 rad of yaw EVERY step
-            # at the saturation limit. A per-step rate limiter (GP-vX6) still
-            # accumulates: 0.20 × 32 = 6.4 rad total → alpha=176° by step 15.
-            # Root: rate limiter prevents acceleration but not accumulation.
-            #
-            # Fix: clamp ABSOLUTE heading deviation from psi_ref, not the rate.
-            # This makes alpha bounded regardless of how many steps are taken.
-            # arctan2 handles 2π wraparound. tanh is C∞ with ∂/∂dpsi = sech² ≠ 0.
-            # Cap = 0.08 rad (≈4.6°): s_dot = vx·cos(4.6°) ≈ 0.9968·vx — the
-            # car appears nearly aligned to the optimizer, giving clean gradients.
-            dpsi_raw    = x_next[STATE_YAW] - psi_ref
+            # ── Arc-length projection: compute correct reference FIRST ────────
+            # CRITICAL: must happen before heading clamp. Using time-indexed
+            # psi_ref for the clamp causes systematic lateral drift: at 80% speed
+            # the time reference leads the car by ~5m by step 32 → psi_ref is
+            # 0.26 rad ahead → clamp forces heading toward future track tangent
+            # → car pushed laterally ~11m by horizon end.
+            x_ref_s   = jnp.interp(s_carry, track_s_r, track_x)
+            y_ref_s   = jnp.interp(s_carry, track_s_r, track_y)
+            psi_ref_s = jnp.interp(s_carry, track_s_r, track_psi)
+
+            # ── Absolute heading error clamp (GP-vX7, fixed reference) ──────
+            # Uses arc-length psi_ref_s, not time-indexed psi_ref.
+            dpsi_raw    = x_next[STATE_YAW] - psi_ref_s
             dpsi_wrap   = jnp.arctan2(jnp.sin(dpsi_raw), jnp.cos(dpsi_raw))
             dpsi_capped = 0.08 * jnp.tanh(dpsi_wrap / 0.08)
-            x_next      = x_next.at[STATE_YAW].set(psi_ref + dpsi_capped)
+            x_next      = x_next.at[STATE_YAW].set(psi_ref_s + dpsi_capped)
 
             # Clamp yaw rate x[19] to kinematic maximum (GP-vX10 fix).
-            # H_net phantom torque regenerates wz→60 rad/s INSIDE simulate_step,
-            # after STATE_YAW is clamped. The unclamped wz then drives:
-            #   vy_dot ≈ −wz·vx = −60×16 = −960 m/s² per step
-            # → STATE_Y drifts ~48m/step → n=12–30m → barrier gradient ~1.9M
-            # → no Wolfe-satisfying step exists in 20 probes → ABNORMAL nit=0.
-            # Physical wz at κ=0.05, vx=16: wz_phys = 16×0.05 = 0.8 rad/s.
-            # Cap at 4× the kinematic rate to allow transient dynamics.
             wz_max = x_next[STATE_VX] * (jnp.sqrt(k_c**2 + 1e-8) + 0.05) * 4.0
             x_next = x_next.at[19].set(
                 jnp.clip(x_next[19], -wz_max, wz_max)
             )
             # Clamp lateral velocity to physical sideslip limit β_max≈11°.
-            # vy = vx·tan(β) ≈ vx·0.20. Without this, phantom wz integrates
-            # into vy through the rigid-body equations each substep, causing
-            # the same lateral drift even after the wz clamp is applied.
             vy_max = x_next[STATE_VX] * 0.20
             x_next = x_next.at[STATE_VY].set(
                 jnp.clip(x_next[STATE_VY], -vy_max, vy_max)
             )
 
             v_fric_sq  = (self.mu_friction * 9.81) / (jnp.sqrt(k_c**2 + 1e-8) + 1e-4)
-            # BUGFIX: previous version saturated at V_limit=30 m/s — completely
-            # inactive at the 15–20 m/s operating range. The per-step Jacobian
-            # eigenvalue was never damped, allowing gradient magnitude to grow as
-            # eigenvalue^64 through the scan backward pass.
-            #
-            # Fix: saturate at 1.25 × local friction-circle speed.
-            # ∂vx_sat/∂vx = sigmoid(v_ceil − vx):
-            #   vx << v_fric   → sigmoid ≈ 0.99  (transparent, signal preserved)
-            #   vx = v_fric    → sigmoid ≈ 0.76  (gentle onset, ~24% damping/step)
-            #   vx = 1.25×v_f  → sigmoid = 0.50  (eigenvalue 0.5, 0.5^64≈5e-20)
-            #   vx >> v_ceil   → sigmoid → 0     (gradient dead, prevents NaN)
-            #
-            # The 1.25× factor keeps the saturation inactive within the physical
-            # envelope (vx ≤ v_fric). The gradient ratio between AL-penalty and
-            # time-cost is UNCHANGED by saturation (both scale identically), so
-            # the optimizer still finds the correct Pareto trade-off.
             v_sat_ceil = jnp.minimum(jnp.sqrt(v_fric_sq) * 1.25, self.V_limit)
             vx_raw     = x_next[STATE_VX]
-            vx_sat = v_sat_ceil - jax.nn.softplus(v_sat_ceil - vx_raw)
+            vx_sat     = v_sat_ceil - jax.nn.softplus(v_sat_ceil - vx_raw)
             x_next     = x_next.at[STATE_VX].set(jnp.maximum(vx_sat, 0.5))
 
-            # Curvilinear coordinate: lateral deviation n from track centerline
-            dx_world = x_next[STATE_X] - x_ref
-            dy_world = x_next[STATE_Y] - y_ref
-            dpsi     = x_next[STATE_YAW] - psi_ref
-            n        = -jnp.sin(psi_ref) * dx_world + jnp.cos(psi_ref) * dy_world
-            alpha    = jnp.arctan2(jnp.sin(dpsi), jnp.cos(dpsi))  # heading error
+            # Curvilinear n and alpha using arc-length reference (already computed above)
+            dx_world = x_next[STATE_X] - x_ref_s
+            dy_world = x_next[STATE_Y] - y_ref_s
+            dpsi     = x_next[STATE_YAW] - psi_ref_s
+            n        = -jnp.sin(psi_ref_s) * dx_world + jnp.cos(psi_ref_s) * dy_world
+            alpha    = jnp.arctan2(jnp.sin(dpsi), jnp.cos(dpsi))
 
             # Progress rate ṡ = vx·cos(α) - vy·sin(α)
             # FIX (GP-vX6): WITHOUT alpha clamping, yaw divergence (e.g. 60 rad/s
@@ -742,12 +724,13 @@ class DiffWMPCSolver:
             
             carry_x = _apply_carry_stop_gradient(x_next)
 
-            return (carry_x, new_var_n_full, new_var_alpha), (x_next, n, new_var_n_full, s_dot)
+            ds_step    = jnp.maximum(x_next[STATE_VX], 0.5) * dt_control
+            s_car_next = jnp.clip(s_carry + ds_step, track_s_r[0], track_s_r[-1])
+            return (carry_x, new_var_n_full, new_var_alpha, s_car_next), (x_next, n, new_var_n_full, s_dot)
 
-        init_carry = (x0, jnp.array(0.01), jnp.array(0.001))
+        init_carry = (x0, jnp.array(0.01), jnp.array(0.001), track_s_r[0])
         step_data  = (U_time, track_k, track_x, track_y, track_psi)
 
-        # CRITICAL RAM FIX: Checkpoint the horizon step
         _, (x_traj, n_traj, var_n_traj, s_dot_traj) = jax.lax.scan(
             scan_fn, init_carry, step_data
         )
@@ -761,11 +744,12 @@ class DiffWMPCSolver:
     def _loss_fn(
         self,
         wavelet_coeffs, x0, setup_params,
-        track_k, track_x, track_y, track_psi,
+        track_k, track_x, track_y, track_psi, track_s_r,  # <-- Added
         track_w_left, track_w_right,
         w_mu, w_steer, w_accel,
         al_lambda, al_rho,
-        alpha_peak_est, # <-- ADD THIS
+        al_lambda_left, al_lambda_right, al_rho_spatial,
+        alpha_peak_est,
     ):
         # AFTER:
         # BUG A FIX: w_mu is (N,); passing (N,) as lmuy_scale into _simulate_trajectory
@@ -778,6 +762,7 @@ class DiffWMPCSolver:
             track_k, track_x, track_y, track_psi,
             track_w_left, track_w_right,
             lmuy_scalar, 0.0, self.dt_control,
+            track_s_r=track_s_r,                          # <-- Added
         )
 
         # ── 1. Lap time cost  ─────────────────────────────────────────────────
@@ -856,18 +841,24 @@ class DiffWMPCSolver:
         # ∂ψ/∂n = 2w · softplus(v·s)/s² · sigmoid(v·s) · ∂v/∂n
         # This gradient is PROPORTIONAL to the violation magnitude — larger
         # violations produce stronger restoring forces everywhere.
-        # ── 3. Track limits — smooth quadratic violation penalty ─────────────
-        sp_sharp    = 10.0    # was 20.0
-        w_barrier   = 2000.0  # was 8000.0  
+        # ── 3. Track limits — Spatial Augmented Lagrangian ─────────────
         tube_radius = self.kappa_safe * jnp.sqrt(jnp.maximum(n_var, 1e-4))
 
-        raw_left  = ( n_mean + tube_radius - track_w_left ) * sp_sharp
-        raw_right = (-n_mean + tube_radius - track_w_right) * sp_sharp
+        # Violation > 0 means the car is outside the track boundary
+        c_left  =  n_mean + tube_radius - track_w_left
+        c_right = -n_mean + tube_radius - track_w_right
         
-        viol_left  = stable_softplus(raw_left) / sp_sharp
-        viol_right = stable_softplus(raw_right) / sp_sharp
+        # AL Clamps
+        g_left_clamp  = jnp.maximum(c_left,  -al_lambda_left  / (al_rho_spatial + 1e-8))
+        g_right_clamp = jnp.maximum(c_right, -al_lambda_right / (al_rho_spatial + 1e-8))
         
-        barrier_cost = w_barrier * jnp.sum(viol_left ** 2 + viol_right ** 2)
+        # Exact AL formulation
+        barrier_cost = (
+            jnp.dot(al_lambda_left,  jnp.maximum(c_left,  0.0)) +
+            0.5 * al_rho_spatial * jnp.sum(g_left_clamp ** 2) +
+            jnp.dot(al_lambda_right, jnp.maximum(c_right, 0.0)) +
+            0.5 * al_rho_spatial * jnp.sum(g_right_clamp ** 2)
+        )
 
         # ── 3b. Centreline cost ───────────────────────────────────────────────
         center_cost = self.w_center * jnp.sum(n_mean ** 2)
@@ -997,6 +988,7 @@ class DiffWMPCSolver:
         setup_params: jax.Array,     # (28,) suspension setup
         track_x:      'jax.Array | None' = None,   # (N,) centreline x [m] — optional
         track_y:      'jax.Array | None' = None,   # (N,) centreline y [m] — optional
+        track_s:      'jax.Array | None' = None,   # (N,) arc-length [m] (NEW)
     ) -> jax.Array:
         g  = 9.81
         wb = self.vp.get('lf', 0.8525) + self.vp.get('lr', 0.6975)
@@ -1005,38 +997,44 @@ class DiffWMPCSolver:
         k_safe   = jnp.sqrt(track_k**2 + 1e-8).ravel() + 1e-4
         v_target = jnp.minimum(
             jnp.sqrt((self.mu_friction * g) / k_safe),
-            self.V_limit * 0.92,   # 8% safety margin below friction limit
-        )
-        steer_ref = jnp.clip(track_k.ravel() * wb, -0.45, 0.45)
-        Kp_lat     = 0.25   # lateral error → steer correction [rad/m]
-        Kp_heading = 2.0    # heading error → steer correction [rad/rad]
+            self.V_limit
+        ) * 0.80  # Match the 80% v0 entry speed
+        
+        lookahead_s = 4.0  # [m] Pure pursuit lookahead distance
 
-        def scan_fn(carry_state, step_idx):
-            state = carry_state
+        def scan_fn(carry, step_idx):
+            state, s_car = carry   # Unpack the current arc-length
             
-            v_curr  = state[STATE_VX]
-            v_tgt_i = v_target[step_idx]
-            k_i     = track_k[step_idx]
-            psi_ref_i = track_psi[step_idx]
-            steer_ref_i = steer_ref[step_idx]
+            v_curr    = state[STATE_VX]
+            v_tgt_i   = v_target[step_idx]
+            
+            # RESTORED: Needed for longitudinal friction budget and sync block
+            k_i       = track_k[step_idx]     
+            psi_ref_i = track_psi[step_idx]   
 
-            # Lateral + heading feedback
-            if track_x is not None and track_y is not None:
+            # ── Friend's Fix 1 & 2: Arc-Length Pure Pursuit ──
+            if track_x is not None and track_y is not None and track_s is not None:
                 x_car     = state[STATE_X]
                 y_car     = state[STATE_Y]
                 psi_car   = state[STATE_YAW]
-                track_x_i = track_x[step_idx]
-                track_y_i = track_y[step_idx]
                 
-                n_err = (-jnp.sin(psi_ref_i) * (x_car - track_x_i)
-                         + jnp.cos(psi_ref_i) * (y_car - track_y_i))
-                heading_err = jnp.arctan2(jnp.sin(psi_car - psi_ref_i),
-                                          jnp.cos(psi_car - psi_ref_i))
-                steer_fb = (-Kp_lat * n_err / jnp.maximum(v_curr, 1.0)
-                            - Kp_heading * heading_err)
-                steer_i = jnp.clip(steer_ref_i + steer_fb, -0.45, 0.45)
+                # Look up centerline at car's CURRENT arc position + lookahead
+                s_total = track_s[-1]
+                # Clamp to [track_s[0], track_s[-1] - epsilon] so interp never extrapolates.
+                # Do NOT wrap modulo here: track_s_r is a one-shot horizon window, not a
+                # periodic lap. Clamping is correct; if lookahead exceeds the horizon,
+                # target the horizon endpoint — which is still a valid on-track point.
+                s_look = jnp.clip(s_car + lookahead_s, track_s[0], s_total - 1e-3)
+
+                x_ref = jnp.interp(s_look, track_s, track_x)
+                y_ref = jnp.interp(s_look, track_s, track_y)
+                
+                # Pure pursuit geometry
+                alpha = jnp.arctan2(y_ref - y_car, x_ref - x_car) - psi_car
+                curvature = 2.0 * jnp.sin(alpha) / lookahead_s
+                steer_i = jnp.clip(jnp.arctan(curvature * wb), -0.45, 0.45)
             else:
-                steer_i = steer_ref_i
+                steer_i = jnp.clip(track_k[step_idx] * wb, -0.45, 0.45)
 
             v_err = v_curr - v_tgt_i
             m_veh      = self.vp.get('m', 235.0)
@@ -1058,27 +1056,37 @@ class DiffWMPCSolver:
                 dt=self.dt_control, n_substeps=self.n_substeps,
             )
 
-            psi_ref_ws = psi_ref_i
-            vx_ws      = jnp.maximum(state[STATE_VX], 1.0)
-            k_ws       = k_i
-            
-            state = state.at[STATE_YAW].set(psi_ref_ws)          # exact heading
-            state = state.at[19].set(vx_ws * k_ws)               # kinematic wz = vx·κ
-            state = state.at[STATE_VY].set(0.0)                  # aligned with tangent
-            if track_x is not None and track_y is not None:
-                state = state.at[STATE_X].set(track_x[step_idx]) # on centreline
-                state = state.at[STATE_Y].set(track_y[step_idx])
+            # Apply the same stabilizing clamps as _simulate_trajectory so that
+            # U_warm is generated under the same physics model the optimizer sees.
+            # Without these, H_net phantom yaw torque causes yaw divergence in the
+            # warm-start, producing steering commands that fight the optimizer's clamps.
+            psi_at_s   = jnp.interp(s_car, track_s, track_psi)
+            dpsi_ws    = state[STATE_YAW] - psi_at_s
+            dpsi_ws    = jnp.arctan2(jnp.sin(dpsi_ws), jnp.cos(dpsi_ws))
+            state      = state.at[STATE_YAW].set(psi_at_s + 0.08 * jnp.tanh(dpsi_ws / 0.08))
+
+            wz_max_ws  = state[STATE_VX] * (jnp.sqrt(k_i**2 + 1e-8) + 0.05) * 4.0
+            state      = state.at[19].set(jnp.clip(state[19], -wz_max_ws, wz_max_ws))
+
+            vy_max_ws  = state[STATE_VX] * 0.20
+            state      = state.at[STATE_VY].set(jnp.clip(state[STATE_VY], -vy_max_ws, vy_max_ws))
 
             vx_raw   = state[STATE_VX]
             v_ceil   = jnp.minimum(v_tgt_i * 1.05, self.V_limit)
             vx_safe  = jnp.minimum(vx_raw, v_ceil)
             state    = state.at[STATE_VX].set(jnp.maximum(vx_safe, 0.5))
 
-            return state, jnp.array([steer_i, F_ctrl], dtype=jnp.float32)
+            # Arc-length: use velocity BEFORE simulate_step to avoid post-clip contamination.
+            # v_curr is captured at top of scan_fn before state mutation.
+            ds = jnp.maximum(v_curr, 1.0) * self.dt_control
+            s_car_next = jnp.clip(s_car + ds, track_s[0], track_s[-1])
 
-        # Eradicate explicit Python loop, utilize XLA native scan
+            return (state, s_car_next), jnp.array([steer_i, F_ctrl], dtype=jnp.float32)
+
+        # Initialize carry with x0 and the starting arc length
+        init_carry = (x0, track_s[0] if track_s is not None else 0.0)
         step_indices = jnp.arange(self.N)
-        final_state, U_warm = jax.lax.scan(scan_fn, x0, step_indices)
+        final_carry, U_warm = jax.lax.scan(scan_fn, init_carry, step_indices)
         
         return U_warm
 
@@ -1156,7 +1164,9 @@ class DiffWMPCSolver:
 
         # ── Initial state ─────────────────────────────────────────────────────
         k0    = abs(float(track_k[0])) + 1e-4
-        v0    = min(math.sqrt((self.mu_friction * 9.81) / k0), self.V_limit)
+        # Spawn the car with a 20% safety margin. This ensures the optimizer 
+        # is not deadlocked by friction limits on step 1.
+        v0    = min(math.sqrt((self.mu_friction * 9.81) / k0), self.V_limit) * 0.80
         
         x0    = DifferentiableMultiBodyVehicle.make_initial_state(T_env=25.0, vx0=v0)
         x0    = x0.at[STATE_X  ].set(track_x[0])
@@ -1195,27 +1205,34 @@ class DiffWMPCSolver:
             print("[Diff-WMPC] Warm-starting from previous solution (shifted).")
         else:
             try:
-                U_warm         = self._build_physics_warmstart(track_k, track_psi, x0, setup_params,
-                                                                track_x=track_x, track_y=track_y)
+                U_warm         = self._build_physics_warmstart(
+                    track_k, track_psi, x0, setup_params,
+                    track_x=track_x, track_y=track_y, track_s=track_s_r
+                )
                 wc_kin         = self._db4_dwt(U_warm)
                 flat_init      = wc_kin.flatten()
                 wc_kin_flat_np = np.array(flat_init, dtype=np.float64)
                 print(f"[Diff-WMPC] Physics P-ctrl warm start "
                       f"(N={self.N}, Kp=6000 N/(m/s)).")
             except Exception as _ws_err:
-                print(f"[Diff-WMPC] Physics warm start failed "
-                      f"({_ws_err}), falling back to quintic Hermite.")
-                U_warm    = self._build_quintic_warmstart(track_k, track_psi)
-                wc_kin    = self._db4_dwt(U_warm)
-                flat_init = wc_kin.flatten() * 0.3
+                print(f"[Diff-WMPC] Physics warm start failed ({_ws_err}).")
+                # We purged quintic warmstart during upgrades.
+                # Raise the actual error so we don't mask bugs.
+                raise _ws_err
                 
             wc_kin_flat_np = np.array(wc_kin.flatten(), dtype=np.float64)  # fallback anchor
 
         # ── Initialize Augmented Lagrangian multipliers ───────────────────────
         if self._al_lambda is None or self._al_lambda.shape[0] != self.N:
             self._al_lambda = jnp.zeros(self.N)
-        al_lambda = self._al_lambda
-        al_rho    = self._al_rho
+        if self._al_lambda_left is None or self._al_lambda_left.shape[0] != self.N:
+            self._al_lambda_left  = jnp.zeros(self.N)
+            self._al_lambda_right = jnp.zeros(self.N)
+
+        al_lambda       = self._al_lambda
+        al_rho          = self._al_rho
+        al_lambda_left  = self._al_lambda_left
+        al_lambda_right = self._al_lambda_right
 
         # ── Outer AL loop ─────────────────────────────────────────────────────
         n_al_iters = 5   # GP-vX8: always 3 (was `3 if dev else 5`). nit=1-9 observed
@@ -1229,15 +1246,11 @@ class DiffWMPCSolver:
 
         # ── DEBUG: inspect warm-start loss and gradient norm ─────────────
         _init_rho_jax_dbg = jnp.array(self._AL_RHO_SCHEDULE[0], dtype=jnp.float32)
+        _init_rho_spat_dbg = jnp.array(self._AL_RHO_SPAT_SCHEDULE[0], dtype=jnp.float32)
         _loss_ws, _grad_ws = val_grad_fn(
             opt_coeffs, wc_kin_flat_jx, jnp.zeros(self.N), _init_rho_jax_dbg,
-            x0, setup_params, track_k, track_x, track_y, track_psi,
-            track_w_left, track_w_right, alpha_peak_jax,
-        )
-        _init_rho_jax_dbg = jnp.array(self._AL_RHO_SCHEDULE[0], dtype=jnp.float32)
-        _loss_ws, _grad_ws = val_grad_fn(
-            opt_coeffs, wc_kin_flat_jx, jnp.zeros(self.N), _init_rho_jax_dbg,
-            x0, setup_params, track_k, track_x, track_y, track_psi,
+            jnp.zeros(self.N), jnp.zeros(self.N), _init_rho_spat_dbg,
+            x0, setup_params, track_k, track_x, track_y, track_psi, track_s_r, # <-- Add here
             track_w_left, track_w_right, alpha_peak_jax,
         )
         _gnorm = float(jnp.linalg.norm(_grad_ws))
@@ -1250,6 +1263,7 @@ class DiffWMPCSolver:
             opt_coeffs.reshape(self.N, 2), x0, setup_params,
             track_k, track_x, track_y, track_psi,
             track_w_left, track_w_right, 1.0, 0.0, self.dt_control,
+            track_s_r=track_s_r,
         )
         _vx_ws = _x_ws[:, STATE_VX]
         _vx_prev_ws = jnp.concatenate([x0[STATE_VX:STATE_VX+1].ravel(), _vx_ws[:-1]])
@@ -1272,8 +1286,9 @@ class DiffWMPCSolver:
         _d_ws = -_grad_ws / (_gnorm + 1e-12)  # steepest descent direction
         _loss_step, _ = val_grad_fn(
             opt_coeffs + _eps * _d_ws, wc_kin_flat_jx, jnp.zeros(self.N),
-            _init_rho_jax_dbg, x0, setup_params, track_k, track_x, track_y,
-            track_psi, track_w_left, track_w_right, alpha_peak_jax,
+            _init_rho_jax_dbg, jnp.zeros(self.N), jnp.zeros(self.N), _init_rho_spat_dbg,
+            x0, setup_params, track_k, track_x, track_y, track_psi, track_s_r, # <-- Add here
+            track_w_left, track_w_right, alpha_peak_jax,
         )
         _expected_decrease = _eps * _gnorm  # c1=1, directional deriv = -‖∇f‖
         _actual_decrease = float(_loss_ws) - float(_loss_step)
@@ -1294,9 +1309,11 @@ class DiffWMPCSolver:
         # Trigger compilation on very first solve() call, then print once.
         if not self._jit_compiled:
             _init_rho_jax = jnp.array(self._AL_RHO_SCHEDULE[0], dtype=jnp.float32)
+            _init_rho_spat_jax = jnp.array(self._AL_RHO_SPAT_SCHEDULE[0], dtype=jnp.float32)
             jax.block_until_ready(val_grad_fn(
                 opt_coeffs, wc_kin_flat_jx, al_lambda, _init_rho_jax,
-                x0, setup_params, track_k, track_x, track_y, track_psi,
+                al_lambda_left, al_lambda_right, _init_rho_spat_jax,
+                x0, setup_params, track_k, track_x, track_y, track_psi, track_s_r, # <-- Add here
                 track_w_left, track_w_right, alpha_peak_jax,
             ))
             self._jit_compiled = True
@@ -1305,17 +1322,20 @@ class DiffWMPCSolver:
             print("[Diff-WMPC] JIT cache hit — starting AL loop.")
 
         for al_iter in range(n_al_iters):
-            al_rho     = self._AL_RHO_SCHEDULE[al_iter]
-            al_rho_jax = jnp.array(al_rho, dtype=jnp.float32)
-            nan_count   = [0]
-            total_calls = [0]
+            al_rho             = self._AL_RHO_SCHEDULE[al_iter]
+            al_rho_jax         = jnp.array(al_rho, dtype=jnp.float32)
+            al_rho_spatial     = self._AL_RHO_SPAT_SCHEDULE[al_iter]
+            al_rho_spatial_jax = jnp.array(al_rho_spatial, dtype=jnp.float32)
+            nan_count          = [0]
+            total_calls        = [0]
 
             def scipy_obj(x_np):
                 total_calls[0] += 1
                 x_jax              = jnp.array(x_np, dtype=jnp.float32)
                 loss_jax, grad_jax = val_grad_fn(
                     x_jax, wc_kin_flat_jx, al_lambda, al_rho_jax,
-                    x0, setup_params, track_k, track_x, track_y, track_psi,
+                    al_lambda_left, al_lambda_right, al_rho_spatial_jax,
+                    x0, setup_params, track_k, track_x, track_y, track_psi, track_s_r, # <-- Add here
                     track_w_left, track_w_right, alpha_peak_jax,
                 )
 
@@ -1430,6 +1450,7 @@ class DiffWMPCSolver:
                 track_k, track_x, track_y, track_psi,
                 track_w_left, track_w_right,
                 1.0, 0.0, self.dt_control,
+                track_s_r=track_s_r,
             )
             vx_al    = x_al[:, STATE_VX].reshape(-1)
             track_k_1d = track_k.reshape(-1)
@@ -1441,36 +1462,43 @@ class DiffWMPCSolver:
             a_lon_sq = ((vx_al - vx_prev) / self.dt_control) ** 2
             g_al     = (a_lat_sq + a_lon_sq) / ((self.mu_friction * 9.81) ** 2 + 1e-4) - 1.0
 
+            # Friction update
             al_lambda = jnp.maximum(al_lambda + al_rho * g_al, 0.0)
-            # Cap λ at 100: empirically sufficient to enforce the friction constraint
-            # (penalty = 100×g >> time_cost≈0.05 for any g>0.0005). Without capping,
-            # λ accumulates to 27,000 across receding horizon solves — the gradient
-            # becomes 540,000× the time cost → L-BFGS-B Wolfe search fails on every
-            # step → nit=0 ABNORMAL on every AL iter → solver is completely stuck.
-            al_lambda = jnp.minimum(al_lambda, 200.0)  # <-- TWEAK 3: Up from 20.0   # GP-vX9: was 100. At λ=100,
-            # gradient ≈ 100×14.5×√32=8207 → clipping was needed → Wolfe failed.
-            # At λ=20: gradient ≈ 20×14.5×√32=1641 → no clipping needed → Wolfe works.
-            max_viol  = float(jnp.max(jnp.maximum(g_al, 0.0)))
-            print(f"[Diff-WMPC] Constraint max violation: {max_viol:.4f} "
-                  f"(0=feasible). Updated λ_max={float(jnp.max(al_lambda)):.3f}")
-
-            if max_viol > 0.1:
+            al_lambda = jnp.minimum(al_lambda, 200.0) 
+            
+            # Spatial update
+            # Need n_al and var_n_al to compute the margins accurately
+            _, _, n_al, var_n_al, _ = self._simulate_trajectory(
+                wc_opt, x0, setup_params, track_k, track_x, track_y, track_psi,
+                track_w_left, track_w_right, 1.0, 0.0, self.dt_control,
+                track_s_r=track_s_r,
+            )
+            tube_r_al = self.kappa_safe * jnp.sqrt(jnp.maximum(var_n_al, 1e-4))
+            viol_left  =  n_al + tube_r_al - track_w_left
+            viol_right = -n_al + tube_r_al - track_w_right
+            
+            lambda_spatial_max = 150.0  
+            al_lambda_left  = jnp.clip(al_lambda_left  + al_rho_spatial * viol_left,  0.0, lambda_spatial_max)
+            al_lambda_right = jnp.clip(al_lambda_right + al_rho_spatial * viol_right, 0.0, lambda_spatial_max)
+            
+            max_viol_fric = float(jnp.max(jnp.maximum(g_al, 0.0)))
+            max_viol_spat = float(jnp.maximum(jnp.max(viol_left), jnp.max(viol_right)))
+            
+            print(f"[Diff-WMPC] Max Violations -> Friction: {max_viol_fric:.4f}, Spatial: {max_viol_spat:.4f}")
+            
+            if max_viol_fric > 0.1:
                 al_rho = min(al_rho * self._al_rho_scale, 500.0)
 
-            # Early exit: constraint is satisfied — further AL iters won't improve much
-            if max_viol < 0.05:
-                print(f"[Diff-WMPC] Constraint satisfied (viol={max_viol:.4f} < 0.05) — "
-                      f"exiting AL loop at iter {al_iter+1}/{n_al_iters}")
+            if max_viol_fric < 0.05 and max_viol_spat < 0.05:
+                print(f"[Diff-WMPC] All constraints satisfied — exiting AL loop at iter {al_iter+1}/{n_al_iters}")
                 break
 
-        # Store AL state — cap to prevent unbounded accumulation across receding horizon
-        # GP-vX8: in receding horizon MPC each solve window sees shifted track geometry.
-        # The λ from window t has no direct meaning for window t+K. However, partially
-        # warm-starting λ (rather than resetting to 0) speeds up convergence when the
-        # same corner appears in consecutive windows. We cap at 100 (already done above)
-        # and store the clipped value.
-        self._al_lambda = jnp.minimum(al_lambda, 20.0)
-        self._al_rho    = min(al_rho, 20.0)
+        # Store AL state — BUGFIX: Decay slightly to warm start, but match in-loop caps
+        self._al_lambda       = jnp.minimum(al_lambda * 0.8, 200.0)
+        self._al_rho          = min(al_rho, 20.0)
+        
+        self._al_lambda_left  = jnp.minimum(al_lambda_left * 0.8, lambda_spatial_max)
+        self._al_lambda_right = jnp.minimum(al_lambda_right * 0.8, lambda_spatial_max)
 
         nan_rate_iter = nan_count[0] / max(total_calls[0], 1)
         print(f"[Diff-WMPC] AL iter {al_iter+1} result: "
@@ -1489,7 +1517,8 @@ class DiffWMPCSolver:
             wc_final, x0, setup_params,
             track_k, track_x, track_y, track_psi,
             track_w_left, track_w_right,
-            lmuy_scalar_eval, 0.0, self.dt_control,  # Replaced the hardcoded 1.0 here
+            lmuy_scalar_eval, 0.0, self.dt_control,
+            track_s_r=track_s_r,
         )
         self._prev_solution = U_opt
 
