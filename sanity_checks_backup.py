@@ -221,6 +221,7 @@ def test_circular_track():
     tpsi = jnp.array(np.unwrap(track_psi), dtype=jnp.float32)
     twl  = jnp.array(track_w_left,       dtype=jnp.float32)
     twr  = jnp.array(track_w_right,      dtype=jnp.float32)
+    ts   = jnp.array(track_s,            dtype=jnp.float32)  # <-- ADD THIS LINE
 
     from models.vehicle_dynamics import compute_equilibrium_suspension
     z_eq = compute_equilibrium_suspension(setup_params, VP)
@@ -229,17 +230,16 @@ def test_circular_track():
           .at[6:10].set(z_eq))
     x0 = x0.at[28:56].set(jnp.tile(jnp.array([85., 85., 85., 80., 75., 30., 40.]), 4))
 
-    U_warm = solver._build_physics_warmstart(tk, tpsi, x0, setup_params, tx, ty)
+    U_warm = solver._build_physics_warmstart(tk, tpsi, x0, setup_params, track_x=tx, track_y=ty, track_s=ts)
     wc_kin = solver._db4_dwt(U_warm)
     opt_coeffs = wc_kin.reshape(-1).astype(jnp.float32)
 
     # ── §3a: Forward trajectory dump — find when n first diverges ─────
-    # The warm start forces position but _simulate_trajectory runs open-loop.
-    # We need to see exactly WHEN n first exceeds the track boundary.
-    print("\n[§3a] Open-loop trajectory breakdown (when does n diverge?):")
+    # The warm start found u, let's see what happens to n
     U_opt, x_traj, n_traj, var_n, s_dot = solver._simulate_trajectory(
-        opt_coeffs.reshape(N, 2), x0, setup_params,
+        opt_coeffs.reshape(solver.N, 2), x0, setup_params,
         tk, tx, ty, tpsi, twl, twr, 1.0, 0.0, solver.dt_control,
+        track_s_r=ts  # <-- ADDED THIS LINE
     )
     n_arr   = np.array(n_traj)
     vx_arr  = np.array(x_traj[:, 14])
@@ -513,12 +513,18 @@ def test_circular_track():
 
     def _full_loss_np(x_np):
         x_jax = jnp.array(x_np, dtype=jnp.float32)
-        return float(solver._loss_fn(
+        raw_loss = solver._loss_fn(
             x_jax.reshape(N, 2), x0, setup_params,
-            tk, tx, ty, tpsi, twl, twr,
+            tk, tx, ty, tpsi, ts, twl, twr,
             jnp.ones(N)*0.02, jnp.ones(N)*1e-3, jnp.ones(N)*5e-5,
-            jnp.zeros(N), jnp.array(0.1), jnp.array(0.13),
-        ))
+            jnp.zeros(N), jnp.array(0.1),
+            jnp.zeros(solver.N),  # al_lambda_left
+            jnp.zeros(solver.N),  # al_lambda_right
+            jnp.zeros(solver.N),  # al_rho_spatial
+            jnp.array(0.0)        # alpha_peak_est
+        )
+        # Collapse the 1D array to a scalar safely before casting
+        return float(jnp.sum(raw_loss))
 
     x_np0   = np.array(opt_coeffs, dtype=np.float64)
     eps_fd  = 1e-3
@@ -563,6 +569,7 @@ def test_circular_track():
         return solver._simulate_trajectory(
             c.reshape(N, 2), x0, setup_params,
             tk, tx, ty, tpsi, twl, twr, 1.0, 0.0, solver.dt_control,
+            track_s_r=ts  # <--- ADDED THIS LINE
         )
     _sim_jit = jax.jit(_sim)
 
@@ -683,9 +690,13 @@ def test_circular_track():
     # 13. Full loss (assembled) ────────────────────────────────────────────────────
     _probe("FULL _loss_fn (assembled)", lambda c: solver._loss_fn(
         c.reshape(N, 2), x0, setup_params,
-        tk, tx, ty, tpsi, twl, twr,
+        tk, tx, ty, tpsi, ts, twl, twr,         # <--- Inserted 'ts'
         jnp.ones(N) * 0.02, jnp.ones(N) * 1e-3, jnp.ones(N) * 5e-5,
-        jnp.zeros(N), jnp.array(0.1), jnp.array(0.13),
+        jnp.zeros(N), jnp.array(0.1),           # <--- Removed 0.13
+        jnp.zeros(solver.N),  # al_lambda_left  # <--- Added
+        jnp.zeros(solver.N),  # al_lambda_right # <--- Added
+        jnp.zeros(solver.N),  # al_rho_spatial  # <--- Added
+        jnp.array(0.0)        # alpha_peak_est  # <--- Added
     ))
     # ─────────────────────────────────────────────────────────────────────────────
     # §3h-A  Per-output gradient of _simulate_trajectory
