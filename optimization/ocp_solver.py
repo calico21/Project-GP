@@ -255,7 +255,7 @@ class DiffWMPCSolver:
         self.w_center  = 0.005 # centreline guidance: at n=1m, cost≈0.16≈1.5×time_cost
                                 # CRITICAL: must stay << time_cost. At w=2.0 it was 580×
                                 # the time cost → optimizer zeroed velocity to keep n=0.
-        self.w_heading = 8.0   # heading alignment cost weight.
+        self.w_heading = 3.0   # heading alignment cost weight.
                                 # Must dominate barrier_cost (~2.5) when alpha>30°.
                                 # At alpha=30° (0.52 rad): w_heading × N × 0.52² = 8×32×0.27=69.
                                 # Gradient signal toward heading alignment >> all other terms.
@@ -841,27 +841,45 @@ class DiffWMPCSolver:
         # ∂ψ/∂n = 2w · softplus(v·s)/s² · sigmoid(v·s) · ∂v/∂n
         # This gradient is PROPORTIONAL to the violation magnitude — larger
         # violations produce stronger restoring forces everywhere.
-        # ── 3. Track limits — Spatial Augmented Lagrangian ─────────────
+        # ── 3. Track limits — Spatial Augmented Lagrangian + soft approach penalty ──
         tube_radius = self.kappa_safe * jnp.sqrt(jnp.maximum(n_var, 1e-4))
 
         # Violation > 0 means the car is outside the track boundary
         c_left  =  n_mean + tube_radius - track_w_left
         c_right = -n_mean + tube_radius - track_w_right
-        
-        # AL Clamps
+
+        # AL terms (zero when inside boundary)
         g_left_clamp  = jnp.maximum(c_left,  -al_lambda_left  / (al_rho_spatial + 1e-8))
         g_right_clamp = jnp.maximum(c_right, -al_lambda_right / (al_rho_spatial + 1e-8))
-        
-        # Exact AL formulation
-        barrier_cost = (
+
+        al_barrier = (
             jnp.dot(al_lambda_left,  jnp.maximum(c_left,  0.0)) +
             0.5 * al_rho_spatial * jnp.sum(g_left_clamp ** 2) +
             jnp.dot(al_lambda_right, jnp.maximum(c_right, 0.0)) +
             0.5 * al_rho_spatial * jnp.sum(g_right_clamp ** 2)
         )
 
+        # Soft pre-boundary penalty: quadratic ramp activating 1.5m before the wall.
+        # This gives the optimizer gradient signal BEFORE the AL violation fires.
+        # Without this the car starts inside the track → c_left/right < 0 → zero AL
+        # gradient → optimizer accelerates freely until it blows past the boundary.
+        # margin > 0 means car is within 1.5m of the wall (but still inside).
+        margin_left  = (n_mean + tube_radius) - (track_w_left  - 1.5)
+        margin_right = (-n_mean + tube_radius) - (track_w_right - 1.5)
+        soft_approach = 0.8 * (
+            jnp.sum(jax.nn.relu(margin_left)  ** 2) +
+            jnp.sum(jax.nn.relu(margin_right) ** 2)
+        )
+
+        barrier_cost = al_barrier + soft_approach
+
         # ── 3b. Centreline cost ───────────────────────────────────────────────
-        center_cost = self.w_center * jnp.sum(n_mean ** 2)
+        # Soft guidance only — the spatial AL handles hard boundary enforcement.
+        # Dead-band of 1.0m: zero cost inside [-1, 1]m of centerline so the
+        # optimizer is free to find the racing line without speed penalty.
+        # Outside the dead-band: quadratic ramp. w_center stays the same weight.
+        n_deadband = jnp.maximum(jnp.abs(n_mean) - 1.0, 0.0)
+        center_cost = self.w_center * jnp.sum(n_deadband ** 2)
 
         # ── 3c. Heading alignment cost — CRITICAL (GP-vX6) ───────────────────
         # Without this term the optimizer has ZERO direct gradient to keep the
@@ -998,7 +1016,7 @@ class DiffWMPCSolver:
         v_target = jnp.minimum(
             jnp.sqrt((self.mu_friction * g) / k_safe),
             self.V_limit
-        ) * 0.80  # Match the 80% v0 entry speed
+        ) * 0.95  # 5% margin keeps g_circle < 1.0 at warm-start; 80% was suppressing speed
         
         lookahead_s = 4.0  # [m] Pure pursuit lookahead distance
 
@@ -1166,7 +1184,7 @@ class DiffWMPCSolver:
         k0    = abs(float(track_k[0])) + 1e-4
         # Spawn the car with a 20% safety margin. This ensures the optimizer 
         # is not deadlocked by friction limits on step 1.
-        v0    = min(math.sqrt((self.mu_friction * 9.81) / k0), self.V_limit) * 0.80
+        v0    = min(math.sqrt((self.mu_friction * 9.81) / k0), self.V_limit) * 0.95
         
         x0    = DifferentiableMultiBodyVehicle.make_initial_state(T_env=25.0, vx0=v0)
         x0    = x0.at[STATE_X  ].set(track_x[0])
@@ -1226,8 +1244,12 @@ class DiffWMPCSolver:
         if self._al_lambda is None or self._al_lambda.shape[0] != self.N:
             self._al_lambda = jnp.zeros(self.N)
         if self._al_lambda_left is None or self._al_lambda_left.shape[0] != self.N:
-            self._al_lambda_left  = jnp.zeros(self.N)
-            self._al_lambda_right = jnp.zeros(self.N)
+            # Small nonzero init: gives AL a gradient contribution even before
+            # the first violation occurs. Without this, a warm-start trajectory
+            # that's fully inside the track produces zero spatial gradient at
+            # the initial point → optimizer ignores boundaries until it's too late.
+            self._al_lambda_left  = jnp.ones(self.N) * 0.5
+            self._al_lambda_right = jnp.ones(self.N) * 0.5
 
         al_lambda       = self._al_lambda
         al_rho          = self._al_rho
@@ -1320,11 +1342,17 @@ class DiffWMPCSolver:
             print("[Diff-WMPC] JIT compiled — starting AL loop.")
         else:
             print("[Diff-WMPC] JIT cache hit — starting AL loop.")
+        
+        al_rho_spatial = self._AL_RHO_SPAT_SCHEDULE[0]   # will be escalated adaptively
 
         for al_iter in range(n_al_iters):
             al_rho             = self._AL_RHO_SCHEDULE[al_iter]
             al_rho_jax         = jnp.array(al_rho, dtype=jnp.float32)
-            al_rho_spatial     = self._AL_RHO_SPAT_SCHEDULE[al_iter]
+            # Use running spatial ρ (escalated in previous iter) rather than
+            # fixed schedule — allows adaptive pressure when car exceeds boundary.
+            if al_iter == 0:
+                al_rho_spatial = self._AL_RHO_SPAT_SCHEDULE[0]
+            # else: al_rho_spatial carries over from previous iter's escalation
             al_rho_spatial_jax = jnp.array(al_rho_spatial, dtype=jnp.float32)
             nan_count          = [0]
             total_calls        = [0]
@@ -1489,7 +1517,19 @@ class DiffWMPCSolver:
             if max_viol_fric > 0.1:
                 al_rho = min(al_rho * self._al_rho_scale, 500.0)
 
-            if max_viol_fric < 0.05 and max_viol_spat < 0.05:
+            # Escalate spatial ρ independently if car is outside boundary.
+            # This was never updating — once the car went fast and exceeded
+            # the 3.5m limit, there was no increasing pressure to return.
+            if max_viol_spat > 0.05:
+                al_rho_spatial = min(al_rho_spatial * self._al_rho_scale, 500.0)
+                self._AL_RHO_SPAT_SCHEDULE[al_iter] = al_rho_spatial  # update live schedule
+
+            # Only exit early if BOTH constraints are simultaneously satisfied.
+            # Spatial < 0 (car inside boundary) is NOT sufficient — friction may
+            # still be violated, and the optimizer hasn't seen spatial pressure yet.
+            spatial_ok  = -0.5 < max_viol_spat < 0.05   # allow small inside margin
+            friction_ok = max_viol_fric < 0.05
+            if spatial_ok and friction_ok:
                 print(f"[Diff-WMPC] All constraints satisfied — exiting AL loop at iter {al_iter+1}/{n_al_iters}")
                 break
 
