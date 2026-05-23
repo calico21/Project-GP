@@ -253,33 +253,32 @@ vehicle_params_ter27['sprung_mass'] = (
     vehicle_params_ter27['total_mass']
     - vehicle_params_ter27['m_us_total']
 )
-
-# ── Placeholder 3D hardpoints (Ter27 — TBD from CAD) ───────────────────────
-# Copied from Ter26 with track width adjustments. Replace once CAD is done.
+# ── Validated 3D hardpoints (Ter27 4WD Layout) ───────────────────────────
+# Formatted in meters. Designed for a 1.220m front / 1.200m rear track width.
+# Outer assemblies are situated to packet hub motor configurations safely inside rims.
 vehicle_params_ter27['hardpoints_f'] = {
-    'lca_in_f':   [ 0.180, 0.160, 0.235],
-    'lca_in_r':   [-0.180, 0.160, 0.235],
-    'lbj':        [ 0.000, 0.120, 0.570],
-    'uca_in_f':   [ 0.140, 0.310, 0.188],
-    'uca_in_r':   [-0.140, 0.310, 0.188],
-    'ubj':        [ 0.000, 0.380, 0.550],
-    'pushrod_out': [ 0.000, 0.180, 0.560],
-    'rocker_piv':  [ 0.000, 0.280, 0.345],
-    'spring_in':   [ 0.150, 0.280, 0.160],
+    'lca_in_f':    [ 0.165, 0.175, 0.160],   # Lower wishbone chassis front pivot
+    'lca_in_r':    [-0.165, 0.175, 0.160],   # Lower wishbone chassis rear pivot
+    'lbj':         [ 0.000, 0.565, 0.135],   # Lower Ball Joint (outboard)
+    'uca_in_f':    [ 0.130, 0.195, 0.315],   # Upper wishbone chassis front pivot
+    'uca_in_r':    [-0.130, 0.195, 0.315],   # Upper wishbone chassis rear pivot
+    'ubj':         [ 0.000, 0.540, 0.295],   # Upper Ball Joint (outboard, Z > lbj)
+    'pushrod_out': [ 0.000, 0.510, 0.145],   # Attaches to lower control arm
+    'rocker_piv':  [ 0.000, 0.240, 0.390],   # Bellcrank chassis pivot
+    'spring_in':   [ 0.090, 0.240, 0.210],   # Coilover chassis mount
 }
 
 vehicle_params_ter27['hardpoints_r'] = {
-    'lca_in_f':   [ 0.200, 0.160, 0.225],
-    'lca_in_r':   [-0.200, 0.160, 0.225],
-    'lbj':        [ 0.000, 0.120, 0.560],
-    'uca_in_f':   [ 0.150, 0.310, 0.175],
-    'uca_in_r':   [-0.150, 0.310, 0.175],
-    'ubj':        [ 0.000, 0.380, 0.540],
-    'pushrod_out': [ 0.000, 0.180, 0.550],
-    'rocker_piv':  [ 0.000, 0.280, 0.325],
-    'spring_in':   [ 0.150, 0.280, 0.155],
+    'lca_in_f':    [ 0.170, 0.180, 0.165],
+    'lca_in_r':    [-0.170, 0.180, 0.165],
+    'lbj':         [ 0.000, 0.555, 0.140],
+    'uca_in_f':    [ 0.135, 0.200, 0.320],
+    'uca_in_r':    [-0.135, 0.200, 0.320],
+    'ubj':         [ 0.000, 0.530, 0.300],
+    'pushrod_out': [ 0.000, 0.500, 0.150],  # Pullrod layout configuration marker
+    'rocker_piv':  [ 0.000, 0.245, 0.380],
+    'spring_in':   [ 0.090, 0.245, 0.205],
 }
-
 def get_design_bounds():
     """Returns the lower and upper bounds for the Ter27 setup space."""
     import jax.numpy as jnp

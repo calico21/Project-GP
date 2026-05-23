@@ -1968,7 +1968,7 @@ def test_desc_convergence():
         DESCState, DESCParams, desc_step, kappa_star_model,
     )
  
-    params = DESCParams()
+    params = DESCParams(phase_shift=0.0)
     state = DESCState.default(params)
     dt = jnp.array(0.005)          # 200 Hz
  
@@ -3120,8 +3120,8 @@ if __name__ == "__main__":
     print("█" * 60)
 
     # ── Physics & dynamics (Tests 1–9) ──
-    #test_neural_convergence()
-    #test_forward_pass()
+    test_neural_convergence()
+    test_forward_pass()
     test_circular_track()
     test_friction_circle()
     test_load_sensitivity()

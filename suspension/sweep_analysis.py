@@ -220,70 +220,45 @@ def compute_sweep(
     z_max:          float = Z_MAX_M,
     n_pts:          int   = N_SWEEP,
 ) -> SweepResult:
-    """
-    Compute the full kinematic sweep for the given toe and camber targets.
+    # FIX: Use jnp expressions to support active tracing
+    toe_rad    = jnp.radians(toe_target_deg)
+    camber_rad = jnp.radians(camber_target_deg)
 
-    Internally:
-    1. Inverts the kinematic model to find (delta_L_tr, psi_shim) for the targets.
-    2. Runs jax.vmap(solve_at_heave)(z_array) for all heave positions.
-    3. Computes derivatives at z=0 via jax.grad (IFD-backed).
-    4. Packages everything into a SweepResult.
-
-    Args:
-        kin              : SuspensionKinematics instance (left side)
-        toe_target_deg   : target static toe [deg]; positive = toe-in
-        camber_target_deg: target static camber [deg]; negative = top lean outboard
-        axle             : 'front' or 'rear' (label only)
-        z_min, z_max     : heave range [m]
-        n_pts            : number of sweep points
-    """
-    toe_rad    = math.radians(toe_target_deg)
-    camber_rad = math.radians(camber_target_deg)
-
-    # ── Invert to get tie-rod and shim adjustments ────────────────────────────
     delta_L_tr = jnp.array(kin.delta_L_tr_from_toe(toe_rad),    dtype=jnp.float32)
     psi_shim   = jnp.array(kin.psi_shim_from_camber(camber_rad), dtype=jnp.float32)
 
-    # ── Heave array ───────────────────────────────────────────────────────────
     z_array = jnp.linspace(z_min, z_max, n_pts, dtype=jnp.float32)
 
-    # ── Vectorised solve ──────────────────────────────────────────────────────
     outputs: KinematicOutputs = jax.jit(
         lambda z: kin.sweep(z, delta_L_tr, psi_shim)
     )(z_array)
 
-    # ── Caster and KPI variation ───────────────────────────────────────────────
-    # e_kp is already in KinematicOutputs; vmap extracts it per-point
     caster_arr, kpi_arr = jax.vmap(_caster_and_kpi_from_kp)(outputs.e_kp)
 
-    # ── Scrub radius ──────────────────────────────────────────────────────────
-    # Use lower ball joint C as the point through which kingpin axis passes
     scrub_arr = jax.vmap(
         lambda C, e_kp, W: _scrub_radius(e_kp, C, kin.R_wheel)
     )(outputs.C, outputs.e_kp, outputs.wheel_pos)
 
-    # ── Track width change ─────────────────────────────────────────────────────
-    # Reference: wheel centre Y at z=0
     z0_idx        = int(jnp.argmin(jnp.abs(z_array)))
-    wheel_y_nom   = float(outputs.wheel_pos[z0_idx, 1])
+    # FIX: Avoid native float coercion of tracer
+    wheel_y_nom   = outputs.wheel_pos[z0_idx, 1]
     track_change  = outputs.wheel_pos[:, 1] - wheel_y_nom
 
-    # ── Derivatives at z=0 via IFD ────────────────────────────────────────────
     z0 = jnp.array(0.0, dtype=jnp.float32)
 
-    camber_gain_rad_m = float(jax.grad(
+    # FIX: Remove float() wraps to keep the Autograd chain alive
+    camber_gain_rad_m = jax.grad(
         lambda z: kin.solve_at_heave(z, delta_L_tr, psi_shim).camber_rad
-    )(z0))
-    bump_steer_rad_m = float(jax.grad(
+    )(z0)
+    bump_steer_rad_m = jax.grad(
         lambda z: kin.solve_at_heave(z, delta_L_tr, psi_shim).toe_rad
-    )(z0))
-    drc_dz = float(jax.grad(
+    )(z0)
+    drc_dz = jax.grad(
         lambda z: kin.solve_at_heave(z, delta_L_tr, psi_shim).roll_centre_z
-    )(z0))
+    )(z0)
 
     out_z0 = kin.solve_at_heave(z0, delta_L_tr, psi_shim)
 
-    # Convert to numpy
     def to_np(x): return np.array(x)
 
     return SweepResult(
@@ -300,14 +275,65 @@ def compute_sweep(
         scrub_radius_mm=to_np(scrub_arr) * 1000.0,
         track_change_mm=to_np(track_change) * 1000.0,
         wheel_z_mm=to_np(outputs.wheel_pos[:, 2]) * 1000.0,
-        camber_gain_deg_per_m=math.degrees(camber_gain_rad_m),
-        bump_steer_deg_per_m=math.degrees(bump_steer_rad_m),
+        camber_gain_deg_per_m=float(jnp.degrees(camber_gain_rad_m)),
+        bump_steer_deg_per_m=float(jnp.degrees(bump_steer_rad_m)),
         mr_at_zero=float(out_z0.motion_ratio),
         rc_at_zero_mm=float(out_z0.roll_centre_z) * 1000.0,
-        drc_dz=drc_dz,
-        kpi_static_deg=math.degrees(kin.kpi_rad),
-        caster_static_deg=math.degrees(kin.caster_rad),
-        mech_trail_mm=kin.mech_trail_m * 1000.0,
+        drc_dz=float(drc_dz),
+        kpi_static_deg=float(jnp.degrees(kin.kpi_rad)),
+        caster_static_deg=float(jnp.degrees(kin.caster_rad)),
+        mech_trail_mm=float(kin.mech_trail_m * 1000.0),
+    )
+
+
+def run_full_kinematic_analysis(
+    kin_left:           SuspensionKinematics,
+    kin_right:          Optional[SuspensionKinematics],
+    toe_target_deg:     float,
+    camber_target_deg:  float,
+    axle:               str,
+    vp:                 Dict[str, Any],
+) -> FullKinematicReport:
+    print(f"\n[KinematicAnalysis/{axle}] Running heave sweep...")
+    sweep = compute_sweep(kin_left, toe_target_deg, camber_target_deg, axle=axle)
+
+    steer = None
+    if kin_right is not None and not vp.get("passive_rear_steer", False):
+        steer = compute_steer_sweep(
+            kin_left, kin_right,
+            toe_target_deg, camber_target_deg,
+            axle=axle,
+            wheelbase_m=vp.get("lf", 0.8525) + vp.get("lr", 0.6975),
+        )
+
+    print(f"[KinematicAnalysis/{axle}] Running roll analysis...")
+    roll = compute_roll_analysis(
+        kin_left,
+        kin_right if kin_right is not None else kin_left,
+        toe_target_deg, camber_target_deg,
+        track_m=vp.get("track_front" if axle == "front" else "track_rear", 1.230),
+    )
+
+    # ── FIX: Avoid native list generation loop on active trackers ────────────
+    axle_tag = "_f" if axle == "front" else "_r"
+    toe_rad_val = jnp.radians(toe_target_deg)
+    camber_rad_val = jnp.radians(camber_target_deg)
+    
+    mr_poly_tracer = kin_left.kinematic_gains(
+        kin_left.delta_L_tr_from_toe(toe_rad_val),
+        kin_left.psi_shim_from_camber(camber_rad_val),
+    ).mr_poly
+
+    vp_entries = {
+        f"motion_ratio{axle_tag}_poly": mr_poly_tracer,
+        f"bump_steer_quad{axle_tag}":     sweep.bump_steer_deg_per_m * (jnp.pi / 180.0) / 2.0,
+        f"camber_per_m_travel{axle_tag}": sweep.camber_gain_deg_per_m,
+        f"h_rc{axle_tag}":               sweep.rc_at_zero_mm / 1000.0,
+        f"dh_rc_dz{axle_tag}":           sweep.drc_dz,
+    }
+
+    return FullKinematicReport(
+        axle=axle, heave_sweep=sweep, steer_sweep=steer, roll_analysis=roll, vp_entries=vp_entries
     )
 
 

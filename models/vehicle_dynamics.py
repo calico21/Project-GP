@@ -95,7 +95,7 @@ _TRIL_14 = jnp.tril_indices(14)
 # Using canonical DEFAULT_SETUP spring rates. Defined here as a module-level
 # constant so NeuralEnergyLandscape.__call__ and residual_fitting.py share
 # identical values — single source of truth. See also compute_equilibrium_suspension().
-_Z_EQ: jnp.ndarray = jnp.array([0.0128, 0.0128, 0.0142, 0.0142], dtype=jnp.float32)
+_Z_EQ: jnp.ndarray = jnp.array([0.0128, 0.0128, 0.0142, 0.0142], dtype=jnp.float64)
 
 # Structural spring prior per corner — must match V_structural in
 # NeuralEnergyLandscape.__call__ and _V_STRUCT_PRIOR_K in residual_fitting.py.
@@ -1146,19 +1146,21 @@ class DifferentiableMultiBodyVehicle:
 
         Fy_f     = Fy_fl + Fy_fr
         Fy_r     = Fy_rl + Fy_rr
-        Fx_f     = Fx_fl + Fx_fr + F_brake_f      # both hydraulic brakes on front axle
-        Fx_r     = Fx_rl + Fx_rr + F_brake_r      # both hydraulic brakes on rear axle
+        
+        # FIX: Remove hydraulic brake forces from direct chassis acceleration. 
+        # Chassis deceleration must flow solely from tire patch interaction.
+        Fx_f     = Fx_fl + Fx_fr
+        Fx_r     = Fx_rl + Fx_rr
         Mz_total = Mz_fl + Mz_fr + Mz_rl + Mz_rr + Mz_castor_fl + Mz_castor_fr
-        M_diff   = 0.0   # No mechanical differential — all yaw moment from TV
+        M_diff   = 0.0   
 
-        F_ext = jnp.zeros(28)
+        # FIX: Explicitly match the incoming state vector precision type
+        F_ext = jnp.zeros(28, dtype=x.dtype)
         F_ext = F_ext.at[14].set(Fx_f + Fx_r - self.m_s * self.g * jnp.sin(theta_pitch))
         F_ext = F_ext.at[15].set(Fy_f + Fy_r - self.m_s * self.g * jnp.sin(phi_roll) * jnp.cos(theta_pitch))
         F_ext = F_ext.at[16].set(F_susp_fl + F_susp_fr + F_susp_rl + F_susp_rr
                                   - self.m_s * self.g * jnp.cos(phi_roll) * jnp.cos(theta_pitch)
                                   + Fz_aero_f + Fz_aero_r)
-        # CORRECT: Left upward force (+y) gives positive roll (+Mx)
-        # Ensure this exact sign convention
         F_ext = F_ext.at[17].set(-Fy_f * h_rc_f - Fy_r * h_rc_r
                                 + (F_susp_fl - F_susp_fr) * tf2
                                 + (F_susp_rl - F_susp_rr) * tr2 + Mx_aero)
@@ -1173,10 +1175,12 @@ class DifferentiableMultiBodyVehicle:
         F_ext = F_ext.at[21].set(-F_susp_fr + Fz_fr - self.m_us_f * self.g)
         F_ext = F_ext.at[22].set(-F_susp_rl + Fz_rl - self.m_us_r * self.g)
         F_ext = F_ext.at[23].set(-F_susp_rr + Fz_rr - self.m_us_r * self.g)
-        F_ext = F_ext.at[24].set(-Fx_fl * self.R_wheel + T_hub_fl * eta)
-        F_ext = F_ext.at[25].set(-Fx_fr * self.R_wheel + T_hub_fr * eta)
-        F_ext = F_ext.at[26].set(-Fx_rl * self.R_wheel + T_hub_rl * eta)
-        F_ext = F_ext.at[27].set(-Fx_rr * self.R_wheel + T_hub_rr * eta)
+        
+        # FIX: Map hydraulic braking force capability to physical wheel torque opposing rotation
+        F_ext = F_ext.at[24].set(-Fx_fl * self.R_wheel + T_hub_fl * eta + F_brake_f * self.R_wheel)
+        F_ext = F_ext.at[25].set(-Fx_fr * self.R_wheel + T_hub_fr * eta + F_brake_f * self.R_wheel)
+        F_ext = F_ext.at[26].set(-Fx_rl * self.R_wheel + T_hub_rl * eta + F_brake_r * self.R_wheel)
+        F_ext = F_ext.at[27].set(-Fx_rr * self.R_wheel + T_hub_rr * eta + F_brake_r * self.R_wheel)
 
         # ── Kinematic Gauge Lock (Prevents body DOFs from drifting) ──────────
         # Because the rigid body (Z, phi, theta) is integrated independently from 
@@ -1566,7 +1570,8 @@ class DifferentiableMultiBodyVehicle:
         if isinstance(setup, SuspensionSetup):
             setup_vec = setup.to_vector()
         else:
-            v = jnp.asarray(setup, dtype=jnp.float32)
+            # FIX: Maintain float64 input trajectories cleanly
+            v = jnp.asarray(setup, dtype=jnp.float64)
             if v.shape[0] == 8:
                 setup_vec = SuspensionSetup.from_legacy_8(v).to_vector()
             else:

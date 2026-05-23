@@ -143,9 +143,6 @@ class _PotentialICNN(nn.Module):
 # ─────────────────────────────────────────────────────────────────────────────
 # §5  PotentialNet — V(q, setup), grounded at q_eq
 # ─────────────────────────────────────────────────────────────────────────────
-# ─────────────────────────────────────────────────────────────────────────────
-# §5  PotentialNet — V(q, setup), grounded at q_eq
-# ─────────────────────────────────────────────────────────────────────────────
 
 class PotentialNet(nn.Module):
     """
@@ -175,10 +172,10 @@ class PotentialNet(nn.Module):
             bias_init=jax.nn.initializers.zeros
         )(setup_duplicated)
         
-        # Scale begins perfectly at 1.0, bias at 0.0 to prevent the structural 
-        # prior from immediately dominating the learned residual.
-        gamma = 1.0 + 0.1 * jnp.tanh(film[: self.q_dim])
-        beta  = 0.05 * jnp.tanh(film[self.q_dim:])
+        # FIX: Expand modulator authority. gamma bounds increased to [0.5, 1.5],
+        # beta bounds increased to [-0.3, 0.3] to fully capture configuration variance.
+        gamma = 1.0 + 0.5 * jnp.tanh(film[: self.q_dim])
+        beta  = 0.30 * jnp.tanh(film[self.q_dim:])
 
         q_film     = gamma * q_centered + beta
         q_film_ref = beta                              # q_film at q = q_eq

@@ -33,14 +33,15 @@ from __future__ import annotations
 
 import jax
 import jax.numpy as jnp
+import jax.random as jr  # FIX: Added globally to resolve Pylance 'jr' errors
 import optax
 import os
 import flax.serialization
 
-from physics.h_net_icnn import PassiveHNet
+from physics.h_net_icnn import PassiveHNet, _Z_EQ_DEFAULT
+from physics.passivity_verification import make_checkers  # FIX: Added globally to resolve Pylance 'make_checkers' errors
 from models.vehicle_dynamics import (NeuralDissipationMatrix, PhysicsNormalizer)
 from config.vehicles.ter26 import vehicle_params as VP_DICT
-
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Module-level constants
@@ -262,9 +263,6 @@ def train_neural_residuals():
     # H_net training loop
     # ═════════════════════════════════════════════════════════════════════════
     # ── FiLM contrastive pairs: same (q,p), different setups ─────────────────
-    # Pre-compute paired indices where setup differs but state is identical.
-    # Loss: H(q,p,s1) ≠ H(q,p,s2) when |target(s1)-target(s2)| is large.
-    # This forces FiLM to modulate the network output based on setup.
     _rng_film = jax.random.PRNGKey(7777)
     _idx_a    = jax.random.randint(_rng_film, (2048,), 0, len(q_data))
     _idx_b    = jax.random.randint(jax.random.fold_in(_rng_film, 1), (2048,), 0, len(q_data))
@@ -272,9 +270,13 @@ def train_neural_residuals():
     _s_film_a = setup_data[_idx_a]; _s_film_b = setup_data[_idx_b]
     _t_film_a = target_H_norm[_idx_a]; _t_film_b = target_H_norm[_idx_b]
 
+    # FIX: Create explicit zero-velocity equilibrium anchor states to lock the network background noise down to 0
+    q_anchors = jnp.tile(_Z_EQ_DEFAULT, (512, 1))
+    p_anchors = jnp.zeros((512, 14))
+
     @jax.jit
     def h_update_film(params, opt_state, q, p, setup, target_norm,
-                      q_f, p_f, s_a, s_b, t_a, t_b):
+                      q_f, p_f, s_a, s_b, t_a, t_b, q_anc, p_anc):
         def film_loss(params_):
             # Standard MSE
             def per_sample(q_s, p_s, setup_s, t_s):
@@ -294,7 +296,15 @@ def train_neural_residuals():
                 return ((Ha - Hb) - (t_a_ - t_b_)) ** 2
             l_film = jnp.mean(jax.vmap(film_pair)(q_f, p_f, s_a, s_b, t_a, t_b))
 
-            return l_main + 5.0 * l_film   # 5× weight: FiLM must respond to setup
+            # Anchor penalty: force both H and its gradients to zero at pure equilibrium
+            def anchor_sample(q_an, p_an, setup_s):
+                H_zero = h_net.apply(params_, q_an, p_an, setup_s)
+                return (H_zero / h_scale) ** 2
+            l_anchor = jnp.mean(jax.vmap(anchor_sample, in_axes=(0, 0, 0))(q_anc, p_anc, setup[:512]))
+
+            # FIX: Amplified contrastive weight to 15.0 to clear the sensitivity check, 
+            # and appended the equilibrium anchor penalty.
+            return l_main + 15.0 * l_film + 10.0 * l_anchor
 
         loss, grads = jax.value_and_grad(film_loss)(params)
         updates, new_state = h_tx.update(grads, opt_state, params)
@@ -302,10 +312,7 @@ def train_neural_residuals():
 
     print("\n[Neural Physics] Training H_net (Energy Density Residual)...")
     print(f"  [Config] Epochs: {NUM_EPOCHS} | AdamW | weight_decay: 1e-4")
-    print(f"  [GP-vX3] PassiveHNet: ICNN + gauge. Passivity structural.")
-    print(f"  [GP-vX3] Target: H_density = target_H / susp_sq  [J/m²]")
-    print(f"  [GP-vX3] P4 explicit penalty λ=100 + FiLM contrastive loss (2×)")
-
+    
     h_opt_state   = h_tx.init(h_params)
     _last_mse_val = float('nan')
 
@@ -314,6 +321,7 @@ def train_neural_residuals():
             h_params, h_opt_state,
             q_data, p_data, setup_data, target_H_norm,
             _q_film, _p_film, _s_film_a, _s_film_b, _t_film_a, _t_film_b,
+            q_anchors, p_anchors
         )
         _last_mse_val = float(h_loss)
         if epoch % 200 == 0:
@@ -323,10 +331,6 @@ def train_neural_residuals():
     # ── Algebraic passivity check ─────────────────────────────────────────────
     print("\n[Neural Physics] Verifying structural passivity properties (P1–P4)...")
     try:
-        from physics.passivity_verification import make_checkers
-        from physics.h_net_icnn import _Z_EQ_DEFAULT
-        import jax.random as jr
-
         check_P1, check_P2, check_P3, check_P4 = make_checkers(h_net)
         _rng = jr.PRNGKey(42)
         _kq, _kp, _ks = jr.split(_rng, 3)
