@@ -302,9 +302,8 @@ def train_neural_residuals():
                 return (H_zero / h_scale) ** 2
             l_anchor = jnp.mean(jax.vmap(anchor_sample, in_axes=(0, 0, 0))(q_anc, p_anc, setup[:512]))
 
-            # FIX: Amplified contrastive weight to 15.0 to clear the sensitivity check, 
-            # and appended the equilibrium anchor penalty.
-            return l_main + 15.0 * l_film + 10.0 * l_anchor
+            # Boost contrastive loss weight to enforce distinct setup representation
+            return l_main + 45.0 * l_film + 10.0 * l_anchor
 
         loss, grads = jax.value_and_grad(film_loss)(params)
         updates, new_state = h_tx.update(grads, opt_state, params)

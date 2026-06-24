@@ -400,18 +400,18 @@ class FiLMLayer(nn.Module):
 
     Mathematically superior to concatenation: the setup vector controls the
     GRADIENT of the energy landscape (effective stiffness), not just its offset.
-    Initialized to identity (γ=1, β=0) so training starts from the unmodulated
-    baseline and learns deviations.
+    Initialized with small random weights so training can break symmetry 
+    and learn setup-dependent deviations under weight decay.
     """
     features: int
 
     @nn.compact
     def __call__(self, h: jax.Array, setup_embedding: jax.Array) -> jax.Array:
         gamma = nn.Dense(self.features,
-                         kernel_init=jax.nn.initializers.zeros,
+                         kernel_init=jax.nn.initializers.normal(stddev=0.01),
                          bias_init=jax.nn.initializers.ones)(setup_embedding)
         beta  = nn.Dense(self.features,
-                         kernel_init=jax.nn.initializers.zeros,
+                         kernel_init=jax.nn.initializers.normal(stddev=0.01),
                          bias_init=jax.nn.initializers.zeros)(setup_embedding)
         h_norm = nn.LayerNorm()(h)
         return gamma * h_norm + beta
@@ -886,7 +886,17 @@ class DifferentiableMultiBodyVehicle:
             v_safe = v_safe.at[5].set(jnp.clip(v_safe[5], -8.0, 8.0))
             p_safe = v_safe * self.M_diag
             susp_sq = jnp.sum((q_[6:10] - _Z_EQ) ** 2) + 1e-4
-            return self.H_net.apply(self.H_params, q_, p_safe, setup_params) * susp_sq
+            
+            # Pure analytical forward pass evaluation
+            H_val = self.H_net.apply(self.H_params, q_, p_safe, setup_params)
+            
+            # Enforce bilateral mirror symmetry target to zero out neural weight drift
+            # Mirror the suspension states left-to-right to damp out random epoch-noise fields
+            q_mirrored = q_.at[3].set(-q_[3]).at[6].set(q_[7]).at[7].set(q_[6]).at[8].set(q_[9]).at[9].set(q_[8])
+            p_mirrored = p_safe.at[1].set(-p_safe[1]).at[5].set(-p_safe[5])
+            H_val_mirrored = self.H_net.apply(self.H_params, q_mirrored, p_mirrored, setup_params)
+            
+            return 0.5 * (H_val + H_val_mirrored) * susp_sq
             
         dH_dq_nn, dH_dp_nn = jax.grad(_nn_H, argnums=(0, 1))(q, p)
         
@@ -1082,8 +1092,15 @@ class DifferentiableMultiBodyVehicle:
         T_ribs_r = (T_ribs_rl + T_ribs_rr) * 0.5
         T_gas_r  = (T_gas_rl  + T_gas_rr)  * 0.5
 
-        Fx_fl, Fy_fl = self.tire.compute_force(alpha_t_fl, kappa_t_fl, Fz_fl, gamma_fl, T_ribs_fl, T_gas_fl, vx, wz=wz)
-        Fx_fr, Fy_fr = self.tire.compute_force(alpha_t_fr, kappa_t_fr, Fz_fr, gamma_fr, T_ribs_fr, T_gas_fr, vx, wz=wz)
+        # LIFTED BLOCK: Compute track-corrected local linear wheel speeds early so they are in scope
+        v_fl_g = jnp.maximum(safe_abs(vx - wz * tf2), 0.5)
+        v_fr_g = jnp.maximum(safe_abs(vx + wz * tf2), 0.5)
+        v_rl_g = jnp.maximum(safe_abs(vx - wz * tr2), 0.5)
+        v_rr_g = jnp.maximum(safe_abs(vx + wz * tr2), 0.5)
+
+        # Front tire forces can now safely resolve their linear speed targets
+        Fx_fl, Fy_fl = self.tire.compute_force(alpha_t_fl, kappa_t_fl, Fz_fl, gamma_fl, T_ribs_fl, T_gas_fl, v_fl_g, wz=wz)
+        Fx_fr, Fy_fr = self.tire.compute_force(alpha_t_fr, kappa_t_fr, Fz_fr, gamma_fr, T_ribs_fr, T_gas_fr, v_fr_g, wz=wz)
         Mz_fl        = self.tire.compute_aligning_torque(alpha_t_fl, kappa_t_fl, Fz_fl, gamma_fl, Fy_fl, Fx_fl)
         Mz_fr        = self.tire.compute_aligning_torque(alpha_t_fr, kappa_t_fr, Fz_fr, gamma_fr, Fy_fr, Fx_fr)
         Mz_castor_fl = compute_castor_trail(s.castor_f, Fy_fl, self.R_wheel)
@@ -1129,15 +1146,15 @@ class DifferentiableMultiBodyVehicle:
         d_kappa_rl = kappa_dot_rl
         d_kappa_rr = kappa_dot_rr
  
-        # Tire forces — all 4 corners independently
+        # Tire forces — pass localized hub speeds to all 4 corners independently
         Fx_fl, Fy_fl = self.tire.compute_force(
-            alpha_t_fl, kappa_t_fl, Fz_fl, gamma_fl, T_ribs_fl, T_gas_fl, vx, wz=wz)
+            alpha_t_fl, kappa_t_fl, Fz_fl, gamma_fl, T_ribs_fl, T_gas_fl, v_fl_g, wz=wz)
         Fx_fr, Fy_fr = self.tire.compute_force(
-            alpha_t_fr, kappa_t_fr, Fz_fr, gamma_fr, T_ribs_fr, T_gas_fr, vx, wz=wz)
+            alpha_t_fr, kappa_t_fr, Fz_fr, gamma_fr, T_ribs_fr, T_gas_fr, v_fr_g, wz=wz)
         Fx_rl, Fy_rl = self.tire.compute_force(
-            alpha_t_rl, kappa_t_rl, Fz_rl, gamma_rl, T_ribs_rl, T_gas_rl, vx, wz=wz)
+            alpha_t_rl, kappa_t_rl, Fz_rl, gamma_rl, T_ribs_rl, T_gas_rl, v_rl_g, wz=wz)
         Fx_rr, Fy_rr = self.tire.compute_force(
-            alpha_t_rr, kappa_t_rr, Fz_rr, gamma_rr, T_ribs_rr, T_gas_rr, vx, wz=wz)
+            alpha_t_rr, kappa_t_rr, Fz_rr, gamma_rr, T_ribs_rr, T_gas_rr, v_rr_g, wz=wz)
  
         Mz_rl = self.tire.compute_aligning_torque(
             alpha_t_rl, kappa_t_rl, Fz_rl, gamma_rl, Fy_rl, Fx_rl)

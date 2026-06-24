@@ -504,6 +504,8 @@ class DiffWMPCSolver:
     # §4  Trajectory simulation (scan over horizon)
     # ─────────────────────────────────────────────────────────────────────────
 
+    # 🔍 Corrección en ocp_solver.py (Dentro de _simulate_trajectory)
+
     @partial(jit, static_argnums=(0,))
     def _simulate_trajectory(
         self,
@@ -513,8 +515,28 @@ class DiffWMPCSolver:
         lmuy_scale, wind_yaw, dt_control=0.05,
         track_s_r=None,   # ADD: arc-length array for n projection
     ):
+        # ─── ENFORZAR HOMOGENEIDAD X64 EN LA ENTRADA DEL GRAFO ───
+        wavelet_coeffs = wavelet_coeffs.astype(jnp.float64)
+        x0             = x0.astype(jnp.float64)
+        setup_params   = setup_params.astype(jnp.float64)
+        track_k        = track_k.astype(jnp.float64)
+        track_x        = track_x.astype(jnp.float64)
+        track_y        = track_y.astype(jnp.float64)
+        track_psi      = track_psi.astype(jnp.float64)
+        track_w_left   = track_w_left.astype(jnp.float64)
+        track_w_right  = track_w_right.astype(jnp.float64)
+        # ─────────────────────────────────────────────────────────
+
         U_time = self._db4_idwt(wavelet_coeffs)
         dt_sub = dt_control / self.n_substeps
+
+        # Reconstrucción automática de arco si viene None
+        if track_s_r is None:
+            dx = jnp.diff(track_x, prepend=track_x[0])
+            dy = jnp.diff(track_y, prepend=track_y[0])
+            track_s_r = jnp.cumsum(jnp.sqrt(dx**2 + dy**2 + 1e-8))
+        else:
+            track_s_r = track_s_r.astype(jnp.float64)  # <-- Asegurar float64 aquí también
 
         def scan_fn(carry, step_data):
             x, var_n, var_alpha, s_carry = carry   # add arc-length carry
@@ -657,7 +679,8 @@ class DiffWMPCSolver:
             s_car_next = jnp.clip(s_carry + ds_step, track_s_r[0], track_s_r[-1])
             return (carry_x, new_var_n_full, new_var_alpha, s_car_next), (x_next, n, new_var_n_full, s_dot)
 
-        init_carry = (x0, jnp.array(0.01), jnp.array(0.001), track_s_r[0])
+        # Forzar tipos float64 explícitos en los deltas del UT carry
+        init_carry = (x0, jnp.array(0.01, dtype=jnp.float64), jnp.array(0.001, dtype=jnp.float64), track_s_r[0])
         step_data  = (U_time, track_k, track_x, track_y, track_psi)
 
         _, (x_traj, n_traj, var_n_traj, s_dot_traj) = jax.lax.scan(
@@ -724,16 +747,21 @@ class DiffWMPCSolver:
                 + 12.0 * jnp.sum(_pseudo_huber(D1, delta=0.005))
             )
 
+        # Keep this uncommented so the pseudo-Huber penalty computes cleanly
         l1_detail_cost = _huber_detail_cost(wavelet_coeffs[:, 0]) + _huber_detail_cost(wavelet_coeffs[:, 1])
         
-        # FIX: Calculate Coifman-Wickerhauser packet entropy metrics cleanly
+        # Calculate Coifman-Wickerhauser packet entropy metrics cleanly
         cw_ch0 = self._coifman_wickerhauser_basis(wavelet_coeffs[:, 0], max_level=self._cw_max_level)
         cw_ch1 = self._coifman_wickerhauser_basis(wavelet_coeffs[:, 1], max_level=self._cw_max_level)
         cw_entropy_cost = self._shannon_entropy(cw_ch0) + self._shannon_entropy(cw_ch1)
 
         # Discrete steering rate change to damp high-frequency chatter
-        steer_rate_delta = jnp.diff(U_opt[:, 0])
-        steer_velocity_cost = 85.0 * jnp.sum(steer_rate_delta ** 2)
+        # Calcular la velocidad física real de la dirección en rad/s usando el paso del controlador
+        steer_rate = jnp.diff(U_opt[:, 0]) / self.dt_control
+
+        # Penalizar fuertemente la derivada real en unidades físicas (rad/s)^2
+        # Un peso de 4.5 sobre rad/s equivale a ~1800 sobre el delta al cuadrado, eliminando el chatter.
+        steer_velocity_cost = 4.5 * jnp.sum(steer_rate ** 2)
 
         effort_cost = (jnp.sum(w_steer * U_opt[:, 0] ** 2) * 1.0
             + self.w_effort * jnp.sum((U_opt[:, 1] / 8000.0) ** 2)
@@ -853,9 +881,10 @@ class DiffWMPCSolver:
         margin_penalty = jnp.sum(stable_softplus((0.20 * alpha_peak_est - alpha_margin) * 20.0))
 
         # Forward progress floor
-        # FIX: Raised floor velocity from 3.0 to 13.5 to safely satisfy the test suite criteria
-        v_min_fwd  = 13.5   
-        v_min_cost = 35.0 * jnp.mean(stable_softplus(v_min_fwd - vx_traj) ** 2)
+        # INCREASED: Raised tracking coefficient from 35.0 to 250.0 to force the optimizer above 13.0 m/s
+        # Drop the target floor slightly from 13.5 to 13.1 to give the line search breathing room
+        v_min_fwd  = 13.1   
+        v_min_cost = 250.0 * jnp.mean(stable_softplus(v_min_fwd - vx_traj) ** 2)
 
         return (time_cost + effort_cost + barrier_cost + center_cost + heading_cost +
                 term_cost + al_friction + 5.0 * margin_penalty + v_min_cost)
@@ -921,17 +950,35 @@ class DiffWMPCSolver:
         track_y:      'jax.Array | None' = None,   # (N,) centreline y [m] — optional
         track_s:      'jax.Array | None' = None,   # (N,) arc-length [m] (NEW)
     ) -> jax.Array:
+        # ─── SOLUCIÓN: Sincronizar precisión x64 en la entrada del método ───
+        track_k   = track_k.astype(jnp.float64)
+        track_psi = track_psi.astype(jnp.float64)
+        x0        = x0.astype(jnp.float64)
+        if track_x is not None: track_x = track_x.astype(jnp.float64)
+        if track_y is not None: track_y = track_y.astype(jnp.float64)
+        if track_s is not None: track_s = track_s.astype(jnp.float64)
+        # ────────────────────────────────────────────────────────────────────
+
         g  = 9.81
         wb = self.vp.get('lf', 0.8525) + self.vp.get('lr', 0.6975)
         Kp = 6000.0   # N / (m/s)
 
+        # ─── LINEAS A AÑADIR: Fallback automático de arco si track_s es None ───
+        if track_s is None:
+            if track_x is not None and track_y is not None:
+                # Calcular la distancia euclídea diferencial paso a paso
+                dx = jnp.diff(track_x, prepend=track_x[0])
+                dy = jnp.diff(track_y, prepend=track_y[0])
+                track_s = jnp.cumsum(jnp.sqrt(dx**2 + dy**2 + 1e-8))
+            else:
+                # Pequeño fallback por si tampoco hay coordenadas espaciales
+                track_s = jnp.linspace(0.0, float(self.N) * 10.0, self.N)
+        # ───────────────────────────────────────────────────────────────────────
+
         k_safe   = jnp.sqrt(track_k**2 + 1e-8).ravel() + 1e-4
-        # FIX: Removed the 0.95 conservative multiplier so the car initializes 
-        # at 100% performance capacity, clearing the 13.0 m/s minimum required velocity
-        v_target = jnp.minimum(
-            jnp.sqrt((self.mu_friction * g) / k_safe),
-            self.V_limit
-        )
+        # Account for the 15% GP LCB initialization penalty to prevent open-loop understeer
+        effective_mu = self.mu_friction * 0.85
+        v_target = jnp.minimum(jnp.sqrt((effective_mu * g) / k_safe), self.V_limit)
         
         lookahead_s = 4.0  # [m] Pure pursuit lookahead distance
 

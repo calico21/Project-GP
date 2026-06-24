@@ -54,7 +54,7 @@ jax.config.update('jax_persistent_cache_min_compile_time_secs', 5.0)
 # 64-bit floats off by default (JAX default). Keep 32-bit for physics:
 # faster SIMD, smaller memory footprint, compatible with most ML libraries.
 # Enable this only if you observe numerical precision issues in the ODE integrator.
-# jax.config.update('jax_enable_x64', True)
+jax.config.update('jax_enable_x64', True)
 
 print(f"[JAX Config] XLA cache : {_CACHE_DIR}")
 print(f"[JAX Config] Device    : {jax.default_backend()}")

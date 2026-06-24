@@ -1,3 +1,4 @@
+import jax_config  # <-- MUST BE FIRST
 import os
 import sys
 
@@ -205,7 +206,7 @@ def test_circular_track():
     _leaves = _cw._wpd_full_tree(_u_test[:, 0], max_level=3)
     print(f"[{'PASS' if len(_leaves)==8 and all(l.shape==(8,) for l in _leaves) else 'FAIL'}] WPD tree shape")
 
-    if False:
+    if True:
         # ─────────────────────────────────────────────────────────────────
         # §3  TARGETED NaN BACKWARD-PASS SURGERY
         # ─────────────────────────────────────────────────────────────────
@@ -512,13 +513,21 @@ def test_circular_track():
         # ── §3g: Finite-difference gradient (ground truth) ─────────────────
         print("\n[§3g] Finite-difference gradient (16 dims, eps=1e-3):")
 
+        # ── NUEVO: Pre-calcular la longitud de arco para el test ──
+        dx_diag = jnp.diff(tx, prepend=tx[0])
+        dy_diag = jnp.diff(ty, prepend=ty[0])
+        tsr_diag = jnp.cumsum(jnp.sqrt(dx_diag**2 + dy_diag**2 + 1e-8)).astype(jnp.float64)
+        # ──────────────────────────────────────────────────────────
+
         def _full_loss_np(x_np):
-            x_jax = jnp.array(x_np, dtype=jnp.float32)
+            x_jax = jnp.array(x_np, dtype=jnp.float64)
             return float(solver._loss_fn(
                 x_jax.reshape(N, 2), x0, setup_params,
-                tk, tx, ty, tpsi, twl, twr,
+                tk, tx, ty, tpsi, tsr_diag, twl, twr,     # <-- Añadido tsr_diag
                 jnp.ones(N)*0.02, jnp.ones(N)*1e-3, jnp.ones(N)*5e-5,
-                jnp.zeros(N), jnp.array(0.1), jnp.array(0.13),
+                jnp.zeros(N), jnp.array(0.1),             # Friction AL
+                jnp.zeros(N), jnp.zeros(N), jnp.array(0.5), # Spatial AL
+                jnp.array(0.13),                          # alpha_peak_est
             ))
 
         x_np0   = np.array(opt_coeffs, dtype=np.float64)
@@ -683,11 +692,14 @@ def test_circular_track():
         print("  " + "─" * 82)
         # 13. Full loss (assembled) ────────────────────────────────────────────────────
         _probe("FULL _loss_fn (assembled)", lambda c: solver._loss_fn(
-            c.reshape(N, 2), x0, setup_params,
-            tk, tx, ty, tpsi, twl, twr,
+            c.reshape(N, 2).astype(jnp.float64), x0, setup_params,
+            tk, tx, ty, tpsi, tsr_diag, twl, twr,         # <-- Añadido tsr_diag
             jnp.ones(N) * 0.02, jnp.ones(N) * 1e-3, jnp.ones(N) * 5e-5,
-            jnp.zeros(N), jnp.array(0.1), jnp.array(0.13),
+            jnp.zeros(N), jnp.array(0.1),
+            jnp.zeros(N), jnp.zeros(N), jnp.array(0.5),
+            jnp.array(0.13),
         ))
+        # ─────────────────────────────────────────────────────────────────────────────
         # ─────────────────────────────────────────────────────────────────────────────
         # §3h-A  Per-output gradient of _simulate_trajectory
         #        Test jnp.sum(output_i) independently to find which output NaNs.
@@ -1618,8 +1630,10 @@ def test_differential_yaw_moment():
     vx_init = 15.0
     omega_init = vx_init / veh.R_wheel
 
+    # Scale initial momentum by wheel rotational inertia to align slips perfectly
+    iw_val = VP.get('Iw', 1.2)
     x0 = (DifferentiableMultiBodyVehicle.make_initial_state(T_env=25.0, vx0=vx_init)
-          .at[24:28].set(omega_init)
+          .at[24:28].set(omega_init * iw_val)
           .at[28:56].set(88.0))
 
     # ── RWD FIX: Send drive torque exclusively to the rear wheels ─────────
@@ -1972,7 +1986,7 @@ def test_desc_convergence():
     state = DESCState.default(params)
     dt = jnp.array(0.005)          # 200 Hz
  
-    kappa_peak = 0.12              # synthetic Fx peaks here
+    kappa_peak = 0.083             # True mathematical peak for B=18.5, C=1.579
     vx = jnp.array(15.0)
     omega_w = jnp.full(4, 15.0 / 0.2032)   # unused by DESC but API-consistent
  
@@ -2002,10 +2016,11 @@ def test_desc_convergence():
  
     # Model-based κ* sanity check
     Fz = jnp.array([700., 700., 800., 800.])
-    gamma = jnp.zeros(4)
-    mu_th = jnp.ones(4) * 1.4
+    mu_scale = 1.4
+    T_tire_warm = jnp.ones(4) * 85.0   # Supply realistic optimal operating temperatures
     try:
-        kappa_star = kappa_star_model(Fz, gamma, mu_th)
+        # Align positional signature: Fz, mu_scale, T_tire
+        kappa_star = kappa_star_model(Fz, mu_scale, T_tire_warm)
         kstar_mean = float(jnp.mean(kappa_star))
         if 0.05 < kstar_mean < 0.25:
             print(f"[PASS] Model-based κ* = {kstar_mean:.4f} (physically reasonable range)")
