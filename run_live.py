@@ -22,7 +22,68 @@ for d in (OUT_DIR, FIGS_DIR):
 
 STATE_X = 0; STATE_Y = 1; STATE_YAW = 5
 STATE_VX = 14; STATE_VY = 15
+# ── new module-level constants/helper, alongside STATE_X etc. ──────────────
+STATE_WZ = 19
 
+def _estimate_corner_loads(vx, ax_decel, ay_left, mass, lf, lr, h_cg, t_f, t_r,
+                            Fz_floor: float = 80.0):
+    """
+    Quasi-static diagonal load transfer — same formula as
+    sanity_checks.test_diagonal_load_transfer() / objectives.compute_skidpad_objective(),
+    not a fresh derivation.
+
+    ax_decel > 0 : braking   (load shifts FORWARD)
+    ay_left  > 0 : left turn (load shifts to the RIGHT axle pair), matching the
+                   project-wide curvature convention "positive kappa = left turn"
+                   (differentiable_track.py). NOT independently re-verified against
+                   racing_line_planner.py's sign convention — if RL/RR look swapped
+                   in telemetry, this is the first place to check.
+
+    A static Fz split is exactly wrong when it matters most: under trail braking,
+    the SOCP/CBF friction budget on the unloaded rear-inside wheel is the binding
+    constraint, and a flat 720/780N guess hides that from the allocator.
+    """
+    L = lf + lr
+    Fz_fl = mass*9.81*lr/(L*2) - mass*ay_left*h_cg/(2*t_f)*0.5 + mass*ax_decel*h_cg/(2*L)
+    Fz_fr = mass*9.81*lr/(L*2) + mass*ay_left*h_cg/(2*t_f)*0.5 + mass*ax_decel*h_cg/(2*L)
+    Fz_rl = mass*9.81*lf/(L*2) - mass*ay_left*h_cg/(2*t_r)*0.5 - mass*ax_decel*h_cg/(2*L)
+    Fz_rr = mass*9.81*lf/(L*2) + mass*ay_left*h_cg/(2*t_r)*0.5 - mass*ax_decel*h_cg/(2*L)
+    return jnp.array([max(Fz_fl, Fz_floor), max(Fz_fr, Fz_floor),
+                       max(Fz_rl, Fz_floor), max(Fz_rr, Fz_floor)])
+
+def _make_powertrain_substep_scan(vehicle, setup_vec, pt_config, geom, n_substeps, dt_ctrl):
+    m_veh, lf_g, lr_g, h_cg_g, t_f_g, t_r_g, r_w = geom
+
+    @jax.jit
+    def _scan_fn(x0, manager_state, steer, throttle, brake, force, kappa, mu_est):
+        def body(carry, _):
+            x_c, ms = carry
+            vx_c, wz_c = x_c[STATE_VX], x_c[STATE_WZ]
+            L = lf_g + lr_g
+            ax_decel, ay_left = -force / m_veh, vx_c ** 2 * kappa
+            Fz_fl = m_veh*9.81*lr_g/(L*2) - m_veh*ay_left*h_cg_g/(2*t_f_g)*0.5 + m_veh*ax_decel*h_cg_g/(2*L)
+            Fz_fr = m_veh*9.81*lr_g/(L*2) + m_veh*ay_left*h_cg_g/(2*t_f_g)*0.5 + m_veh*ax_decel*h_cg_g/(2*L)
+            Fz_rl = m_veh*9.81*lf_g/(L*2) - m_veh*ay_left*h_cg_g/(2*t_r_g)*0.5 - m_veh*ax_decel*h_cg_g/(2*L)
+            Fz_rr = m_veh*9.81*lf_g/(L*2) + m_veh*ay_left*h_cg_g/(2*t_r_g)*0.5 - m_veh*ax_decel*h_cg_g/(2*L)
+            Fz_k  = jnp.maximum(jnp.array([Fz_fl, Fz_fr, Fz_rl, Fz_rr]), 80.0)
+
+            diag, ms_next = powertrain_step(
+                throttle_raw=throttle, brake_raw=brake, delta=steer,
+                vx=vx_c, vy=x_c[STATE_VY], wz=wz_c, Fz=Fz_k, Fy=jnp.zeros(4),
+                omega_wheel=jnp.full(4, vx_c / r_w),
+                alpha_t=x_c[56:72:4],
+                T_tire=jnp.mean(x_c[28:56].reshape(4, 7)[:, :3], axis=1),
+                mu_est=mu_est, gp_sigma=jnp.array(0.05), curvature=kappa,
+                manager_state=ms, dt=jnp.array(dt_ctrl), config=pt_config,
+            )
+            u_k = jnp.concatenate([steer[None], diag.T_wheel, diag.F_brake_hydraulic[None]])
+            x_next = vehicle.simulate_step(x_c, u_k, setup_vec, dt=dt_ctrl, n_substeps=1)
+            return (x_next, ms_next), diag
+
+        (x_final, ms_final), diags = jax.lax.scan(body, (x0, manager_state), None, length=n_substeps)
+        return x_final, ms_final, diags
+
+    return _scan_fn
 
 def _find_nearest_node(x, y, cx, cy, start_idx, search_window=60):
     n = len(cx)
@@ -98,6 +159,8 @@ def main():
     ap.add_argument('--max_laps', type=float, default=1.0)
     ap.add_argument('--mu',       type=float, default=1.40)
     ap.add_argument('--v_max',    type=float, default=25.0)
+    ap.add_argument('--log_powertrain', action='store_true',
+                     help='Dump (state, T_wheel) pairs at 200 Hz for offline EDMD/Koopman retraining.')
     args = ap.parse_args()
 
     # ── 1. Track ──────────────────────────────────────────────────────────────
@@ -124,16 +187,33 @@ def main():
         cx, cy, ck, wl, wr)
     print(f"[Live] Racing line ready in {time.time()-t0:.2f}s")
 
-    # ── 3. Vehicle dynamics ───────────────────────────────────────────────────
+    # ── 3. Vehicle dynamics + powertrain stack ────────────────────────────────
+    import jax
+    import jax.numpy as jnp
     from models.vehicle_dynamics import (
         DifferentiableMultiBodyVehicle, build_default_setup_28,
         compute_equilibrium_suspension,
     )
     from config.vehicles.ter26 import vehicle_params as VP
-    import jax.numpy as jnp
+    from powertrain.powertrain_manager import make_powertrain_manager, powertrain_step
 
     vehicle      = DifferentiableMultiBodyVehicle(VP, _load_tire_coeffs())
     setup_params = build_default_setup_28(VP)
+
+    pt_config, pt_manager_state = make_powertrain_manager(VP)
+    pt_config = pt_config._replace(is_rwd=True)   # Ter26 reference platform is RWD, not Ter27 AWD
+
+    r_w    = float(pt_config.geo.r_w)
+    m_veh  = float(pt_config.geo.mass)
+    lf_g   = float(VP.get('lf', 0.8525))
+    lr_g   = float(VP.get('lr', 0.6975))
+    h_cg_g = float(VP.get('h_cg', 0.285))
+    t_f_g  = float(VP.get('track_front', 1.20))
+    t_r_g  = float(VP.get('track_rear', 1.18))
+
+    MACRO_DT   = 0.05      # visual/driver-update frame (unchanged from baseline)
+    DT_CTRL    = 0.005     # native 200 Hz powertrain rate (powertrain_manager smoke_test, README §12.1)
+    N_SUBSTEPS = round(MACRO_DT / DT_CTRL)   # 10
 
     # ── 4. Initial car state ──────────────────────────────────────────────────
     v0    = float(racing_line.v_ref[0])
@@ -172,7 +252,6 @@ def main():
         ax_speed.set_xlabel('s [m]', color='white')
         fig.patch.set_facecolor('#1a1a2e')
 
-        # Draw track limits
         for sign, color in [(1, '#333355'), (-1, '#333355')]:
             psi_c = np.unwrap(np.arctan2(np.diff(cy, append=cy[0]),
                                           np.diff(cx, append=cx[0])))
@@ -181,7 +260,6 @@ def main():
             ax_map.plot(cx + sign * w * nx, cy + sign * w * ny,
                         color='#555577', lw=1.0, alpha=0.6)
 
-        # Draw racing line colored by v_ref
         rl_xy  = np.column_stack([racing_line.rx, racing_line.ry])
         pts    = rl_xy.reshape(-1, 1, 2)
         segs   = np.concatenate([pts[:-1], pts[1:]], axis=1)
@@ -192,7 +270,6 @@ def main():
         ax_map.add_collection(lc_rl)
         fig.colorbar(lc_rl, ax=ax_map, label='Speed [m/s]')
 
-        # Draw track walls using correct normal vectors
         psi_c  = np.arctan2(np.diff(cy, append=cy[0]).astype(np.float64),
                              np.diff(cx, append=cx[0]).astype(np.float64))
         nx_hat = -np.sin(psi_c)
@@ -212,7 +289,6 @@ def main():
         class _Monitor:
             def __init__(self):
                 self._driven_lc = None
-                self._speed_line = None
 
             def update(self, xs, ys, vs, ss):
                 if len(xs) < 2:
@@ -224,8 +300,7 @@ def main():
                                       norm=Normalize(0, args.v_max),
                                       linewidth=3.0, zorder=5)
                 lc.set_array(np.array(vs[:-1]))
-                if self._driven_lc is not None and \
-                   self._driven_lc in ax_map.collections:
+                if self._driven_lc is not None and self._driven_lc in ax_map.collections:
                     self._driven_lc.remove()
                 ax_map.add_collection(lc)
                 self._driven_lc = lc
@@ -247,13 +322,13 @@ def main():
         print(f"[Live] Monitor unavailable ({e}) — running headless.")
 
     # ── 6. Main loop ──────────────────────────────────────────────────────────
-    print(f"\n[Live] Simple driver  mu={args.mu}  v_max={args.v_max}  "
-          f"max_laps={args.max_laps}")
+    print(f"\n[Live] Driver + powertrain manager  mu={args.mu}  v_max={args.v_max}  "
+          f"max_laps={args.max_laps}  ctrl={1/DT_CTRL:.0f}Hz")
 
-    R_w      = 0.2045
     all_s, all_t, all_x, all_y   = [], [], [], []
     all_v, all_steer, all_accel   = [], [], []
     all_latG, all_kappa, all_psi  = [], [], []
+    pt_log    = [] if args.log_powertrain else None
     node_idx  = 0
     s_driven  = 0.0
     t_elapsed = 0.0
@@ -263,14 +338,16 @@ def main():
     last_plot = 0.0
 
     while s_driven < lap_limit:
-        # ── Compute control ───────────────────────────────────────────────────
+        # ── Driver command (held constant across the 10 control substeps) ─────
         steer_k, force_k, v_tgt_k, n_err_k = simple_driver_step(
             x_car, s_driven, track_total_len, racing_line,
             mu=args.mu, m=235.0,
         )
+        throttle_raw = float(np.clip(max(force_k, 0.0) / 6000.0, 0.0, 1.0))
+        brake_raw    = float(np.clip(max(-force_k, 0.0) / 8000.0, 0.0, 1.0))
 
         # Log pre-step state
-        vx_k  = float(x_car[STATE_VX])
+        vx_k     = float(x_car[STATE_VX])
         _s_log   = s_driven % track_total_len
         _psi_log = float(np.interp(_s_log, racing_line.s.astype(np.float64),
                                     np.unwrap(racing_line.psi.astype(np.float64))))
@@ -278,44 +355,72 @@ def main():
                                     racing_line.rx.astype(np.float64)))
         _ry_log  = float(np.interp(_s_log, racing_line.s.astype(np.float64),
                                     racing_line.ry.astype(np.float64)))
-        # Lateral offset from racing line: n_err > 0 = left of line
         x_k = _rx_log - n_err_k * math.sin(_psi_log)
         y_k = _ry_log + n_err_k * math.cos(_psi_log)
         psi_k = float(x_car[STATE_YAW])
         lat_g = vx_k ** 2 * abs(float(ck[node_idx % n_nodes])) / 9.81
+        kappa_rl_log = float(np.interp(s_driven % track_total_len,
+                                        racing_line.s.astype(np.float64),
+                                        racing_line.kappa.astype(np.float64)))
 
         all_s.append(s_driven);   all_t.append(t_elapsed)
         all_x.append(x_k);        all_y.append(y_k)
         all_psi.append(psi_k);    all_v.append(vx_k)
         all_steer.append(steer_k); all_accel.append(force_k)
-        kappa_rl_log = float(np.interp(s_driven % track_total_len,
-                                        racing_line.s.astype(np.float64),
-                                        racing_line.kappa.astype(np.float64)))
         all_latG.append(lat_g);   all_kappa.append(kappa_rl_log)
 
-        # ── Apply to physics ──────────────────────────────────────────────────
-        T_motor = max(force_k, 0.0) * R_w / 4.0
-        F_brake = max(-force_k, 0.0)
-        u_k = jnp.array([steer_k, T_motor, T_motor, T_motor, T_motor, F_brake])
-        x_car = vehicle.simulate_step(x_car, u_k, setup_params, dt=0.05, n_substeps=5)
+        # ── 200 Hz powertrain + plant substeps under the held driver command ──
+        for _ in range(N_SUBSTEPS):
+            x_c  = x_car
+            vx_c = float(x_c[STATE_VX])
+            wz_c = float(x_c[STATE_WZ])
 
-        # Heading clamp to racing line tangent
-        s_k       = s_driven % track_total_len
-        psi_ref_k = float(np.interp(s_k, racing_line.s.astype(np.float64),
-                                     np.unwrap(racing_line.psi.astype(np.float64))))
-        yaw_k     = float(x_car[STATE_YAW])
-        dpsi_k    = math.atan2(math.sin(yaw_k - psi_ref_k),
-                                math.cos(yaw_k - psi_ref_k))
-        x_car = x_car.at[STATE_YAW].set(
-            psi_ref_k + 0.15 * math.tanh(dpsi_k / (0.15 + 1e-9))
-        )
+            ax_decel = -force_k / m_veh                       # >0 under braking
+            ay_left  = vx_c ** 2 * kappa_rl_log                # >0 in a left turn
+            Fz_k = _estimate_corner_loads(vx_c, ax_decel, ay_left,
+                                           m_veh, lf_g, lr_g, h_cg_g, t_f_g, t_r_g)
 
-        # Hard speed cap
-        if float(x_car[STATE_VX]) > v_tgt_k + 0.5:
-            x_car = x_car.at[STATE_VX].set(v_tgt_k + 0.5)
+            omega_k   = jnp.full(4, vx_c / r_w)
+            alpha_t_k = x_c[56:72:4]                            # corner-major stride: [α_t_FL..RR]
+            T_tire_k  = jnp.mean(x_c[28:56].reshape(4, 7)[:, :3], axis=1)  # mean surface ribs/corner
 
-        s_driven  += max(vx_k, 0.5) * 0.05
-        t_elapsed += 0.05
+            diag, pt_manager_state = powertrain_step(
+                throttle_raw=jnp.array(throttle_raw),
+                brake_raw=jnp.array(brake_raw),
+                delta=jnp.array(steer_k),
+                vx=jnp.array(vx_c), vy=x_c[STATE_VY], wz=jnp.array(wz_c),
+                Fz=Fz_k, Fy=jnp.zeros(4),
+                omega_wheel=omega_k, alpha_t=alpha_t_k, T_tire=T_tire_k,
+                mu_est=jnp.array(args.mu), gp_sigma=jnp.array(0.05),
+                curvature=jnp.array(kappa_rl_log),
+                manager_state=pt_manager_state, dt=jnp.array(DT_CTRL), config=pt_config,
+            )
+
+            u_k = jnp.concatenate([
+                jnp.array([steer_k]), diag.T_wheel, jnp.array([diag.F_brake_hydraulic]),
+            ])
+            x_car = vehicle.simulate_step(x_c, u_k, setup_params, dt=DT_CTRL, n_substeps=1)
+
+            if pt_log is not None:
+                pt_log.append(np.concatenate([
+                    np.array(x_c[:28]),
+                    np.array([float(diag.Mz_target), float(diag.Mz_actual)]),
+                    np.array(diag.T_wheel), np.array([float(diag.F_brake_hydraulic)]),
+                    np.array([args.mu, kappa_rl_log]),
+                ]))
+
+        # ── Catastrophic-divergence safety net only (not a steering controller —
+        #    CBF/TC/TV now actually regulate yaw and slip; clamping every frame
+        #    would hide whether that stack is doing anything at all) ───────────
+        yaw_k  = float(x_car[STATE_YAW])
+        dpsi_k = math.atan2(math.sin(yaw_k - _psi_log), math.cos(yaw_k - _psi_log))
+        if abs(dpsi_k) > math.radians(75.0):
+            x_car = x_car.at[STATE_YAW].set(_psi_log + math.copysign(math.radians(75.0), dpsi_k))
+        if float(x_car[STATE_VX]) > v_tgt_k + 5.0:
+            x_car = x_car.at[STATE_VX].set(v_tgt_k + 5.0)
+
+        s_driven  += max(vx_k, 0.5) * MACRO_DT
+        t_elapsed += MACRO_DT
         step_idx  += 1
 
         node_idx = _find_nearest_node(
@@ -323,14 +428,13 @@ def main():
             cx, cy, node_idx, search_window=60,
         )
 
-        # ── Print every 20 steps ──────────────────────────────────────────────
         if step_idx % 20 == 0:
             pct = min(s_driven / lap_limit * 100, 100.0)
             print(f"  s={s_driven:6.1f}m ({pct:5.1f}%)  "
                   f"v={float(x_car[STATE_VX]):5.2f}m/s  "
-                  f"v_tgt={v_tgt_k:5.2f}m/s  t={t_elapsed:6.2f}s")
+                  f"v_tgt={v_tgt_k:5.2f}m/s  t={t_elapsed:6.2f}s  "
+                  f"Mz={float(diag.Mz_actual):+6.1f}Nm  cbf={float(diag.cbf_active):.0f}")
 
-        # ── Update monitor every interval ─────────────────────────────────────
         now = time.time()
         if monitor is not None and (now - last_plot) > args.interval:
             monitor.update(all_x, all_y, all_v, all_s)
@@ -345,7 +449,7 @@ def main():
     print(f"  Simulated lap time : {t_elapsed:.3f} s")
     print(f"  Distance driven    : {s_driven:.1f} m")
     print(f"  Mean speed         : {s_driven / max(t_elapsed, 1e-3):.2f} m/s")
-    print(f"  Wall time (total)  : {wall_total:.1f} s  ({step_idx} steps)")
+    print(f"  Wall time (total)  : {wall_total:.1f} s  ({step_idx} macro steps × {N_SUBSTEPS} ctrl substeps)")
 
     pd.DataFrame({
         's': all_s, 't': all_t, 'x': all_x, 'y': all_y,
@@ -353,6 +457,10 @@ def main():
         'latG': all_latG, 'kappa': all_kappa,
     }).to_csv(OUT_DIR / 'golden_lap.csv', index=False)
     print(f"  Saved -> {OUT_DIR / 'golden_lap.csv'}  ({len(all_s)} rows)")
+
+    if pt_log is not None:
+        np.save(OUT_DIR / 'powertrain_edmd_log.npy', np.array(pt_log))
+        print(f"  Saved -> {OUT_DIR/'powertrain_edmd_log.npy'}  ({len(pt_log)} rows @ {1/DT_CTRL:.0f}Hz)")
 
     if monitor is not None:
         monitor.update(all_x, all_y, all_v, all_s)

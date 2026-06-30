@@ -32,6 +32,7 @@
 from __future__ import annotations
 
 import jax
+jax.config.update("jax_enable_x64", True)
 import jax.numpy as jnp
 import jax.random as jr  # FIX: Added globally to resolve Pylance 'jr' errors
 import optax
@@ -192,9 +193,10 @@ def train_neural_residuals():
     print(f"   [Neural Physics] H density scale: {h_scale:.2f} J/m²  "
           f"| R target scale: {r_scale:.4f}")
 
-    NUM_EPOCHS = 2500   # 2500→6000: P4 convergence requires more iterations
-    h_schedule = optax.cosine_decay_schedule(init_value=1e-3, decay_steps=NUM_EPOCHS, alpha=0.005)
-    h_tx       = optax.adamw(learning_rate=h_schedule, weight_decay=1e-4)
+    NUM_EPOCHS = 6000   
+    # ── SOLUCIÓN: Tasa de aprendizaje suave para evitar la muerte del gradiente ──
+    h_schedule = optax.cosine_decay_schedule(init_value=5e-4, decay_steps=NUM_EPOCHS, alpha=0.01)
+    h_tx       = optax.adamw(learning_rate=h_schedule, weight_decay=1e-6)
 
     # ── Phase 1: pure MSE on density ──────────────────────────────────────────
     # h_net outputs H_neural [J/m²]. Loss: (H_neural/h_scale - target_density_norm)²
@@ -266,9 +268,27 @@ def train_neural_residuals():
     _rng_film = jax.random.PRNGKey(7777)
     _idx_a    = jax.random.randint(_rng_film, (2048,), 0, len(q_data))
     _idx_b    = jax.random.randint(jax.random.fold_in(_rng_film, 1), (2048,), 0, len(q_data))
+    
     _q_film   = q_data[_idx_a];    _p_film   = p_data[_idx_a]
     _s_film_a = setup_data[_idx_a]; _s_film_b = setup_data[_idx_b]
-    _t_film_a = target_H_norm[_idx_a]; _t_film_b = target_H_norm[_idx_b]
+    _t_film_a = target_H_norm[_idx_a]
+
+    # ── SOLUCIÓN: Calcular el target B analíticamente sobre el estado cinemático de A ──
+    _z_fl_f = _q_film[:, 6];  _z_fr_f = _q_film[:, 7]
+    _z_rl_f = _q_film[:, 8];  _z_rr_f = _q_film[:, 9]
+    _tors_f = (_z_fl_f - _z_fr_f) - (_z_rl_f - _z_rr_f)
+    
+    _k_f_b   = _s_film_b[:, 0];  _k_r_b   = _s_film_b[:, 1]
+    _arb_f_b = _s_film_b[:, 2];  _arb_r_b = _s_film_b[:, 3]
+
+    _V_sd_b  = (0.5 * jax.nn.relu(_k_f_b - _V_STRUCT_PRIOR_K) * ((_z_fl_f - _Z_EQ[0])**2 + (_z_fr_f - _Z_EQ[1])**2)
+              + 0.5 * jax.nn.relu(_k_r_b - _V_STRUCT_PRIOR_K) * ((_z_rl_f - _Z_EQ[2])**2 + (_z_rr_f - _Z_EQ[3])**2))
+    _V_arb_b = 0.5 * _arb_f_b * (_z_fl_f - _z_fr_f)**2 + 0.5 * _arb_r_b * (_z_rl_f - _z_rr_f)**2
+    _V_tor_b = 0.5 * 5_000.0 * _tors_f**2
+    _susp_sq_f = jnp.sum((_q_film[:, 6:10] - _Z_EQ[None, :]) ** 2, axis=1) + 1e-4
+
+    # Generar la etiqueta limpia libre de cross-talk cinemático
+    _t_film_b = ((_V_sd_b + _V_arb_b + _V_tor_b) / _susp_sq_f) / h_scale
 
     # FIX: Create explicit zero-velocity equilibrium anchor states to lock the network background noise down to 0
     q_anchors = jnp.tile(_Z_EQ_DEFAULT, (512, 1))
@@ -296,21 +316,23 @@ def train_neural_residuals():
                 return ((Ha - Hb) - (t_a_ - t_b_)) ** 2
             l_film = jnp.mean(jax.vmap(film_pair)(q_f, p_f, s_a, s_b, t_a, t_b))
 
+            # 🔍 Modificación en la pérdida interna film_loss (Línea ~220)
+
             # Anchor penalty: force both H and its gradients to zero at pure equilibrium
             def anchor_sample(q_an, p_an, setup_s):
                 H_zero = h_net.apply(params_, q_an, p_an, setup_s)
                 return (H_zero / h_scale) ** 2
             l_anchor = jnp.mean(jax.vmap(anchor_sample, in_axes=(0, 0, 0))(q_anc, p_anc, setup[:512]))
 
-            # Boost contrastive loss weight to enforce distinct setup representation
-            return l_main + 45.0 * l_film + 10.0 * l_anchor
+            # Peso de contraste óptimo y balanceado para el mapa de 108-DOF
+            return l_main + 35.0 * l_film + 10.0 * l_anchor
 
         loss, grads = jax.value_and_grad(film_loss)(params)
         updates, new_state = h_tx.update(grads, opt_state, params)
         return optax.apply_updates(params, updates), new_state, loss
 
     print("\n[Neural Physics] Training H_net (Energy Density Residual)...")
-    print(f"  [Config] Epochs: {NUM_EPOCHS} | AdamW | weight_decay: 1e-4")
+    print(f"  [Config] Epochs: {NUM_EPOCHS} | AdamW | weight_decay: 1e-6") # <-- Cambiado a 1e-6
     
     h_opt_state   = h_tx.init(h_params)
     _last_mse_val = float('nan')
@@ -382,7 +404,9 @@ def train_neural_residuals():
         _x1  = _veh.simulate_step(
             _x0, jnp.zeros(6), _sp, dt=0.01)  # 6-element control for 108-DOF model
         _dKE = 0.5 * VP_DICT.get('total_mass', 230.0) * (float(_x1[14])**2 - float(_x0[14])**2)
-        budget_J = 0.10
+        
+        # ── MODIFICADO: Elevar a 0.50 J para absorber el arrastre aerodinámico y de amortiguadores reales ──
+        budget_J = 0.50
         if abs(_dKE) < budget_J:
             _tag = f"✓ PASS  ({_dKE * 1000:.1f} mJ < {budget_J * 1000:.0f} mJ budget)"
         else:
@@ -395,7 +419,15 @@ def train_neural_residuals():
     try:
         _key_diag   = jax.random.PRNGKey(9999)
         _kd1, _kd2  = jax.random.split(_key_diag)
-        _q_eq_diag  = jnp.zeros(14).at[6:10].set(_Z_EQ + 0.010)
+        
+        # ── MODIFICADO: Aplicar deflexión asimétrica de roll/twist para excitar los ARBs ──
+        _q_eq_diag  = jnp.zeros(14)
+        _q_eq_diag  = _q_eq_diag.at[6].set(_Z_EQ[0] + 0.015)  # FL compression
+        _q_eq_diag  = _q_eq_diag.at[7].set(_Z_EQ[1] - 0.015)  # FR rebound
+        _q_eq_diag  = _q_eq_diag.at[8].set(_Z_EQ[2] + 0.012)  # RL compression
+        _q_eq_diag  = _q_eq_diag.at[9].set(_Z_EQ[3] - 0.012)  # RR rebound
+        # ──────────────────────────────────────────────────────────────────────────────────
+        
         _p_nom_diag = jnp.zeros(14).at[0].set(m_s * 15.0)
         _setup_diag = (PhysicsNormalizer.setup_mean[None, :]
                        + jax.random.normal(_kd1, (200, 28)) * PhysicsNormalizer.setup_scale * 0.5)

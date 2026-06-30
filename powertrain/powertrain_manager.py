@@ -69,12 +69,27 @@ from powertrain.regen_blend import (
     compute_regen_blend, update_regen_energy, regen_efficiency,
 )
 try:
-    from powertrain.modes.advanced.active_set_classifier import load_classifier_v2
+    from powertrain.modes.advanced.active_set_classifier import load_classifier_v2, load_classifier
+    _CLF_BUNDLE_V1 = load_classifier()
 except ImportError:
     load_classifier_v2 = None
+    _CLF_BUNDLE_V1 = None
+
 from powertrain.modes.advanced.explicit_mpqp_allocator import (
     make_explicit_allocator_step_auto,
 )
+
+# Cargar el clasificador v2 si está disponible en el árbol de Git
+try:
+    _CLF_BUNDLE_V2 = load_classifier_v2() if load_classifier_v2 is not None else None
+except Exception:
+    _CLF_BUNDLE_V2 = None
+
+# Compilar de forma anticipada la pasarela del resolvedor KKT explícito (AWD/RWD adaptable)
+_ALLOC_STEP_FN, _ALLOC_VERSION = make_explicit_allocator_step_auto(
+    _CLF_BUNDLE_V1, _CLF_BUNDLE_V2
+)
+print(f"[TV] Neural Allocator Initialized: {_ALLOC_VERSION}")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -497,47 +512,26 @@ def powertrain_step(
         w_power=config.alloc_weights.w_power,
     )
 
-    T_alloc_socp = solve_torque_allocation(
-        T_warmstart=manager_state.tv.T_prev,
-        T_prev=manager_state.tv.T_prev,
-        Fx_target=Fx_driver,
-        Mz_target=Mz_target,
-        delta=delta,
-        Fz=Fz,
-        Fy=Fy,
-        mu=mu_scaled,
-        omega_wheel=omega_wheel,
-        T_min=T_min,
-        T_max=T_max,
-        P_max=P_max,
-        T_ribs=T_tire,
-        geo=geo,
-        w=alloc_w,
-        is_rwd=config.is_rwd,
-    )
-    # Batch 8: enforce slip constraints via V2 extended polish
-    from powertrain.modes.advanced.explicit_mpqp_allocator import (
-        build_qp_matrices, polish_step_v2, QPParams,
-    )
-    from powertrain.modes.advanced.slip_barrier import build_slip_barrier_rows
-    A_slip_mgr, b_slip_mgr = build_slip_barrier_rows(slip_inputs, config.slip_barrier)
+    from powertrain.modes.advanced.explicit_mpqp_allocator import QPParams, AllocatorWeights as ExplicitWeights
+
     _qp_p_mgr = QPParams(
         mz_ref=Mz_target, fx_d=Fx_driver,
         t_min=T_min, t_max=T_max,
         t_fric=mu_scaled * Fz * geo.r_w,
         delta=delta, t_prev=manager_state.tv.T_prev, omega=omega_wheel,
     )
-    from powertrain.modes.advanced.explicit_mpqp_allocator import (
-        build_qp_matrices as _bqpm, check_slip_feasibility,
+
+    # Mapeo y traducción simbólica compatible con JAX JIT (sin castings evaluativos a float)
+    mpqp_w = ExplicitWeights(
+        w_mz=tc_output.w_yaw,
+        w_fx=config.alloc_weights.w_force,
+        w_rate=config.alloc_weights.w_smooth,
+        w_loss=config.alloc_weights.w_power
     )
-    _Q_mgr, _c_mgr = _bqpm(_qp_p_mgr, geo)
-    slip_ok_mgr = check_slip_feasibility(T_alloc_socp, A_slip_mgr, b_slip_mgr)
-    T_alloc = jax.lax.cond(
-        slip_ok_mgr,
-        lambda t: t,
-        lambda t: polish_step_v2(t, _Q_mgr, _c_mgr, _qp_p_mgr,
-                                  A_slip_mgr, b_slip_mgr),
-        T_alloc_socp,
+
+    # DIRECT NEURAL KKT INJECTION: Pasamos 'mpqp_w' para alimentar las ecuaciones lineales de forma nativa
+    T_alloc, active_set_v2, polished_flag, slip_viol = _ALLOC_STEP_FN(
+        _qp_p_mgr, slip_inputs, geo, mpqp_w
     )
 
     # ═══════════════════════════════════════════════════════════════════════
