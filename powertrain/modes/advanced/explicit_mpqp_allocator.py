@@ -164,7 +164,7 @@ def pack_theta_raw_v2(
 # §3  QP cost matrices  (unchanged from Batch 3)
 # ─────────────────────────────────────────────────────────────────────────────
 
-@partial(jax.jit, static_argnames=("geo", "weights"))
+@jax.jit
 def build_qp_matrices(
     p:       QPParams,
     geo:     TVGeometry       = TVGeometry(),
