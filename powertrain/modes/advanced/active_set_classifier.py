@@ -49,18 +49,15 @@ FX_SCALE    = 8000.0
 T_SCALE     = 320.0
 DELTA_SCALE = 0.35
 
-_THETA_SCALES = None   # lazy init to avoid module-load JAX overhead
+_THETA_SCALES = np.array([
+    MZ_SCALE, FX_SCALE,
+    T_SCALE, T_SCALE, T_SCALE, T_SCALE,   # T_min (4)
+    T_SCALE, T_SCALE, T_SCALE, T_SCALE,   # T_max (4)
+    T_SCALE, T_SCALE, T_SCALE, T_SCALE,   # T_fric (4)
+    DELTA_SCALE,
+], dtype=np.float32)
 
 def normalise_theta(theta_raw):
-    global _THETA_SCALES
-    if _THETA_SCALES is None:
-        _THETA_SCALES = jnp.array([
-            MZ_SCALE, FX_SCALE,
-            T_SCALE, T_SCALE, T_SCALE, T_SCALE,   # T_min (4)
-            T_SCALE, T_SCALE, T_SCALE, T_SCALE,   # T_max (4)
-            T_SCALE, T_SCALE, T_SCALE, T_SCALE,   # T_fric (4)
-            DELTA_SCALE,
-        ])
     return theta_raw / _THETA_SCALES
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -377,24 +374,20 @@ N_CONSTRAINTS_V2 = 20    # 12 base + 8 slip (κ upper + lower, 4 wheels)
 KAPPA_SCALE = 0.20       # typical κ* range  [0.05, 0.20]
 SIGMA_SCALE = 0.05       # typical σ(κ*) range [0.005, 0.05]
  
-# Full V2 scale vector — must stay in sync with generate_qp_training_data.py
-_THETA_SCALES_V2 = None
- 
- 
+_THETA_SCALES_V2 = np.array([
+    MZ_SCALE,                                  # [0]  Mz_ref
+    FX_SCALE,                                  # [1]  Fx_d
+    T_SCALE, T_SCALE, T_SCALE, T_SCALE,        # [2:6]  T_min
+    T_SCALE, T_SCALE, T_SCALE, T_SCALE,        # [6:10] T_max
+    T_SCALE, T_SCALE, T_SCALE, T_SCALE,        # [10:14] T_fric
+    DELTA_SCALE,                               # [14] delta
+    KAPPA_SCALE, KAPPA_SCALE,                  # [15:17] κ*_f, κ*_r
+    SIGMA_SCALE, SIGMA_SCALE,                  # [17:19] σ_f, σ_r
+], dtype=np.float32)
+
+
 def normalise_theta_v2(theta_raw_v2):
     """Normalise a 19-dim raw θ for the V2 classifier."""
-    global _THETA_SCALES_V2
-    if _THETA_SCALES_V2 is None:
-        _THETA_SCALES_V2 = jnp.array([
-            MZ_SCALE,                                  # [0]  Mz_ref
-            FX_SCALE,                                  # [1]  Fx_d
-            T_SCALE, T_SCALE, T_SCALE, T_SCALE,        # [2:6]  T_min
-            T_SCALE, T_SCALE, T_SCALE, T_SCALE,        # [6:10] T_max
-            T_SCALE, T_SCALE, T_SCALE, T_SCALE,        # [10:14] T_fric
-            DELTA_SCALE,                               # [14] delta
-            KAPPA_SCALE, KAPPA_SCALE,                  # [15:17] κ*_f, κ*_r
-            SIGMA_SCALE, SIGMA_SCALE,                  # [17:19] σ_f, σ_r
-        ])
     return theta_raw_v2 / _THETA_SCALES_V2
  
  

@@ -497,10 +497,19 @@ def powertrain_step(
     )
  
     # ═══════════════════════════════════════════════════════════════════════
-    # STEP 8: SOCP Torque Allocation
+    # STEP 8: SOCP Torque Allocation (UPDATED TO NEURAL KKT ARCHITECTURE)
     # ═══════════════════════════════════════════════════════════════════════
+    from powertrain.modes.advanced.explicit_mpqp_allocator import QPParams, AllocatorWeights as ExplicitWeights
+    from powertrain.modes.advanced.slip_barrier import build_slip_barrier_rows
 
-    # Build dynamic allocator weights from TC blending
+    _qp_p_mgr = QPParams(
+        mz_ref=Mz_target, fx_d=Fx_driver,
+        t_min=T_min, t_max=T_max,
+        t_fric=mu_scaled * Fz * geo.r_w,
+        delta=delta, t_prev=manager_state.tv.T_prev, omega=omega_wheel,
+    )
+
+    # [RESTORED] Conservado para alimentar el cálculo de coste de diagnósticos del STEP 12
     alloc_w = AllocatorWeights(
         w_force=config.alloc_weights.w_force,
         w_yaw=tc_output.w_yaw,              # from TC blending
@@ -512,15 +521,6 @@ def powertrain_step(
         w_power=config.alloc_weights.w_power,
     )
 
-    from powertrain.modes.advanced.explicit_mpqp_allocator import QPParams, AllocatorWeights as ExplicitWeights
-
-    _qp_p_mgr = QPParams(
-        mz_ref=Mz_target, fx_d=Fx_driver,
-        t_min=T_min, t_max=T_max,
-        t_fric=mu_scaled * Fz * geo.r_w,
-        delta=delta, t_prev=manager_state.tv.T_prev, omega=omega_wheel,
-    )
-
     # Mapeo y traducción simbólica compatible con JAX JIT (sin castings evaluativos a float)
     mpqp_w = ExplicitWeights(
         w_mz=tc_output.w_yaw,
@@ -529,13 +529,16 @@ def powertrain_step(
         w_loss=config.alloc_weights.w_power
     )
 
+    # [RESTORED] Definición de matrices de barrera para el bloque de diagnósticos final (Línea ~650)
+    A_slip_mgr, b_slip_mgr = build_slip_barrier_rows(slip_inputs, config.slip_barrier)
+
     # DIRECT NEURAL KKT INJECTION: Pasamos 'mpqp_w' para alimentar las ecuaciones lineales de forma nativa
     T_alloc, active_set_v2, polished_flag, slip_viol = _ALLOC_STEP_FN(
         _qp_p_mgr, slip_inputs, geo, mpqp_w
     )
 
     # ═══════════════════════════════════════════════════════════════════════
-    # STEP 8b: Dynamic Regen Blend (Batch 9)
+    # STEP 8b: Dynamic Regen Blend (Batch 9) - RESTORED
     # ═══════════════════════════════════════════════════════════════════════
     # Compute optimal α* from battery state (SoC, T_cell) and scale regen
     # torques accordingly.  Hydraulic brake fills the residual deficit.
