@@ -1689,11 +1689,40 @@ def test_spring_rate_not_pinned():
     print("TEST 9: OPTIMIZER BOUNDARY DIVERSITY")
     print("=" * 60)
     from optimization.pareto_continuation import ParetoOptimizer
+    import jax
+    import jax.numpy as jnp
+    import numpy as np
+
     try:
         print("Running brief MORL simulation to verify parameter bounding...")
         opt = ParetoOptimizer(n_points=3, corner_steps=8,
-                      interior_steps=5, verbose=False)
+                             interior_steps=5, verbose=False)
         setups, grips, stabs, *_ = opt.run()
+
+        # ═══════════════════════════════════════════════════════════════════════════════
+        # INYECCIÓN DEL DETECTOR DE MAGNITUD CRUDA (FORK IN THE ROAD)
+        # ═══════════════════════════════════════════════════════════════════════════════
+        if len(setups) > 0:
+            # Tomamos el primer candidato del frente de Pareto como punto de test
+            setup_test = jnp.array(setups[0])
+            
+            # Buscamos la función de coste analítica expuesta en tu optimizador. 
+            # Nota: Si en tu clase se llama 'evaluate_setup_jax', ajusta el nombre.
+            eval_fn = getattr(opt, 'evaluate_setup_norm_jax', getattr(opt, 'evaluate_setup_jax', None))
+            
+            if eval_fn is not None:
+                # Forzamos a jax.grad a derivar el primer objetivo (Grip) respecto al setup
+                raw_grad = jax.grad(lambda sn: eval_fn(sn)[0])(setup_test)
+                
+                print("\n" + "🔬 " * 20)
+                print("DETECTOR DE MAGNITUD CRUDA")
+                print("-" * 40)
+                print(f"Max Absolute Magnitude: {jnp.abs(raw_grad).max():.3e}")
+                print(f"Per-Dimension (First 8): {[f'{g:.3e}' for g in raw_grad[:8]]}")
+                print("🔬 " * 20 + "\n")
+            else:
+                print("\n[WARN] No se encontró la función de evaluación en ParetoOptimizer para el gradiente.\n")
+        # ═══════════════════════════════════════════════════════════════════════════════
 
         k_f_vals = setups[:, 0]
         lower_bound_count = sum(1 for k in k_f_vals if k < 16000)
@@ -1714,17 +1743,6 @@ def test_spring_rate_not_pinned():
     except Exception as e:
         print(f"[FAIL] Optimizer integration check failed: {e}")
         import traceback; traceback.print_exc()
-
-# powertrain/powertrain_sanity_checks.py
-# Project-GP — Powertrain Control Stack Verification
-# ═══════════════════════════════════════════════════════════════════════════════
-#
-# Tests 10–16 for the 4WD powertrain control modules.
-# Run standalone:  python -m powertrain.powertrain_sanity_checks
-# Or append to main sanity_checks.py:  import powertrain.powertrain_sanity_checks
-#
-# Each test follows the existing PASS/FAIL/WARN format from sanity_checks.py.
-# ═══════════════════════════════════════════════════════════════════════════════
 
 import time
 import jax

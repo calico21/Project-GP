@@ -79,10 +79,11 @@ from powertrain.modes.advanced.explicit_mpqp_allocator import (
     make_explicit_allocator_step_auto,
 )
 
-# Cargar el clasificador v2 si está disponible en el árbol de Git
+# Cargar el clasificador v2 identificando fallos estructurales de la migración
 try:
     _CLF_BUNDLE_V2 = load_classifier_v2() if load_classifier_v2 is not None else None
-except Exception:
+except (FileNotFoundError, IOError, ValueError, TypeError) as e:
+    print(f"\n[ALLOC] V2 classifier load failed: {type(e).__name__}: {e}")
     _CLF_BUNDLE_V2 = None
 
 # Compilar de forma anticipada la pasarela del resolvedor KKT explícito (AWD/RWD adaptable)

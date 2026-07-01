@@ -240,26 +240,48 @@ def evaluate_setup_full_fidelity(
     key: jax.Array,
     dt: float = 0.005,
 ) -> Tuple[jax.Array, jax.Array]:
-    from powertrain.powertrain_manager import make_manager_state, PowertrainConfig
+    from powertrain.powertrain_manager import PowertrainConfig, PowertrainManagerState
 
-    # Initialize all states
-    x0 = jnp.zeros(46)
-    x0 = x0.at[14].set(10.0)   # initial vx
-    x0 = x0.at[28:38].set(jnp.full(10, 85.0))
+    # ═══════════════════════════════════════════════════════════════════════
+    # FIX: Expansión de Dimensiones de variables de Estado (46 -> 108 DOF)
+    # ═══════════════════════════════════════════════════════════════════════
+    x0 = jnp.zeros(108)
+    
+    # 1. Velocidad longitudinal inicial (vx = 10.0 m/s) en la posición 14
+    x0 = x0.at[14].set(10.0)   
+    
+    # 2. Inicialización del Bloque Térmico Completo de 7 Nodos por Neumático (28 variables)
+    #    Estructura nominal de pista por rueda: [T_surface_ribs, T_gas, T_contact, T_oil...]
+    #    Mapeado síncrono exacto con el carry0 para evitar que Pacejka devuelva NaN por gomas frías
+    nominal_thermal_block = jnp.array([85.0, 85.0, 85.0, 80.0, 75.0, 30.0, 40.0])
+    x0 = x0.at[28:56].set(jnp.tile(nominal_thermal_block, 4))
+    
+    # Nota: Los estados transitorios de deslizamiento (56:72) y las holguras 
+    # elastocinemáticas (84:108) inicializan correctamente en 0.0 por defecto.
 
+    # ═══════════════════════════════════════════════════════════════════════
+    # Configuración de Entorno e Inicializadores de Lazo Cerrado
+    # ═══════════════════════════════════════════════════════════════════════
     vehicle._current_setup = setup_vec
-    ms0 = make_manager_state()
+    
+    # Usar el constructor por defecto del Manager State para evitar diccionarios huérfanos
+    ms0 = PowertrainManagerState.default(config)
     ukf0 = make_ukf_state(vx_init=10.0, params=ukf_params)
     bias0 = jnp.zeros(6)
 
+    # Empaquetamos el carry con las dimensiones limpias de 108 elementos
     carry0 = FullLoopCarry(
         x=x0, manager_state=ms0, ukf=ukf0,
         imu_bias=bias0, key=key, cum_time=jnp.array(0.0),
     )
 
+    # Construcción e integración síncrona del paso diferencial del coche
     step_fn = make_full_loop_step(vehicle, config, geo, mp, bp, ukf_params, dt)
     carry_final, outputs = jax.lax.scan(step_fn, carry0, driving_inputs)
 
+    # ═══════════════════════════════════════════════════════════════════════
+    # Extracción de Métricas y Función de Coste de Estabilidad
+    # ═══════════════════════════════════════════════════════════════════════
     vx_history = outputs[:, 0]
     ay_history = outputs[:, 1]
 

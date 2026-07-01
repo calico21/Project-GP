@@ -275,7 +275,7 @@ def _print_sensitivity(vehicle, p_setups, p_grips, p_stabs):
             g_vec = np.array(grad_fn(z, w_jax))
             row = f"  {i+1:>5}  {g:>5.3f}  {st:>5.2f}"
             for gi in g_vec[:8]:
-                row += f"  {-gi:>+7.2f}"   # negate: grad of loss → grad of grip
+                row += f"  {-gi:>+10.3e}"   # Cambiado a notación científica para ver magnitudes de bajo orden (ej: 4.35e-04)
             print(row)
         except Exception:
             print(f"  {i+1:>5}  {g:>5.3f}  {st:>5.2f}  (grad unavailable)")
