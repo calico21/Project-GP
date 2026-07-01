@@ -366,8 +366,11 @@ def powertrain_step(
     # ── Time ─────────────────────────────────────────────────────────────
     dt: jax.Array,
     # ── Configuration ────────────────────────────────────────────────────
-    config: PowertrainConfig = PowertrainConfig(),              # <-- MOVED UP
-    launch_button: jax.Array = jnp.array(0.0),                  # <-- MOVED DOWN
+    config: PowertrainConfig = PowertrainConfig(),
+    launch_button: jax.Array = jnp.array(0.0),
+    # ── IMU Physical Inputs (Movidos al final para preservar compatibilidad posicional) ──
+    ax_imu: jax.Array = jnp.array(0.0),
+    ay_imu: jax.Array = jnp.array(0.0),
 ) -> tuple[PowertrainDiagnostics, PowertrainManagerState]:
     """
     Execute one complete powertrain control cycle at 200 Hz.
@@ -403,17 +406,22 @@ def powertrain_step(
     )
 
     # ═══════════════════════════════════════════════════════════════════════
-    # STEP 2: Acceleration Estimation (low-pass for blending weights)
+    # STEP 2: Acceleration Estimation & IMU Fusion
     # ═══════════════════════════════════════════════════════════════════════
-    alpha_accel = 0.90  # LP filter coefficient for acceleration signals
-    # Approximate ax from velocity change (avoids noisy IMU direct path)
-    ax_raw = jnp.sum(Fz * 0.0) + vx * wz * 0.0  # placeholder — actual ax from IMU
-    # For now, estimate from Fx applied
+    alpha_accel = 0.90  # Filtro paso bajo para mitigar el ruido de alta frecuencia de la pista
+    
+    # Expresiones de respaldo analítico en caso de ausencia de señal física (Ej: entornos de test)
     ax_approx = jnp.sum(manager_state.tv.T_prev) / (geo.r_w * geo.mass)
-    ay_approx = vx * wz  # centripetal approximation
+    ay_approx = vx * wz  # Aproximación centrípeta cinemática
 
-    ax_filt = alpha_accel * manager_state.ax_filtered + (1.0 - alpha_accel) * ax_approx
-    ay_filt = alpha_accel * manager_state.ay_filtered + (1.0 - alpha_accel) * ay_approx
+    # Conmutación condicional compatible con JAX JIT/Tracer
+    is_test_env = jnp.allclose(ax_imu, 0.0) & jnp.allclose(ay_imu, 0.0)
+    ax_active = jnp.where(is_test_env, ax_approx, ax_imu)
+    ay_active = jnp.where(is_test_env, ay_approx, ay_imu)
+
+    # Filtrado paso bajo definitivo para los pesos dinámicos del TC/TV
+    ax_filt = alpha_accel * manager_state.ax_filtered + (1.0 - alpha_accel) * ax_active
+    ay_filt = alpha_accel * manager_state.ay_filtered + (1.0 - alpha_accel) * ay_active
 
     # ═══════════════════════════════════════════════════════════════════════
     # STEP 3: Traction Control (DESC + κ* + blending weights)
@@ -734,13 +742,13 @@ def powertrain_step_v2(
     ukf_new = ukf_step(ukf_state, z_meas, delta, dt, ukf_params)
     est = extract_estimated_state(ukf_new)
     
-    # 2. Call the original powertrain_step, but feed it the CLEAN, ESTIMATED 
-    #    states instead of the raw, noisy sensors.
+    # 2. Call the original powertrain_step, feeding it the dynamic thermal vector
+    #    tracked inside manager_state instead of freezing it at a generic 85°C.
     diagnostics, new_state = powertrain_step(
         throttle_raw=throttle_raw, brake_raw=brake_raw, delta=delta,
         vx=est.vx, vy=est.vy, wz=est.wz,
         Fz=est.Fz, Fy=est.Fy, omega_wheel=est.omega_wheel, alpha_t=est.alpha_t,
-        T_tire=jnp.full(4, 85.0), # Assuming constant thermal tire state
+        T_tire=manager_state.powertrain.T_motors, # <--- Conectamos el estado térmico real persistente
         mu_est=mu_est, gp_sigma=gp_sigma, curvature=curvature,
         manager_state=manager_state, dt=dt, config=config,
         launch_button=launch_button
