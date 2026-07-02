@@ -1688,7 +1688,7 @@ def test_spring_rate_not_pinned():
     print("\n" + "=" * 60)
     print("TEST 9: OPTIMIZER BOUNDARY DIVERSITY")
     print("=" * 60)
-    from optimization.pareto_continuation import ParetoOptimizer
+    from optimization.pareto_continuation import ParetoOptimizer, _setup_to_logit, _make_compiled_fns
     import jax
     import jax.numpy as jnp
     import numpy as np
@@ -1700,28 +1700,30 @@ def test_spring_rate_not_pinned():
         setups, grips, stabs, *_ = opt.run()
 
         # ═══════════════════════════════════════════════════════════════════════════════
-        # INYECCIÓN DEL DETECTOR DE MAGNITUD CRUDA (FORK IN THE ROAD)
+        # SONDA DE PERTURBACIÓN (OFF-OPTIMUM PROBE)
         # ═══════════════════════════════════════════════════════════════════════════════
         if len(setups) > 0:
-            # Tomamos el primer candidato del frente de Pareto como punto de test
-            setup_test = jnp.array(setups[0])
-            
-            # Buscamos la función de coste analítica expuesta en tu optimizador. 
-            # Nota: Si en tu clase se llama 'evaluate_setup_jax', ajusta el nombre.
-            eval_fn = getattr(opt, 'evaluate_setup_norm_jax', getattr(opt, 'evaluate_setup_jax', None))
-            
-            if eval_fn is not None:
-                # Forzamos a jax.grad a derivar el primer objetivo (Grip) respecto al setup
-                raw_grad = jax.grad(lambda sn: eval_fn(sn)[0])(setup_test)
-                
-                print("\n" + "🔬 " * 20)
-                print("DETECTOR DE MAGNITUD CRUDA")
-                print("-" * 40)
-                print(f"Max Absolute Magnitude: {jnp.abs(raw_grad).max():.3e}")
-                print(f"Per-Dimension (First 8): {[f'{g:.3e}' for g in raw_grad[:8]]}")
-                print("🔬 " * 20 + "\n")
-            else:
-                print("\n[WARN] No se encontró la función de evaluación en ParetoOptimizer para el gradiente.\n")
+            veh = opt._get_vehicle()
+            eval_fn, _, grad_fn = _make_compiled_fns(veh)
+            w_jax = jnp.array(1.0, dtype=jnp.float32)
+
+            # Punto óptimo converged en el frente de Pareto
+            setup_pareto = jnp.array(setups[0])
+            z_pareto = _setup_to_logit(setup_pareto)
+            grad_pareto = grad_fn(z_pareto, w_jax)
+
+            # Punto perturbado: reducimos la rigidez del muelle delantero (k_f) a la mitad
+            setup_perturbed = setup_pareto.at[0].set(setup_pareto[0] * 0.5)
+            z_perturbed = _setup_to_logit(setup_perturbed)
+            grad_perturbed = grad_fn(z_perturbed, w_jax)
+
+            print("\n" + "🔬 " * 20)
+            print("SONDA DE PERTURBACIÓN (DIAGNÓSTICO DE CONVERGENCIA)")
+            print("-" * 40)
+            print(f"Gradiente en el óptimo (k_f):    {-float(grad_pareto[0]):+.3e}")
+            print(f"Gradiente perturbado (k_f / 2):  {-float(grad_perturbed[0]):+.3e}")
+            print(f"Magnitud máxima en perturbado:   {jnp.abs(grad_perturbed).max():.3e}")
+            print("🔬 " * 20 + "\n")
         # ═══════════════════════════════════════════════════════════════════════════════
 
         k_f_vals = setups[:, 0]

@@ -294,9 +294,10 @@ def compute_skidpad_objective(simulate_step_fn, params, x_init, dt=0.005, T_max=
 
         balance = 1.0 - jnp.abs(util_f - util_r)
 
+        # FIX: Colapsamos el producto de sigmoides para evitar el desvanecimiento del gradiente en float32
         sharpness     = 10.0
-        feasible_soft = (jax.nn.sigmoid((1.0 - util_f) * sharpness) *
-                         jax.nn.sigmoid((1.0 - util_r) * sharpness))
+        util_worst    = jnp.maximum(util_f, util_r)
+        feasible_soft = jax.nn.sigmoid((1.0 - util_worst) * sharpness)
 
         return ay_g * balance * feasible_soft - lift_penalty
 
