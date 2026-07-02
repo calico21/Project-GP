@@ -176,15 +176,36 @@ Running brief MORL simulation to verify parameter bounding...
 [VehicleDynamics] Loaded h_net.bytes
 [VehicleDynamics] Loaded r_net.bytes
 
-[Pareto-IFT] Done in 187.7s  (3 candidates → 2 non-dominated)
-  Best grip:       1.5426 G
+[Pareto-IFT] Done in 231.4s  (3 candidates → 2 non-dominated)
+  Best grip:       1.6380 G
   Stability range: -1.386–-1.380  (higher = more stable)
 
 [Pareto-IFT] Setup sensitivity (∂grip/∂param) at Pareto front:
   Setup   Grip   Stab      k_f      k_r    arb_f    arb_r  c_low_f  c_low_r  c_high_  c_high_
   ───────────────────────────────────────────────────────────────────────────────────────────
-      1  1.543  -1.39    -0.00    -0.00    +0.00    -0.00    -0.00    -0.00    -0.00    -0.00
-      2  1.529  -1.38    -0.00    -0.00    +0.00    -0.00    -0.00    -0.00    -0.00    -0.00
+      1  1.638  -1.39  +1.292e-07  -3.786e-06  +4.219e-06  -4.528e-06  -0.000e+00  -0.000e+00  -0.000e+00  -0.000e+00
+      2  1.624  -1.38  +1.292e-07  -3.786e-06  +4.219e-06  -4.528e-06  -0.000e+00  -0.000e+00  -0.000e+00  -0.000e+00
+
+🔬 🔬 🔬 🔬 🔬 🔬 🔬 🔬 🔬 🔬 🔬 🔬 🔬 🔬 🔬 🔬 🔬 🔬 🔬 🔬 
+EXTRACCIÓN RADIAL DEL GRADIENTE PER-AY
+--------------------------------------------------
+Punto de evaluación analítica peak (Index 999): Ay = 2.500 G
+  > Carga estática/2 + Aero compartida: 787.7 N
+  > Carga Frontal Interna Bruta (Sin Floor): +99.23 N
+  > Carga Frontal Interna Post-Softplus (Fz_fi): 99.23 N
+  > Gradiente local d(Fy_max)/d(k_f) en ese punto:  -4.014154e-03
+--------------------------------------------------
+Mapeo transitorio a lo largo del barrido Ay:
+  Bin   Ay [G]   Raw Load [N]   Fz_fi [N]   d(Fy)/d(k_f)  
+  0     0.50          +650.00      650.00  -1.560872e-04
+  250   1.00          +512.17      512.17  -6.376411e-04
+  500   1.50          +374.34      374.34  -1.443247e-03
+  700   1.90          +264.07      264.07  -2.320031e-03
+  800   2.10          +208.94      208.94  -2.835591e-03
+  900   2.30          +153.81      153.81  -3.402472e-03
+  999   2.50           +99.23       99.23  -4.014154e-03
+🔬 🔬 🔬 🔬 🔬 🔬 🔬 🔬 🔬 🔬 🔬 🔬 🔬 🔬 🔬 🔬 🔬 🔬 🔬 🔬 
+
 [PASS] Optimizer search domain healthy. Lower bound fraction: 0% (Target <50%)
 [PASS] Stability cap working: max Stability_Overshoot = 1.39 ≤ 5.0
 
@@ -202,7 +223,7 @@ TEST 11: SOCP TORQUE ALLOCATOR (FRICTION FEASIBILITY)
 [PASS] All torques within motor limits (T=[-199.1, -199.1, -227.6, -227.6] Nm)
 [PASS] Friction circles feasible (max utilization: 1.000)
 [PASS] Straight-line yaw moment ≈ 0 (actual: 0.0 Nm)
-[PASS] KKT allocator solve time: 3.523ms (within 5ms pipeline budget)
+[PASS] KKT allocator solve time: 3.527ms (within 5ms pipeline budget)
 
 ============================================================
 TEST 12: CBF SAFETY FILTER (SIDESLIP INVARIANCE)
@@ -236,12 +257,14 @@ TEST 15: VIRTUAL IMPEDANCE (PIO SUPPRESSION)
 ============================================================
 TEST 16: FULL POWERTRAIN PIPELINE (JIT + TIMING)
 ============================================================
+
+[ALLOC] V2 classifier load failed: FileNotFoundError: [Errno 2] No such file or directory: 'models/active_set_classifier_v2.bytes'
 [ALLOC] V2 classifier not available — running V1 (no slip barriers in KKT). Slip safety via Batch 8 extended polish only.
 [TV] Neural Allocator Initialized: v1+slip-polish
   Compiling full pipeline (first call)...
-  Compile time: 2.89s
+  Compile time: 2.71s
   Running 50 warm steps for timing...
-[WARN] Per-step time: 44.979ms (exceeds 5.0ms budget — expected on CPU, OK if <1ms on target SBC)
+[WARN] Per-step time: 40.768ms (exceeds 5.0ms budget — expected on CPU, OK if <1ms on target SBC)
 [PASS] Output torques finite: [-24.7, -23.1, -24.8, -20.5] Nm
 [PASS] Thermal dynamics active: ΔT_motor = +0.5591°C after 50 steps
 [PASS] SoC decreasing under load: 94.9667% (Δ = -0.033272%)
@@ -367,7 +390,3 @@ TEST 25: TRACK SURFACE — RUBBER BUILD-UP & GRIP ASYMMETRY
   After 60s solar heating: T_mean 25.0°C → 27.9°C
 [PASS] Track temperature responds to solar heating
 [PASS] ∂μ/∂s is finite: 0.00e+00 /m
-
-✅ END-TO-END VALIDATION COMPLETE.
-
-(project_gp_env) alexr@ALEXRP:~/FS_Driver_Setup_Optimizer$ 
