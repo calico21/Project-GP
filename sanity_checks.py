@@ -1700,31 +1700,106 @@ def test_spring_rate_not_pinned():
         setups, grips, stabs, *_ = opt.run()
 
         # ═══════════════════════════════════════════════════════════════════════════════
-        # SONDA DE PERTURBACIÓN (OFF-OPTIMUM PROBE)
+        # ARNES DE EXTRACCIÓN DE GRADIENTES POR PASO DE AY (DIAGNÓSTICO SÉNIOR)
         # ═══════════════════════════════════════════════════════════════════════════════
         if len(setups) > 0:
+            from optimization.pareto_continuation import _make_compiled_fns
+            from config.vehicles.ter26 import vehicle_params as VP
+            import jax
+            import jax.numpy as jnp
+            
             veh = opt._get_vehicle()
-            eval_fn, _, grad_fn = _make_compiled_fns(veh)
-            w_jax = jnp.array(1.0, dtype=jnp.float32)
-
-            # Punto óptimo converged en el frente de Pareto
             setup_pareto = jnp.array(setups[0])
-            z_pareto = _setup_to_logit(setup_pareto)
-            grad_pareto = grad_fn(z_pareto, w_jax)
+            
+            # Constantes físicas replicadas del entorno de objectives.py
+            g = 9.81
+            m = VP.get('total_mass', 230.0)
+            lf = VP.get('lf', 0.8525)
+            lr = VP.get('lr', 0.6975)
+            L = lf + lr
+            t_w = VP.get('track_front', 1.20)
+            h_rc_f = VP.get('h_rc_f', 0.040)
+            h_cg = setup_pareto[25] if len(setup_pareto) == 28 else setup_pareto[6]
+            
+            # Re-evaluamos el barrido completo de grip scores para aislar el argmax
+            eval_fn, _, _ = _make_compiled_fns(veh)
+            
+            # Extraemos la lógica interna de Fy_f_max como una función pura diferenciable por JAX
+            def compute_fy_max_single_ay(params, ay_g):
+                k_f = params[0]
+                arb_f = params[2]
+                mr_f = jnp.array(VP.get('motion_ratio_f_poly', [1.14, 2.5, 0.0]))[0]
+                wheel_rate_f = k_f / (mr_f ** 2)
+                Kroll_f_spring = wheel_rate_f * (t_w ** 2) * 0.5
+                Kroll_f_arb = arb_f * t_w
+                Kroll_f = Kroll_f_spring + Kroll_f_arb
+                
+                # Roll stiffness rear para el ratio elástico
+                k_r = params[1]
+                arb_r = params[3]
+                mr_r = jnp.array(VP.get('motion_ratio_r_poly', [1.16, 2.0, 0.0]))[0]
+                wheel_rate_r = k_r / (mr_r ** 2)
+                Kroll_r = (wheel_rate_r * (VP.get('track_rear', 1.18) ** 2) * 0.5) + (arb_r * VP.get('track_rear', 1.18))
+                Kroll_total = Kroll_f + Kroll_r + 1.0
+                lltd_f_elastic = Kroll_f / Kroll_total
+                
+                # Cargas estáticas + aero a 15 m/s
+                Fz_f_static = m * g * lr / L + 0.5 * 1.225 * 4.14 * 1.1 * (15.0 ** 2) * 0.40
+                
+                ay = ay_g * g
+                LLT_geo_f = m * ay * h_rc_f / t_w
+                LLT_elastic_f = m * ay * (h_cg - h_rc_f) / t_w * lltd_f_elastic
+                LLT_f = LLT_geo_f + LLT_elastic_f
+                
+                # Retornamos el valor bruto antes del softplus y el floored definitivo
+                raw_inner_load = Fz_f_static / 2.0 - LLT_f
+                Fz_fi = floor + jax.nn.softplus(raw_inner_load - 10.0) if 'floor' in locals() else 10.0 + jax.nn.softplus(raw_inner_load - 10.0)
+                Fz_fo = 10.0 + jax.nn.softplus(Fz_f_static / 2.0 + LLT_f - 10.0)
+                
+                # Bloque de coeficiente mu y Camber Bonus
+                phi_est = (m * ay * h_cg) / (Kroll_total + 1.0)
+                effective_camber_out = VP.get('static_camber_f', -1.5) + jnp.rad2deg(phi_est) * VP.get('camber_gain_f', -0.8)
+                camber_bonus = 1.0 + 0.03 * jnp.exp(-0.5 * ((effective_camber_out - (-3.5)) / 2.0) ** 2)
+                
+                def mu_local(Fz):
+                    return 1.92 * (1.0 - 0.25 * ((Fz - 1000.0) / 1000.0))
+                
+                Fy_f_max = mu_local(Fz_fo) * Fz_fo * camber_bonus + mu_local(Fz_fi) * Fz_fi
+                return Fy_f_max, raw_inner_load, Fz_fi
 
-            # Punto perturbado: reducimos la rigidez del muelle delantero (k_f) a la mitad
-            setup_perturbed = setup_pareto.at[0].set(setup_pareto[0] * 0.5)
-            z_perturbed = _setup_to_logit(setup_perturbed)
-            grad_perturbed = grad_fn(z_perturbed, w_jax)
-
+            # Barrido idéntico al de objectives.py (1000 puntos entre 0.5G y 2.5G)
+            ay_sweep = jnp.linspace(0.5, 2.5, 1000)
+            
+            # Vectorizamos el cálculo y la derivada parcial d(Fy_f_max)/d(k_f) simultáneamente
+            vmap_metrics = jax.vmap(lambda ay: compute_fy_max_single_ay(setup_pareto, ay))(ay_sweep)
+            vmap_grad = jax.vmap(lambda ay: jax.grad(lambda p: compute_fy_max_single_ay(p, ay)[0])(setup_pareto)[0])(ay_sweep)
+            
+            fy_max_trace, raw_load_trace, fz_fi_trace = vmap_metrics
+            
+            # Diagnóstico en boxes: Encontrar el punto exacto donde concentra la masa el smooth-max
+            # Simulamos el peso local en el logsumexp de la elipse
+            sharpness = 10.0
+            # Mapeo crudo de la función para estimar el argmax real de grip_scores
+            # (Calculado sobre el perfil nominal para aislar el índice exacto de saturación)
+            idx_argmax = jnp.argmax(fy_max_trace * (1.0 - jnp.abs(raw_load_trace)*0.001)) # aproximación del pico
+            
             print("\n" + "🔬 " * 20)
-            print("SONDA DE PERTURBACIÓN (DIAGNÓSTICO DE CONVERGENCIA)")
-            print("-" * 40)
-            print(f"Gradiente en el óptimo (k_f):    {-float(grad_pareto[0]):+.3e}")
-            print(f"Gradiente perturbado (k_f / 2):  {-float(grad_perturbed[0]):+.3e}")
-            print(f"Magnitud máxima en perturbado:   {jnp.abs(grad_perturbed).max():.3e}")
+            print("EXTRACCIÓN RADIAL DEL GRADIENTE PER-AY")
+            print("-" * 50)
+            print(f"Punto de evaluación analítica peak (Index {int(idx_argmax)}): Ay = {float(ay_sweep[idx_argmax]):.3f} G")
+            print(f"  > Carga estática/2 + Aero compartida: {float(m*g*lr/L/2.0 + 0.5*1.225*4.14*1.1*(15.0**2)*0.40/2.0):.1f} N")
+            print(f"  > Carga Frontal Interna Bruta (Sin Floor): {float(raw_load_trace[idx_argmax]):+.2f} N")
+            print(f"  > Carga Frontal Interna Post-Softplus (Fz_fi): {float(fz_fi_trace[idx_argmax]):.2f} N")
+            print(f"  > Gradiente local d(Fy_max)/d(k_f) en ese punto:  {float(vmap_grad[idx_argmax]):+.6e}")
+            print("-" * 50)
+            print("Mapeo transitorio a lo largo del barrido Ay:")
+            
+            # Imprimimos checkpoints estratégicos para ver el desplome del gradiente
+            checkpoints = [0, 250, 500, 700, 800, 900, 999]
+            print(f"  {'Bin':<5} {'Ay [G]':<8} {'Raw Load [N]':<14} {'Fz_fi [N]':<11} {'d(Fy)/d(k_f)':<14}")
+            for idx in checkpoints:
+                print(f"  {idx:<5} {float(ay_sweep[idx]):<8.2f} {float(raw_load_trace[idx]):>+12.2f} {float(fz_fi_trace[idx]):>11.2f} {float(vmap_grad[idx]):>+14.6e}")
             print("🔬 " * 20 + "\n")
-        # ═══════════════════════════════════════════════════════════════════════════════
 
         k_f_vals = setups[:, 0]
         lower_bound_count = sum(1 for k in k_f_vals if k < 16000)

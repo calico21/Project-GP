@@ -266,6 +266,7 @@ def compute_skidpad_objective(simulate_step_fn, params, x_init, dt=0.005, T_max=
         Fz_ro = _softplus_floor(Fz_r_static / 2.0 + LLT_r, 10.0)
         Fz_ri = _softplus_floor(Fz_r_static / 2.0 - LLT_r, 10.0)
 
+        # Line 209: The lift_penalty uses raw jax.nn.relu on tire normal loads:
         inner_lift_f = jax.nn.relu(50.0 - (Fz_f_static / 2.0 - LLT_f))
         inner_lift_r = jax.nn.relu(50.0 - (Fz_r_static / 2.0 - LLT_r))
         lift_penalty = (inner_lift_f + inner_lift_r) * 0.0005
@@ -278,6 +279,7 @@ def compute_skidpad_objective(simulate_step_fn, params, x_init, dt=0.005, T_max=
             -0.5 * ((effective_camber_out - camber_opt) / 2.0) ** 2
         )
 
+        # Line 221: The tire friction coefficient calculation is linear-flat:
         def mu(Fz):
             dfz = (Fz - Fz0) / Fz0
             return PDY1 * (1.0 + PDY2 * dfz)
