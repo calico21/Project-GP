@@ -225,9 +225,15 @@ def test_circular_track():
         twr  = jnp.array(track_w_right,      dtype=jnp.float32)
 
         from models.vehicle_dynamics import compute_equilibrium_suspension
-        z_eq = compute_equilibrium_suspension(setup_params, VP)
+
+        # 1. Forzamos float32 para la consistencia elástica en XLA
+        z_eq = compute_equilibrium_suspension(setup_params, VP).astype(jnp.float32)
+
+        # 2. Inicialización limpia (las velocidades de ruedas se sincronizan solas con vx0)
         x0 = (DifferentiableMultiBodyVehicle.make_initial_state(T_env=25.0, vx0=16.0)
-            .at[0].set(tx[0]).at[1].set(ty[0]).at[5].set(tpsi[0])
+            .at[0].set(jnp.float32(tx[0]))
+            .at[1].set(jnp.float32(ty[0]))
+            .at[5].set(jnp.float32(tpsi[0]))
             .at[6:10].set(z_eq))
         x0 = x0.at[28:56].set(jnp.tile(jnp.array([85., 85., 85., 80., 75., 30., 40.]), 4))
 
@@ -3223,6 +3229,42 @@ def test_track_surface():
         print(f"[FAIL] Track surface test crashed: {e}")
         import traceback; traceback.print_exc()
 
+def test_mirror_symmetry_zero_wz():
+    """
+    Bisección de simetría: Bajo un par perfectamente simétrico y wz=0,
+    la aceleración de guiñada dwz/dt en t=0 debe ser estrictamente CERO.
+    Cualquier desviación delata una asimetría estática en el paso hacia delante.
+    """
+    print("\n" + "=" * 60)
+    print("TEST DE CONTROL: GRAFO DE SIMETRÍA ESPECULAR (wz=0)")
+    print("=" * 60)
+    
+    from models.vehicle_dynamics import DifferentiableMultiBodyVehicle
+    from config.vehicles.ter26 import vehicle_params as VP
+    from config.tire_coeffs import tire_coeffs as TC
+    
+    veh = DifferentiableMultiBodyVehicle(VP, TC)
+    setup = veh._default_setup_vec
+    
+    # Estado inicial canónico a 15 m/s planos con wz perfectamente plano
+    x0 = DifferentiableMultiBodyVehicle.make_initial_state(T_env=25.0, vx0=15.0)
+    
+    # Fuerza motriz RWD perfectamente simétrica (30 Nm a cada lado)
+    u_sym = jnp.array([0.0, 0.0, 0.0, 30.0, 30.0, 0.0])
+    
+    # Evaluamos la derivada instantánea de la planta física
+    dx = veh._compute_derivatives(x0, u_sym, setup)
+    dwz = float(dx[19])
+    
+    print(f"  Aceleración de guiñada instantánea instantánea (dwz/dt): {dwz:+.4e} rad/s²")
+    
+    if abs(dwz) < 1e-6:
+        print("[PASS] El grafo físico delantero es perfectamente simétrico en t=0.")
+    else:
+        print(f"[FAIL] ¡Bicho estático cazado! Hay una asimetría nativa en t=0 (dwz={dwz:+.4e}).")
+        print("        Revisar la promoción float64 de _Z_EQ o los signos de camber_gain_f.")
+    
+    assert abs(dwz) < 1e-6, f"L-R asymmetry in forward pass equations: dwz={dwz}"
 
 if __name__ == "__main__":
     print("\n" + "█" * 60)
@@ -3230,9 +3272,10 @@ if __name__ == "__main__":
     print("█" * 60)
 
     # ── Physics & dynamics (Tests 1–9) ──
+    test_mirror_symmetry_zero_wz()
     test_neural_convergence()
     test_forward_pass()
-    #test_circular_track()
+    #test_circular_track() #Largo de cojones
     test_friction_circle()
     test_load_sensitivity()
     test_diagonal_load_transfer()

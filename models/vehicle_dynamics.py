@@ -95,8 +95,8 @@ _TRIL_14 = jnp.tril_indices(14)
 # Using canonical DEFAULT_SETUP spring rates. Defined here as a module-level
 # constant so NeuralEnergyLandscape.__call__ and residual_fitting.py share
 # identical values — single source of truth. See also compute_equilibrium_suspension().
-_Z_EQ: jnp.ndarray = jnp.array([0.0128, 0.0128, 0.0142, 0.0142], dtype=jnp.float64)
-
+# CORREGIDO (CAMBIAR A FLOAT32):
+_Z_EQ: jnp.ndarray = jnp.array([0.0128, 0.0128, 0.0142, 0.0142], dtype=jnp.float32)
 # Structural spring prior per corner — must match V_structural in
 # NeuralEnergyLandscape.__call__ and _V_STRUCT_PRIOR_K in residual_fitting.py.
 _V_STRUCT_PRIOR_K: float = 30_000.0   # N/m
@@ -886,16 +886,23 @@ class DifferentiableMultiBodyVehicle:
             v_safe = v_safe.at[5].set(jnp.clip(v_safe[5], -8.0, 8.0))
             p_safe = v_safe * self.M_diag
             susp_sq = jnp.sum((q_[6:10] - _Z_EQ) ** 2) + 1e-4
-            
-            # Pure analytical forward pass evaluation
-            H_val = self.H_net.apply(self.H_params, q_, p_safe, setup_params)
-            
-            # Enforce bilateral mirror symmetry target to zero out neural weight drift
-            # Mirror the suspension states left-to-right to damp out random epoch-noise fields
-            q_mirrored = q_.at[3].set(-q_[3]).at[6].set(q_[7]).at[7].set(q_[6]).at[8].set(q_[9]).at[9].set(q_[8])
-            p_mirrored = p_safe.at[1].set(-p_safe[1]).at[5].set(-p_safe[5])
+
+            # Strip translation/rotation DOFs (X, Y, psi_yaw) before H_net ever sees
+            # them. The Hamiltonian must be invariant to absolute position/heading —
+            # leaving these in lets an untrained/asymmetric ∂H/∂psi leak directly
+            # into dwz/dt even under perfectly mirrored physical inputs.
+            q_inv = q_.at[0].set(0.0).at[1].set(0.0).at[5].set(0.0)
+
+            H_val = self.H_net.apply(self.H_params, q_inv, p_safe, setup_params)
+
+            # Mirror BOTH q and p fully — including the suspension corners in p,
+            # which was previously missing (harmless only while dz=0).
+            q_mirrored = q_inv.at[3].set(-q_inv[3]).at[6].set(q_inv[7]).at[7].set(q_inv[6]).at[8].set(q_inv[9]).at[9].set(q_inv[8])
+            p_mirrored = (p_safe.at[1].set(-p_safe[1]).at[5].set(-p_safe[5])
+                                .at[6].set(p_safe[7]).at[7].set(p_safe[6])
+                                .at[8].set(p_safe[9]).at[9].set(p_safe[8]))
             H_val_mirrored = self.H_net.apply(self.H_params, q_mirrored, p_mirrored, setup_params)
-            
+
             return 0.5 * (H_val + H_val_mirrored) * susp_sq
             
         dH_dq_nn, dH_dp_nn = jax.grad(_nn_H, argnums=(0, 1))(q, p)
@@ -954,13 +961,10 @@ class DifferentiableMultiBodyVehicle:
         dz_fr = jnp.clip(v[7], -_SDZ_MAX, _SDZ_MAX)
         dz_rl = jnp.clip(v[8], -_SDZ_MAX, _SDZ_MAX)
         dz_rr = jnp.clip(v[9], -_SDZ_MAX, _SDZ_MAX)
-        z_rl = q[8]
-        z_rr = q[9]
-        
-        dz_fl = v[6]
-        dz_fr = v[7]
-        dz_rl = v[8]
-        dz_rr = v[9]
+
+        # ── ELIMINADO EL BLOQUE DUPLICADO ANTIGUO QUE VOLVÍA A ASIGNAR ──
+        # (Se eliminan las líneas repetidas de tf2/tr2 y las sobreescrituras en crudo)
+
         omega_fl, omega_fr          = v[10], v[11]
         omega_rl, omega_rr          = v[12], v[13]
 
@@ -1045,6 +1049,9 @@ class DifferentiableMultiBodyVehicle:
         h_rc_r = self._h_rc0_r + self._dh_rc_dz_r * (z_rl + z_rr) * 0.5
 
         # CORRECTED: Perfect mirror symmetry for the right side tires
+        # Al mantener el signo menos en las manguetas derechas, aseguramos que en recta
+        # gamma_fr == -gamma_fl, cancelando el camber thrust limpiamente a cero.
+        # PERFECT MIRROR: Los signos menos en _camber_dz aseguran simetría exacta
         gamma_fl = jnp.deg2rad( s.camber_f + self._camber_dz_f * z_fl + self.vp.get('camber_gain_f', -0.80) * jnp.rad2deg(phi_roll) * 0.5)
         gamma_fr = jnp.deg2rad(-s.camber_f - self._camber_dz_f * z_fr + self.vp.get('camber_gain_f', -0.80) * jnp.rad2deg(phi_roll) * 0.5)
         gamma_rl = jnp.deg2rad( s.camber_r + self._camber_dz_r * z_rl + self.vp.get('camber_gain_r', -0.65) * jnp.rad2deg(phi_roll) * 0.5)
@@ -1098,18 +1105,25 @@ class DifferentiableMultiBodyVehicle:
         v_rl_g = jnp.maximum(safe_abs(vx - wz * tr2), 0.5)
         v_rr_g = jnp.maximum(safe_abs(vx + wz * tr2), 0.5)
 
-        # Front tire forces can now safely resolve their linear speed targets
+        # Eje Delantero
         Fx_fl, Fy_fl = self.tire.compute_force(alpha_t_fl, kappa_t_fl, Fz_fl, gamma_fl, T_ribs_fl, T_gas_fl, v_fl_g, wz=wz)
-        Fx_fr, Fy_fr = self.tire.compute_force(alpha_t_fr, kappa_t_fr, Fz_fr, gamma_fr, T_ribs_fr, T_gas_fr, v_fr_g, wz=wz)
-        Mz_fl        = self.tire.compute_aligning_torque(alpha_t_fl, kappa_t_fl, Fz_fl, gamma_fl, Fy_fl, Fx_fl)
-        Mz_fr        = self.tire.compute_aligning_torque(alpha_t_fr, kappa_t_fr, Fz_fr, gamma_fr, Fy_fr, Fx_fr)
+        
+        # ✅ ESPEJO FR: alpha_t_fr YA ESTÁ INVERTIDO por el integrador. Invertimos gamma_fr y wz.
+        Fx_fr, Fy_fr_tire = self.tire.compute_force(alpha_t_fr, kappa_t_fr, Fz_fr, -gamma_fr, T_ribs_fr, T_gas_fr, v_fr_g, wz=-wz)
+        Fy_fr = -Fy_fr_tire
+
+        Mz_fl = self.tire.compute_aligning_torque(alpha_t_fl, kappa_t_fl, Fz_fl, gamma_fl, Fy_fl, Fx_fl)
+        
+        # ✅ ESPEJO FR Mz: Pasamos alpha_t_fr limpio. Invertimos gamma, Fy y Mz.
+        Mz_fr_tire = self.tire.compute_aligning_torque(alpha_t_fr, kappa_t_fr, Fz_fr, -gamma_fr, -Fy_fr, Fx_fr)
+        Mz_fr = -Mz_fr_tire
+
         Mz_castor_fl = compute_castor_trail(s.castor_f, Fy_fl, self.R_wheel)
         Mz_castor_fr = compute_castor_trail(s.castor_f, Fy_fr, self.R_wheel)
 
         # ═══════════════════════════════════════════════════════════════════
         # §5.1  Hub Motor Torques (4WD — no mechanical differential)
         # ═══════════════════════════════════════════════════════════════════
-        # ── Hub Motor Torques ───────────────────────────────────────────────────
         T_hub_fl = u[1]; T_hub_fr = u[2]; T_hub_rl = u[3]; T_hub_rr = u[4]
         F_brake_hyd = u[5]
 
@@ -1119,51 +1133,78 @@ class DifferentiableMultiBodyVehicle:
         eta = self.vp.get('drivetrain_efficiency', 0.95)
         vx_s = jnp.maximum(safe_abs(vx), 0.5)
 
-        v_fl_g = jnp.maximum(safe_abs(vx - wz * tf2), 0.5)
-        v_fr_g = jnp.maximum(safe_abs(vx + wz * tf2), 0.5)
-        v_rl_g = jnp.maximum(safe_abs(vx - wz * tr2), 0.5)
-        v_rr_g = jnp.maximum(safe_abs(vx + wz * tr2), 0.5)
+        # ───────────────────────────────────────────────────────────────────
+        # ── KINEMÁTICA DE RUEDAS UNIFICADA: NUMERADOR SIGNADO Y ESPEJO CANÓNICO ──
+        # ───────────────────────────────────────────────────────────────────
+        # 1. Velocidades lineales de mangueta con signo respecto al marco del coche
+        v_wheel_fl = vx - wz * tf2
+        v_wheel_fr = vx + wz * tf2
+        v_wheel_rl = vx - wz * tr2
+        v_wheel_rr = vx + wz * tr2
 
-        # ── CRITICAL FIX: use wheel angular velocity STATES for kappa ────────
-        # v[10:14] are the wheel ω DOFs integrated by F_ext[24:27].
-        # The previous code overwrote omega_fl/fr/rl/rr with a dimensionally-wrong
-        # algebraic formula (T/(J*R) has units N/(kg·m²), not rad/s), which
-        # saturated kappa_ref to ±0.5 for any nonzero torque, making all
-        # asymmetric torque commands invisible to the tire model.
+        # 2. Magnitudes absolutas puras exclusivamente para los denominadores cinemáticos
+        v_fl_g = jnp.maximum(safe_abs(v_wheel_fl), 0.5)
+        v_fr_g = jnp.maximum(safe_abs(v_wheel_fr), 0.5)
+        v_rl_g = jnp.maximum(safe_abs(v_wheel_rl), 0.5)
+        v_rr_g = jnp.maximum(safe_abs(v_wheel_rr), 0.5)
+
+        # 3. Primer Bloque de Fuerzas y Momentos: Eje Delantero
+        Fx_fl, Fy_fl = self.tire.compute_force(alpha_t_fl, kappa_t_fl, Fz_fl, gamma_fl, T_ribs_fl, T_gas_fl, v_fl_g, wz=wz)
+        
+        # ESPEJO FR: Pasamos alpha_t_fr limpio, invertimos gamma_fr y wz posicionalmente
+        Fx_fr, Fy_fr_tire = self.tire.compute_force(alpha_t_fr, kappa_t_fr, Fz_fr, -gamma_fr, T_ribs_fr, T_gas_fr, v_fr_g, wz=-wz)
+        Fy_fr = -Fy_fr_tire
+
+        Mz_fl = self.tire.compute_aligning_torque(alpha_t_fl, kappa_t_fl, Fz_fl, gamma_fl, Fy_fl, Fx_fl)
+        Mz_fr_tire = self.tire.compute_aligning_torque(alpha_t_fr, kappa_t_fr, Fz_fr, -gamma_fr, -Fy_fr, Fx_fr)
+        Mz_fr = -Mz_fr_tire
+
+        Mz_castor_fl = compute_castor_trail(s.castor_f, Fy_fl, self.R_wheel)
+        Mz_castor_fr = compute_castor_trail(s.castor_f, Fy_fr, self.R_wheel)
+
+        # ═══════════════════════════════════════════════════════════════════
+        # §5.1  Hub Motor Torques & Slip Reference Layout
+        # ═══════════════════════════════════════════════════════════════════
+        T_hub_fl = u[1]; T_hub_fr = u[2]; T_hub_rl = u[3]; T_hub_rr = u[4]
+        F_brake_hyd = u[5]
+
+        F_brake_f = -safe_abs(F_brake_hyd) * s.brake_bias_f * 0.5
+        F_brake_r = -safe_abs(F_brake_hyd) * (1.0 - s.brake_bias_f) * 0.5
+
+        eta = self.vp.get('drivetrain_efficiency', 0.95)
+
+        # Velocidades angulares integradas de las ruedas
         omega_wheel_fl = v[10]
         omega_wheel_fr = v[11]
         omega_wheel_rl = v[12]
         omega_wheel_rr = v[13]
 
-        kappa_ref_fl = (omega_wheel_fl * self.R_wheel) / (v_fl_g + 1e-6) - 1.0
-        kappa_ref_fr = (omega_wheel_fr * self.R_wheel) / (v_fr_g + 1e-6) - 1.0
-        kappa_ref_rl = (omega_wheel_rl * self.R_wheel) / (v_rl_g + 1e-6) - 1.0
-        kappa_ref_rr = (omega_wheel_rr * self.R_wheel) / (v_rr_g + 1e-6) - 1.0
+        # kappa = (omega·R − v_wheel) / v_g — Numerador signado, denominador de magnitud pura
+        kappa_ref_fl = (omega_wheel_fl * self.R_wheel - v_wheel_fl) / v_fl_g
+        kappa_ref_fr = (omega_wheel_fr * self.R_wheel - v_wheel_fr) / v_fr_g
+        kappa_ref_rl = (omega_wheel_rl * self.R_wheel - v_wheel_rl) / v_rl_g
+        kappa_ref_rr = (omega_wheel_rr * self.R_wheel - v_wheel_rr) / v_rr_g
 
-        # 2nd-order model: dκ_t/dt = κ_dot (already in state)
         d_kappa_fl = kappa_dot_fl
         d_kappa_fr = kappa_dot_fr
         d_kappa_rl = kappa_dot_rl
         d_kappa_rr = kappa_dot_rr
  
-        # Tire forces — pass localized hub speeds to all 4 corners independently
-        Fx_fl, Fy_fl = self.tire.compute_force(
-            alpha_t_fl, kappa_t_fl, Fz_fl, gamma_fl, T_ribs_fl, T_gas_fl, v_fl_g, wz=wz)
-        Fx_fr, Fy_fr = self.tire.compute_force(
-            alpha_t_fr, kappa_t_fr, Fz_fr, gamma_fr, T_ribs_fr, T_gas_fr, v_fr_g, wz=wz)
-        Fx_rl, Fy_rl = self.tire.compute_force(
-            alpha_t_rl, kappa_t_rl, Fz_rl, gamma_rl, T_ribs_rl, T_gas_rl, v_rl_g, wz=wz)
-        Fx_rr, Fy_rr = self.tire.compute_force(
-            alpha_t_rr, kappa_t_rr, Fz_rr, gamma_rr, T_ribs_rr, T_gas_rr, v_rr_g, wz=wz)
+        # Segundo Bloque de Fuerzas Finales: Mapeo Canónico de 4 Esquinas
+        Fx_fl, Fy_fl = self.tire.compute_force(alpha_t_fl, kappa_t_fl, Fz_fl, gamma_fl, T_ribs_fl, T_gas_fl, v_fl_g, wz=wz)
+        Fx_fr, Fy_fr_tire = self.tire.compute_force(alpha_t_fr, kappa_t_fr, Fz_fr, -gamma_fr, T_ribs_fr, T_gas_fr, v_fr_g, wz=-wz)
+        Fy_fr = -Fy_fr_tire
+
+        Fx_rl, Fy_rl = self.tire.compute_force(alpha_t_rl, kappa_t_rl, Fz_rl, gamma_rl, T_ribs_rl, T_gas_rl, v_rl_g, wz=wz)
+        Fx_rr, Fy_rr_tire = self.tire.compute_force(alpha_t_rr, kappa_t_rr, Fz_rr, -gamma_rr, T_ribs_rr, T_gas_rr, v_rr_g, wz=-wz)
+        Fy_rr = -Fy_rr_tire
  
-        Mz_rl = self.tire.compute_aligning_torque(
-            alpha_t_rl, kappa_t_rl, Fz_rl, gamma_rl, Fy_rl, Fx_rl)
-        Mz_rr = self.tire.compute_aligning_torque(
-            alpha_t_rr, kappa_t_rr, Fz_rr, gamma_rr, Fy_rr, Fx_rr)
+        Mz_rl = self.tire.compute_aligning_torque(alpha_t_rl, kappa_t_rl, Fz_rl, gamma_rl, Fy_rl, Fx_rl)
+        Mz_rr_tire = self.tire.compute_aligning_torque(alpha_t_rr, kappa_t_rr, Fz_rr, -gamma_rr, -Fy_rr, Fx_rr)
+        Mz_rr = -Mz_rr_tire
 
         Fy_f     = Fy_fl + Fy_fr
         Fy_r     = Fy_rl + Fy_rr
-        
         # FIX: Remove hydraulic brake forces from direct chassis acceleration. 
         # Chassis deceleration must flow solely from tire patch interaction.
         Fx_f     = Fx_fl + Fx_fr
@@ -1263,9 +1304,9 @@ class DifferentiableMultiBodyVehicle:
         # 2nd-order ODE: ẍ + 2ζωₙẋ + ωₙ²x = ωₙ²·x_kin
         # ── Module 5: 2nd-order transient slip → 16 states ───────────────────
         d_transient_4x4 = four_corner_transient_derivatives(
-            jnp.array([alpha_kin_fl, alpha_kin_fr, alpha_kin_rl, alpha_kin_rr]),
+            jnp.array([alpha_kin_fl, -alpha_kin_fr, alpha_kin_rl, -alpha_kin_rr]), # ✅ ESPEJO EN FR Y RR
             jnp.array([kappa_ref_fl, kappa_ref_fr, kappa_ref_rl, kappa_ref_rr]),
-            transient_4x4,  # REMOVED stop_gradient: Steering is now connected!
+            transient_4x4,  
             jnp.array([Fz_fl, Fz_fr, Fz_rl, Fz_rr]),
             safe_abs(vx),
         )
@@ -1373,14 +1414,28 @@ class DifferentiableMultiBodyVehicle:
             # TIGHTER CLAMP: Strictly bound velocities to physical limits 
             # to prevent H_net from hallucinating yaw spins.
             v_raw = p_ / (self.M_diag + 1e-8)
-            v_safe = jnp.clip(v_raw, -35.0, 35.0)                     # Max 35 m/s linear
+            v_safe = jnp.clip(v_raw, -35.0, 35.0)                    # Max 35 m/s linear
             v_safe = v_safe.at[5].set(jnp.clip(v_safe[5], -8.0, 8.0)) # Max 8 rad/s yaw
             p_safe = v_safe * self.M_diag
             
+            # ✅ ENFORCED SE(2) INVARIANCE: Strip absolute coordinates (X, Y, psi)
+            # This kills any non-zero dH/dpsi residual leaking into the yaw moment
+            q_inv = q_.at[0].set(0.0).at[1].set(0.0).at[5].set(0.0)
+
             T       = 0.5 * jnp.sum((p_safe ** 2) / (self.M_diag + 1e-8))
-            V       = 0.5 * jnp.sum(q_[6:10] ** 2) * _V_STRUCT_PRIOR_K
-            susp_sq = jnp.sum((q_[6:10] - _Z_EQ) ** 2) + 1e-4
-            return T + V + self.H_net.apply(h_params_, q_, p_safe, setup_) * susp_sq
+            V       = 0.5 * jnp.sum(q_inv[6:10] ** 2) * _V_STRUCT_PRIOR_K
+            susp_sq = jnp.sum((q_inv[6:10] - _Z_EQ) ** 2) + 1e-4
+            
+            # ✅ MANIFEST SYMMETRY: Mirror fully both inputs to wipe out ULP noise
+            q_mirrored = q_inv.at[3].set(-q_inv[3]).at[6].set(q_inv[7]).at[7].set(q_inv[6]).at[8].set(q_inv[9]).at[9].set(q_inv[8])
+            p_mirrored = (p_safe.at[1].set(-p_safe[1]).at[5].set(-p_safe[5])
+                                 .at[6].set(p_safe[7]).at[7].set(p_safe[6])
+                                 .at[8].set(p_safe[9]).at[9].set(p_safe[8]))
+            
+            H_val = self.H_net.apply(h_params_, q_inv, p_safe, setup_)
+            H_val_mirrored = self.H_net.apply(h_params_, q_mirrored, p_mirrored, setup_)
+            
+            return T + V + (0.5 * (H_val + H_val_mirrored)) * susp_sq
 
         grad_H_fn    = jax.grad(_full_H, argnums=(1, 2))
         dH_dq, dH_dp = grad_H_fn(h_params, q, p, setup_params)   # h_params traced
@@ -1413,8 +1468,19 @@ class DifferentiableMultiBodyVehicle:
                         jax.grad(lambda q_, p_: (
                             0.5 * jnp.sum((p_ ** 2) / (self.M_diag + 1e-8))
                             + 0.5 * jnp.sum(q_[6:10] ** 2) * _V_STRUCT_PRIOR_K
-                            + self.H_net.apply(self.H_params, q_, p_, setup_params)
-                            * (jnp.sum((q_[6:10] - _Z_EQ) ** 2) + 1e-4)
+                            + (lambda q_in, p_in: (
+                                # ✅ SE(2) INVARIANCE INSIDE GRADIENT ENGINE
+                                # Purgamos X, Y, psi para asegurar dH/dpsi == 0 exacto
+                                0.5 * (
+                                    self.H_net.apply(self.H_params, q_in.at[0].set(0.0).at[1].set(0.0).at[5].set(0.0), p_in, setup_params)
+                                    + self.H_net.apply(
+                                        self.H_params,
+                                        q_in.at[0].set(0.0).at[1].set(0.0).at[5].set(0.0).at[3].set(-q_in[3]).at[6].set(q_in[7]).at[7].set(q_in[6]).at[8].set(q_in[9]).at[9].set(q_in[8]),
+                                        p_in.at[1].set(-p_in[1]).at[5].set(-p_in[5]).at[6].set(p_in[7]).at[7].set(p_in[6]).at[8].set(p_in[9]).at[9].set(p_in[8]),
+                                        setup_params
+                                    )
+                                )
+                            ))(q_, p_) * (jnp.sum((q_[6:10] - _Z_EQ) ** 2) + 1e-4)
                         ), argnums=(0, 1))(q, p)
                     )
                 )
