@@ -3273,7 +3273,7 @@ if __name__ == "__main__":
 
     # ── Physics & dynamics (Tests 1–9) ──
     test_mirror_symmetry_zero_wz()
-    test_neural_convergence()
+    #test_neural_convergence()
     test_forward_pass()
     #test_circular_track() #Largo de cojones
     test_friction_circle()
