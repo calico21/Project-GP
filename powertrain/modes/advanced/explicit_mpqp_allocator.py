@@ -345,27 +345,19 @@ def check_kkt_feasibility_v2(
 # §6  Smooth active-set prediction  (Batch 8 — enables end-to-end grad)
 # ─────────────────────────────────────────────────────────────────────────────
 
-@jax.jit
+@partial(jax.jit, static_argnames=('model', 'tau'))
 def predict_active_set_soft(
-    bundle:     ClassifierBundle,
+    model,
+    params,
+    thresholds,
     theta_norm: jax.Array,
     tau:        float = 50.0,
 ) -> jax.Array:
     """
-    Temperature-softened active-set indicator.
-
-    Instead of hard threshold: A_c = 1[p_c ≥ θ_c]   (discontinuous)
-    We use:                    A_c = σ(τ · (p_c − θ_c))  (C∞)
-
-    At τ = 50:
-      ∙ Within ±0.02 of the hard threshold → same classification in practice
-      ∙ ∂A_c/∂θ is finite everywhere → ∂T*/∂θ is C∞ → bilevel grad works
-
-    Returns active-set ∈ (0,1)^{N_CONSTRAINTS} — compatible with both
-    build_kkt_system (V1, 12-dim) and build_kkt_system_v2 (V2, 20-dim).
+    Temperature-softened active-set indicator — FIXED for static JAX tracing.
     """
-    probs = bundle.model.apply({"params": bundle.params}, theta_norm)   # (N_C,)
-    return jax.nn.sigmoid(tau * (probs - bundle.thresholds))            # (N_C,)
+    probs = model.apply({"params": params}, theta_norm)   # (N_C,)
+    return jax.nn.sigmoid(tau * (probs - thresholds))            # (N_C,)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -505,7 +497,15 @@ def make_explicit_allocator_step_v2(
 
         # ── 2. Extended θ → V2 active-set (soft) ─────────────────────────
         theta_norm_v2 = normalise_theta_v2(pack_theta_raw_v2(p, slip_inputs))
-        active_set_v2 = predict_active_set_soft(clf_bundle_v2, theta_norm_v2, tau=soft_tau)
+        
+        # ✅ CORREGIDO: Desempaquetamos el bundle para aislar el objeto del modelo
+        active_set_v2 = predict_active_set_soft(
+            model=clf_bundle_v2.model,
+            params=clf_bundle_v2.params,
+            thresholds=clf_bundle_v2.thresholds,
+            theta_norm=theta_norm_v2,
+            tau=soft_tau
+        )
         # (20,) soft indicators ∈ (0,1)
 
         # ── 3. Cost matrices ───────────────────────────────────────────────

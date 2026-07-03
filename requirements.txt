@@ -9,3 +9,5 @@ plotly
 pyyaml
 jax
 jaxlib
+optax
+flax
