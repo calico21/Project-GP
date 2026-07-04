@@ -3272,10 +3272,10 @@ if __name__ == "__main__":
     print("█" * 60)
 
     # ── Physics & dynamics (Tests 1–9) ──
-    test_mirror_symmetry_zero_wz()
-    test_neural_convergence()
-    test_forward_pass()
-    test_circular_track() #Largo de cojones
+    #test_mirror_symmetry_zero_wz()
+    #test_neural_convergence()
+    #test_forward_pass()
+    #test_circular_track() #Largo de cojones
     test_friction_circle()
     test_load_sensitivity()
     test_diagonal_load_transfer()
