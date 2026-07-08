@@ -1012,7 +1012,6 @@ class DifferentiableMultiBodyVehicle:
         M_arb_r     = s.arb_r * phi_roll_r
         F_arb_r     = M_arb_r / (tr2 + 1e-6)
 
-        # Applied symmetrically: bump side gets +F, droop side gets -F
         F_susp_fl = F_susp_fl + F_arb_f
         F_susp_fr = F_susp_fr - F_arb_f
         F_susp_rl = F_susp_rl + F_arb_r

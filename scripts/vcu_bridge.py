@@ -1,36 +1,38 @@
 # scripts/vcu_bridge.py
+import jax
 import jax.numpy as jnp
 import numpy as np
 import struct
 
-Q15_ONE = 32768  # 2^15 para el reparto de par
-Q8_ONE = 255     # 2^8 para la atenuación del CBF
+Q15_ONE = 32768
+Q8_ONE = 255
+
+@jax.jit
+def compute_can_scalars(t_rl: jax.Array, t_rr: jax.Array, cbf_active: jax.Array) -> tuple[jax.Array, jax.Array, jax.Array]:
+    """
+    Executes entirely on device (GPU/XLA). 
+    Calculates torque split and scales directly in fixed-point space.
+    """
+    total = jnp.abs(t_rl) + jnp.abs(t_rr) + 1e-6
+    frac_rl = jnp.clip(0.5 + 0.5 * (t_rl - t_rr) / total, 0.0, 1.0)
+    
+    split_q15 = jnp.clip(jnp.round(frac_rl * Q15_ONE), 0, Q15_ONE).astype(jnp.int16)
+    
+    # Scale factor default to 255 (100% torque) unless CBF scales it down
+    total_scale_q8 = jnp.uint8(Q8_ONE)
+    cbf_flag = jnp.where(cbf_active > 0.5, jnp.uint8(1), jnp.uint8(0))
+    
+    return split_q15, total_scale_q8, cbf_flag
 
 def pack_tv_split_frame(diag) -> bytes:
     """
-    Toma el objeto PowertrainDiagnostics resultante de powertrain_step().
-    Genera un payload binario de 4 bytes listo para el bus CAN de la VCU.
+    Host-side packer. Pulls the pre-quantized 32-bit payload from device memory 
+    in a single DMA transfer and packs it into the 0x300 CAN frame.
     """
-    # Extracción de pares del eje trasero (Índices 2 y 3: RL y RR)
-    t_rl = diag.T_wheel[2]
-    t_rr = diag.T_wheel[3]
+    # Pull only the required scalars from device in one operation
+    split_q15, scale_q8, cbf_flag = jax.device_get(
+        compute_can_scalars(diag.T_wheel[2], diag.T_wheel[3], diag.cbf_active)
+    )
     
-    total = jnp.abs(t_rl) + jnp.abs(t_rr) + 1e-6
-    
-    # 1. Fracción de par hacia la rueda trasera izquierda (RL) en Q15
-    # Conserva el signo algebraico neta para soportar asimetrías de regeneración
-    frac_rl = jnp.clip(0.5 + 0.5 * (t_rl - t_rr) / total, 0.0, 1.0)
-    split_q15 = int(np.asarray(frac_rl) * Q15_ONE)
-    split_q15 = np.clip(split_q15, 0, Q15_ONE).astype(np.int16)
-    
-    # 2. Factor de atenuación global de par (CBF) en Q8 (0 = Corte total, 255 = 100% par)
-    # Si el CBF está activo disminuyendo el par por seguridad, escalamos la comanda a la baja
-    scale_factor = diag.torque_scale_factor if hasattr(diag, 'torque_scale_factor') else 1.0
-    total_scale_q8 = int(np.asarray(scale_factor) * Q8_ONE)
-    total_scale_q8 = np.clip(total_scale_q8, 0, Q8_ONE).astype(np.uint8)
-    
-    # 3. Flag diagnóstico de intervención CBF/E-ABS
-    cbf_flag = uint8(1) if diag.cbf_active > 0.5 else uint8(0)
-    
-    # Empaquetado: int16 (2 bytes) + uint8 (1 byte) + uint8 (1 byte) = 4 bytes nítidos
-    return struct.pack('<hBB', split_q15, total_scale_q8, cbf_flag)
+    # Pack into Little-Endian int16 + uint8 + uint8 = 4 bytes
+    return struct.pack('<hBB', int(split_q15), int(scale_q8), int(cbf_flag))
