@@ -2,11 +2,30 @@
 """
 can_monitor.py — Replaces Linux candump for UDP Multicast / WSL testing
 """
+import struct
+
+# --- WSL1 KERNEL COMPATIBILITY PATCH ---
+# WSL1 does not support SIOCINQ/FIONREAD ioctls on UDP sockets (Errno 22).
+# We intercept the OSError and return a safe 64-byte buffer count.
+try:
+    import can.interfaces.udp_multicast.bus as _udp_mod
+    _orig_ioctl = _udp_mod.ioctl
+    def _wsl_ioctl_patch(fd, op, arg=0, *args, **kwargs):
+        try:
+            return _orig_ioctl(fd, op, arg, *args, **kwargs)
+        except OSError as e:
+            if e.errno == 22:  # EINVAL on WSL1 socket query
+                return struct.pack('i', 64)
+            raise
+    _udp_mod.ioctl = _wsl_ioctl_patch
+except (ImportError, AttributeError):
+    pass
+# ---------------------------------------
+
 import can
 
 def main():
     print("[Monitor] Listening to UDP Multicast CAN bus (239.0.0.1 port 10000)...")
-    # Pass IP as channel, use 'interface' instead of 'bustype', and pass port explicitly
     bus = can.interface.Bus(channel='239.0.0.1', interface='udp_multicast', port=10000)
     
     try:

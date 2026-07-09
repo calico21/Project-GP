@@ -14,7 +14,6 @@ CAN_PORT = 10000
 def main():
     print("[Mock Pub] Loading TER.dbc...")
     db = cantools.database.load_file(DBC_PATH)
-    # FIXED CONFIG: Uses udp_multicast with explicit IP and Port arguments
     bus = can.interface.Bus(channel=CAN_CHANNEL, interface='udp_multicast', port=CAN_PORT)
 
     print("[Mock Pub] Broadcasting dynamic cornering telemetry at 50 Hz...")
@@ -30,19 +29,19 @@ def main():
             rpm_fl = 500.0 + 50.0 * math.sin(t)
             rpm_fr = 500.0 - 50.0 * math.sin(t)             # Outer wheel faster in turns
 
-            # 1. Send Throttle (ID 3 / 0x003: APPS)
+            # 1. Send Throttle (ID 3 / 0x003: APPS) — strict=False ignores DBC [0|1] bounds
             msg_apps = db.get_message_by_name('APPS')
-            data_apps = msg_apps.encode({'APPS_AV': int(throttle_val), 'APPS_1': 0, 'APPS_2': 0, 'IMP_FLAG': 0})
+            data_apps = msg_apps.encode({'APPS_AV': int(throttle_val), 'APPS_1': 0, 'APPS_2': 0, 'IMP_FLAG': 0}, strict=False)
             bus.send(can.Message(arbitration_id=0x003, data=data_apps, is_extended_id=False))
 
             # 2. Send Steering Angle (ID 5 / 0x005: STEER)
             msg_steer = db.get_message_by_name('STEER')
-            data_steer = msg_steer.encode({'ANGLE': steer_deg})
+            data_steer = msg_steer.encode({'ANGLE': steer_deg}, strict=False)
             bus.send(can.Message(arbitration_id=0x005, data=data_steer, is_extended_id=False))
 
             # 3. Send Front Wheel RPMs (ID 277 / 0x115: Front_RPM)
             msg_rpm = db.get_message_by_name('Front_RPM')
-            data_rpm = msg_rpm.encode({'RPM_L': rpm_fl, 'RPM_R': rpm_fr})
+            data_rpm = msg_rpm.encode({'RPM_L': rpm_fl, 'RPM_R': rpm_fr}, strict=False)
             bus.send(can.Message(arbitration_id=0x115, data=data_rpm, is_extended_id=False))
 
             time.sleep(0.02)  # 50 Hz publication rate

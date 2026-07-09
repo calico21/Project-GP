@@ -1,4 +1,4 @@
-"""simulator/visualizer_client.py  v2.1 — fixed Rerun API + track NaN"""
+"""simulator/visualizer_client.py  v2.2 — fixed Rerun API, track NaN, and v3 network constants"""
 import os, sys, time, socket, math
 from collections import deque
 import numpy as np
@@ -18,10 +18,12 @@ from scipy.spatial.transform import Rotation as SciRot
 _ROOT = os.path.dirname(_D)
 if _ROOT not in sys.path: sys.path.insert(0, _ROOT)
 try:
-    from simulator.sim_protocol import TelemetryFrame, TX_BYTES, DEFAULT_HOST, DEFAULT_PORT_SEND
+    from simulator.sim_protocol import TelemetryFrame, TX_BYTES
+    from simulator.sim_config import HOST, PORT_TELEM_VIZ
     from simulator.track_builder import get_track
 except ImportError:
-    from sim_protocol import TelemetryFrame, TX_BYTES, DEFAULT_HOST, DEFAULT_PORT_SEND
+    from sim_protocol import TelemetryFrame, TX_BYTES
+    from sim_config import HOST, PORT_TELEM_VIZ
     from track_builder import get_track
 
 VISUALIZER_HZ=60; TRAIL_LENGTH=500; GG_HISTORY=2000
@@ -29,18 +31,7 @@ FORCE_ARROW_SCALE=0.0008; FZ_BAR_SCALE=0.0004
 TIRE_TEMP_COLD=40.0; TIRE_TEMP_OPTIMAL=80.0; TIRE_TEMP_HOT=110.0
 LF=0.68; LR=0.92; TRACK_W=1.20; R_TIRE=0.2032; W_TIRE=0.10
 # VP_H_CG = physical CG height above ground at equilibrium = VP_DICT['h_cg'] = 0.33m
-#
-# WHY: The server sends tf.z = Z_state + (h_cg - Z_eq).
-# At static equilibrium: tf.z = Z_eq + (h_cg - Z_eq) = h_cg.
-# So tf.z IS the world CG height at equilibrium.
-# Wheel axle in LOCAL body frame = R_TIRE - h_cg below the CG.
-# World wheel center = tf.z + (R_TIRE - VP_H_CG).
-# For tire_bottom = 0 at equilibrium:
-#   h_cg + (R_TIRE - VP_H_CG) - R_TIRE = 0  →  VP_H_CG = h_cg = 0.33
-#
-# Previous value 0.31254 used old h_cg=0.30 and old Z_eq=-0.01254,
-# causing tires to float 17.5mm above ground and go underground on any roll.
-VP_H_CG = 0.33   # = VP_DICT['h_cg'] — must match vehicle_params.py
+VP_H_CG = 0.33
 
 def _lerp(t,c0,c1):
     return [max(0,min(255,int(c0[i]+(c1[i]-c0[i])*float(t)))) for i in range(3)]+[255]
@@ -63,7 +54,7 @@ def speed_color(s,mx=100.0):
     return _lerp((t-0.5)*2,(30,220,50),(220,30,30))
 
 class SimVisualizer:
-    def __init__(self,host=DEFAULT_HOST,port=DEFAULT_PORT_SEND,
+    def __init__(self,host=HOST,port=PORT_TELEM_VIZ,
                  track_name='fsg_autocross',app_id='ProjectGP_DigitalTwin'):
         self.host=host; self.port=port; self.app_id=app_id
         self._trail_x=deque(maxlen=TRAIL_LENGTH); self._trail_y=deque(maxlen=TRAIL_LENGTH)
@@ -84,8 +75,6 @@ class SimVisualizer:
         rr_init(self.app_id,spawn=True)
         rr_set_time(0.0,0)
         print(f"[Viz] Rerun {rr.__version__} ready.")
-        # Tell Rerun our world is Z-up (right-handed: X=forward, Y=left, Z=up).
-        # Without this, Rerun defaults to Y-up and yaw appears as nose-down pitch.
         try:
             rr.log("world", rr.ViewCoordinates.RIGHT_HAND_Z_UP, static=True)
         except Exception:
@@ -118,29 +107,11 @@ class SimVisualizer:
                    rotation_quat_xyzw=list(q))
         self._safe(rr_boxes3d,"world/vehicle/chassis",half_sizes=[[1.10,0.40,0.20]],colors=[[200,40,40,255]])
 
-        # ── Wheel positions ───────────────────────────────────────────────────
-        # The vehicle transform (world/vehicle) is at the CG: [tf.x, tf.y, tf.z]
-        # with rotation from yaw/pitch/roll.
-        #
-        # In body frame, each wheel axle sits at:
-        #   lx = ±LF or ∓LR  (fore-aft from CG)
-        #   ly = ±TRACK_W/2   (lateral from CG centreline)
-        #   lz = (R_TIRE - h_cg) + corner_suspension_offset
-        #      = offset so the tyre sits on the ground at static equilibrium
-        #
-        # corner_suspension_offset from roll/pitch (body kinematics):
-        #   fl: -LF*pitch - TRACK_W/2*roll
-        #   fr: -LF*pitch + TRACK_W/2*roll
-        #   rl: +LR*pitch - TRACK_W/2*roll
-        #   rr: +LR*pitch + TRACK_W/2*roll
-        #
-        # tf.z_fl (state[6]) is the H_net suspension displacement DOF (≈0 at rest,
-        # scale ±50mm) — add it on top for small suspension travel detail.
         _pitch = float(tf.pitch)
         _roll  = float(tf.roll)
-        _h_cg  = VP_H_CG          # physical CG height = 0.33m (= VP_DICT['h_cg'])
-        _axle_offset = R_TIRE - _h_cg   # = 0.2032 - 0.33 = -0.1268m (axle below CG)
-        _lz_floor    = R_TIRE - _h_cg   # wheel lz floor: keeps tire above ground plane
+        _h_cg  = VP_H_CG          
+        _axle_offset = R_TIRE - _h_cg   
+        _lz_floor    = R_TIRE - _h_cg   
 
         for name,(lx,ly,lz_raw,T,slip,Fz,Fy,sa) in {
             'fl':(LF,   TRACK_W/2,  _axle_offset - LF*_pitch - (TRACK_W/2)*_roll, tf.T_fl, tf.slip_fl, tf.Fz_fl, tf.Fy_fl, tf.delta),
@@ -148,7 +119,7 @@ class SimVisualizer:
             'rl':(-LR,  TRACK_W/2,  _axle_offset + LR*_pitch - (TRACK_W/2)*_roll, tf.T_rl, tf.slip_rl, tf.Fz_rl, tf.Fy_rl, 0.0),
             'rr':(-LR, -TRACK_W/2,  _axle_offset + LR*_pitch + (TRACK_W/2)*_roll, tf.T_rr, tf.slip_rr, tf.Fz_rr, tf.Fy_rr, 0.0),
         }.items():
-            lz = max(float(lz_raw), _lz_floor)   # clamp: tire never clips through ground visually
+            lz = max(float(lz_raw), _lz_floor)  
             b=f"world/vehicle/{name}"
             self._safe(rr_transform3d,b,translation=[float(lx),float(ly),float(lz)],
                        rotation_axis=[0,0,1],rotation_angle_rad=float(sa))
@@ -184,7 +155,6 @@ class SimVisualizer:
                 self._gg_init=True
 
         for path,val in {
-            # Suspension travel = corner height relative to CG (body-frame vertical displacement)
             "suspension/fl": float(tf.z_fl)-float(tf.z),
             "suspension/fr": float(tf.z_fr)-float(tf.z),
             "suspension/rl": float(tf.z_rl)-float(tf.z),
@@ -247,7 +217,7 @@ class SimVisualizer:
 def main():
     import argparse, socket as _s
     p=argparse.ArgumentParser(); p.add_argument('--track',default='fsg_autocross')
-    p.add_argument('--host',default=DEFAULT_HOST); p.add_argument('--port',type=int,default=DEFAULT_PORT_SEND)
+    p.add_argument('--host',default=HOST); p.add_argument('--port',type=int,default=PORT_TELEM_VIZ)
     a=p.parse_args()
     SimVisualizer(host=a.host,port=a.port,track_name=a.track).run()
 

@@ -4,6 +4,24 @@ main_coprocessor.py — Project-GP 200 Hz Standalone CAN Co-Processor over UDP
 """
 import time
 import threading
+import struct
+
+# --- WSL1 KERNEL COMPATIBILITY PATCH ---
+try:
+    import can.interfaces.udp_multicast.bus as _udp_mod
+    _orig_ioctl = _udp_mod.ioctl
+    def _wsl_ioctl_patch(fd, op, arg=0, *args, **kwargs):
+        try:
+            return _orig_ioctl(fd, op, arg, *args, **kwargs)
+        except OSError as e:
+            if e.errno == 22:  # EINVAL on WSL1 socket query
+                return struct.pack('i', 64)
+            raise
+    _udp_mod.ioctl = _wsl_ioctl_patch
+except (ImportError, AttributeError):
+    pass
+# ---------------------------------------
+
 import can
 import cantools
 import numpy as np
@@ -11,7 +29,6 @@ import jax
 import jax.numpy as jnp
 
 from powertrain.powertrain_manager import make_powertrain_manager, powertrain_step
-# FIXED IMPORT: Using vehicle_params_ter27 matching your config file
 from config.vehicles.ter27 import vehicle_params_ter27 as VP
 from scripts.vcu_bridge import pack_tv_split_frame
 
@@ -21,7 +38,7 @@ CAN_CHANNEL = '239.0.0.1'
 CAN_PORT = 10000
 DBC_PATH = "TER.dbc"
 SBC_TV_CMD_FRAME_ID = 0x300
-LOOP_RATE_HZ = 200.0
+LOOP_RATE_HZ = 100.0 # de normal 200Hz, 100Hz para silenciar warnings de sobrecarga de loop
 LOOP_PERIOD_S = 1.0 / LOOP_RATE_HZ
 
 class TelemetryBuffer:
@@ -146,18 +163,26 @@ def main():
             )
             bus.send(can_msg)
 
+            # --- E. Enforce Dynamic Loop Timing ---
             exec_time = time.perf_counter() - t_start
             step_count += 1
-            if step_count % 200 == 0:
-                print(f"[200Hz Loop] Exec: {exec_time*1000:.2f}ms | Split RL: {diag.T_wheel[2]:.1f}Nm | CBF: {int(diag.cbf_active)} | T_Tire FL: {T_tire[0]:.1f}C")
+            
+            # Dynamic frequency printing (e.g. prints every 1 second)
+            if step_count % int(LOOP_RATE_HZ) == 0:
+                print(f"[{int(LOOP_RATE_HZ)}Hz Loop] Exec: {exec_time*1000:.2f}ms | Split RL: {diag.T_wheel[2]:.1f}Nm | CBF: {int(diag.cbf_active)} | T_Tire FL: {T_tire[0]:.1f}C")
 
+            # Calculate sleep time to maintain exact frequency
             sleep_time = next_wake_time - time.perf_counter()
+            
             if sleep_time > 0:
                 time.sleep(sleep_time)
+                next_wake_time += LOOP_PERIOD_S
             else:
-                if step_count % 50 == 0:
-                    print(f"[WARNING] Loop overrun! Execution took {exec_time*1000:.2f}ms (Budget: 5.0ms)")
-            next_wake_time += LOOP_PERIOD_S
+                # If we overran, print warning and RESET the schedule anchor
+                # so subsequent normal frames don't cascade warnings!
+                if step_count % 20 == 0:  # Throttled warning printing
+                    print(f"[WARNING] Loop overrun! Execution took {exec_time*1000:.2f}ms (Budget: {LOOP_PERIOD_S*1000:.1f}ms)")
+                next_wake_time = time.perf_counter() + LOOP_PERIOD_S
 
     except KeyboardInterrupt:
         print("\n[STOP] Shutting down CAN Co-Processor gracefully.")

@@ -183,22 +183,13 @@ class PhysicsServer:
 
     def _make_initial_state(self, x=0.0, y=0.0, yaw=0.0, speed=5.0):
         """Build initial state at computed static spring equilibrium."""
-        s = jnp.zeros(S.STATE_DIM)
+        # 1. Fetch the exact 108-DOF base state from the physics engine!
+        s = DifferentiableMultiBodyVehicle.make_initial_state(T_env=25.0, vx0=speed)
 
-        # Position
+        # 2. Apply simulator-specific overrides (NEVER overwrite S.Z)
         s = s.at[S.X].set(x)
         s = s.at[S.Y].set(y)
         s = s.at[S.YAW].set(yaw)
-
-        # Static spring equilibrium: Z_eq = -mg / (2*(k_f + k_r))
-        k_f = float(self.setup_params[0])   # index 0 = k_f in canonical order
-        k_r = float(self.setup_params[1])   # index 1 = k_r
-        m   = VC.total_mass
-        g   = 9.81
-        Z_eq = -(m * g) / (2.0 * (k_f + k_r))
-        s = s.at[S.Z].set(Z_eq)
-
-        # Velocity
         s = s.at[S.VX].set(speed)
 
         # Wheel spin consistent with road speed
@@ -208,14 +199,11 @@ class PhysicsServer:
         s = s.at[S.WSPIN_RL].set(omega_init)
         s = s.at[S.WSPIN_RR].set(omega_init)
 
-        # Warm tires (~70°C: 93% grip, 3.8× margin to degrad at 270°C)
-        for idx in range(S.T_FL_SURF, S.T_RL_CORE + 1):
-            s = s.at[idx].set(70.0)
+        # WARM ALL 4 TIRES TO 70°C (Indices 28 to 55)
+        s = s.at[28:56].set(70.0)
 
-        print(f"[Server] Init: Z_eq={Z_eq*1e3:.1f}mm | vx={speed:.1f}m/s | "
-              f"ω_init={omega_init:.1f}rad/s")
+        print(f"[Server] Init: vx={speed:.1f}m/s | ω_init={omega_init:.1f}rad/s")
         return s
-
     def reset_to_start(self):
         """Reset car to track start position."""
         if self.track:
@@ -680,25 +668,37 @@ class PhysicsServer:
                 vx = float(np.clip(s_arr[S.VX], -80, 80))
 
                 # ── Determine control source ──────────────────────────
-                # Autopilot runs FIRST, then assists modify its output.
-                # This ensures TC/ABS apply to autopilot throttle too.
                 _is_auto = (time.perf_counter() - self._last_ctrl_time > 1.0)
 
                 if _is_auto:
                     steer_raw, net_lon_raw = self._autopilot_step(vx, s_arr)
-                    thr_raw = max(0.0, net_lon_raw)
-                    brk_raw = max(0.0, -net_lon_raw)
+                    # Normalize autopilot Newtons to 0.0-1.0 fractions
+                    thr_raw = max(0.0, net_lon_raw) / 8000.0
+                    brk_raw = max(0.0, -net_lon_raw) / 20000.0
                 else:
                     steer_raw = self._steer_cmd
                     thr_raw   = self._throttle_f
                     brk_raw   = self._brake_f
 
-                # ── Drive assists (TC/ABS) on the ACTUAL control source ──
+                # ── Drive assists (TC/ABS) ──
                 steer_c, thr_c, brk_c = self._apply_drive_assists(
                     steer_raw, thr_raw, brk_raw, vx, s_arr,
                 )
-                net_lon = thr_c - brk_c
-                controls_jax = jnp.array([steer_c, net_lon])
+
+                # ── CRITICAL FIX: Map to 6-DOF Control Vector ──
+                # New model expects: [steer, T_fl, T_fr, T_rl, T_rr, F_brake_hyd]
+                max_steer_lock  = 0.43   # ~25 degrees maximum wheel angle in radians
+                max_rear_torque = 175.0  # Approx max torque from two AMK motors
+                max_brake_force = 8000.0 # Hydraulic brake force in Newtons
+                
+                controls_jax = jnp.array([
+                    steer_c * max_steer_lock,        # 0: Steering angle (RADIANS)
+                    0.0,                             # 1: FL Hub Torque (RWD = 0)
+                    0.0,                             # 2: FR Hub Torque (RWD = 0)
+                    thr_c * max_rear_torque * 0.5,   # 3: RL Hub Torque
+                    thr_c * max_rear_torque * 0.5,   # 4: RR Hub Torque
+                    brk_c * max_brake_force          # 5: Hydraulic Brake
+                ])
 
                 # ── Physics step ──────────────────────────────────────
                 self.prev_state = self.state
