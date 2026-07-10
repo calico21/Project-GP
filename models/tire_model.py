@@ -597,7 +597,7 @@ class PacejkaTire:
     # §4.4  Pacejka MF6.2 force computation
     # ─────────────────────────────────────────────────────────────────────────
 
-    def compute_force(
+    def compute_force_and_sigma(
         self,
         alpha:          jax.Array,
         kappa:          jax.Array,
@@ -608,10 +608,10 @@ class PacejkaTire:
         Vx:             jax.Array,
         stochastic_key          = None,
         wz:             jax.Array = jnp.array(0.0),
-    ):
+    ) -> tuple[jax.Array, jax.Array, jax.Array]:
         """
-        Full Pacejka MF6.2 lateral and longitudinal force.
-        Returns (Fx, Fy) in Newtons.
+        Full Pacejka MF6.2 lateral and longitudinal force + GP Uncertainty.
+        Returns (Fx, Fy, sigma).
         Sign convention: positive Fy = left force (SAE z-up).
         """
         c   = self.coeffs
@@ -674,9 +674,7 @@ class PacejkaTire:
         PEX1 = c.get('PEX1', -0.20)
         PEX2 = c.get('PEX2',  0.10)
         PEX3 = c.get('PEX3',  0.0)
-        # Recalibrate PKX1 downwards to push the \kappa^* peak to ~0.10 - 0.15
-        # Prevents infinite stiffness "steel wheel" anomaly (peak at 0.02)
-        PKX1 = c.get('PKX1',  5.0)  # <-- Changed from 18.5
+        PKX1 = c.get('PKX1',  5.0)  
         PKX2 = c.get('PKX2',  0.0)
         PKX3 = c.get('PKX3',  0.20)
         PHX1 = c.get('PHX1',  0.0)
@@ -712,91 +710,60 @@ class PacejkaTire:
         RCX1 = c.get('RCX1', 1.0)
         RHX1 = c.get('RHX1', 0.0)
 
-        # ── Combined slip reduction  (MF6.2 corrected) ─────────────────────────────
-        # G_yk: lateral force reduction due to LONGITUDINAL slip κ
-        #   B_yk is α-dependent (sensitivity scaling), x is κ-based (the slip driving reduction).
-        #   Previous code: x_ys = By_s * alpha_s — κ-independent → always 0% reduction.
-        # G_xa: longitudinal force reduction due to LATERAL slip α
-        #   B_xa is κ-dependent, x is α-based.
-        # Both were using the wrong variable for x → combined slip had zero effect.
+        SHyk     = RHY1
+        kappa_ys = kappa + SHyk                             
+        By_s     = RBY1 * jnp.cos(jnp.arctan(RBY2 * (alpha - RBY3)))
+        Ey_s     = REY1 + REY2 * dfz
+        x_ys     = By_s * kappa_ys                           
+        Gyk_num  = jnp.cos(RCY1 * jnp.arctan(x_ys  - Ey_s * (x_ys  - jnp.arctan(x_ys))))
+        Gyk_den  = jnp.cos(RCY1 * jnp.arctan(By_s * SHyk - Ey_s * (By_s * SHyk - jnp.arctan(By_s * SHyk))))
+        Gyk      = Gyk_num / (Gyk_den + 1e-6)
+        Gyk      = jnp.clip(Gyk, 0.05, 1.0)
 
-        SHyk    = RHY1
-        kappa_ys = kappa + SHyk                             # shifted kappa — the input to G_yk
-
-        # B_yk scales with alpha (how sensitive the reduction is to lateral conditions)
-        By_s    = RBY1 * jnp.cos(jnp.arctan(RBY2 * (alpha - RBY3)))
-        Ey_s    = REY1 + REY2 * dfz
-        x_ys    = By_s * kappa_ys                           # FIX: was alpha_s — must be kappa
-        # Normalization: G_yk(κ=0) = cos(arctan(B_yk * SHyk)) = cos(0) = 1 when SHyk=0
-        Gyk_num = jnp.cos(RCY1 * jnp.arctan(x_ys  - Ey_s * (x_ys  - jnp.arctan(x_ys))))
-        Gyk_den = jnp.cos(RCY1 * jnp.arctan(By_s * SHyk - Ey_s * (By_s * SHyk - jnp.arctan(By_s * SHyk))))
-        Gyk     = Gyk_num / (Gyk_den + 1e-6)
-        Gyk     = jnp.clip(Gyk, 0.05, 1.0)
-
-        SHxa    = RHX1
-        alpha_xs = alpha + SHxa                             # shifted alpha — input to G_xa
-
-        # B_xa scales with kappa (how sensitive the reduction is to longitudinal conditions)
-        Bx_s    = RBX1 * jnp.cos(jnp.arctan(RBX2 * kappa))
-        x_xs    = Bx_s * alpha_xs                           # FIX: was kappa_s — must be alpha
-        Gxa_num = jnp.cos(RCX1 * jnp.arctan(x_xs))
-        Gxa_den = jnp.cos(RCX1 * jnp.arctan(Bx_s * SHxa))
-        Gxa     = Gxa_num / (Gxa_den + 1e-6)
-        Gxa     = jnp.clip(Gxa, 0.05, 1.0)
+        SHxa     = RHX1
+        alpha_xs = alpha + SHxa                             
+        Bx_s     = RBX1 * jnp.cos(jnp.arctan(RBX2 * kappa))
+        x_xs     = Bx_s * alpha_xs                           
+        Gxa_num  = jnp.cos(RCX1 * jnp.arctan(x_xs))
+        Gxa_den  = jnp.cos(RCX1 * jnp.arctan(Bx_s * SHxa))
+        Gxa      = Gxa_num / (Gxa_den + 1e-6)
+        Gxa      = jnp.clip(Gxa, 0.05, 1.0)
 
         Fy = Fy0 * Gyk
         Fx = Fx0 * Gxa
 
         # ── Turn slip correction (JAX-Safe) ──────────────────────────────────
-        a_contact = c.get('contact_half_length', 0.05)
-        
-        # 1. Compute curvature directly instead of radius.
-        # Floor Vx at 0.1 m/s to prevent division by zero at standstill.
-        curvature = (jnp.sqrt(wz**2 + 1e-8) + eps) / (jnp.sqrt(Vx**2 + 1e-8) + 0.1)
-        phi_t     = a_contact * curvature
-        
-        # 2. Smoothly fade out the correction at ultra-low speeds (< 0.5 m/s)
-        # This completely kills any remaining gradient spikes when the car is stopped.
+        a_contact      = c.get('contact_half_length', 0.05)
+        curvature      = (jnp.sqrt(wz**2 + 1e-8) + eps) / (jnp.sqrt(Vx**2 + 1e-8) + 0.1)
+        phi_t          = a_contact * curvature
         low_speed_fade = jax.nn.sigmoid(10.0 * (safe_abs(Vx) - 0.5))
-        
-        Fy = Fy * (1.0 - 0.15 * safe_abs(phi_t) * low_speed_fade)
+        Fy             = Fy * (1.0 - 0.15 * safe_abs(phi_t) * low_speed_fade)
 
         # ── PINN/GP residual corrections ─────────────────────────────────────
-        # BUGFIX-5: include normalized thermal deviation as 6th PINN feature.
-        # T_eff = surface average; same value used by _thermal_grip_factor.
         T_eff  = jnp.mean(T_ribs[:3])
-        
-        # Replace linear thermal derating with a softer exponential saturation
-        # This prevents catastrophic loss of lateral stiffness when cold during warmup
-        T_norm = jnp.tanh((T_eff - self.T_opt) / 30.0) # <-- Changed from (T_eff - self.T_opt) / 30.0
-
-        # jnp.asarray handles both Python float and JAX array Vx without
-        # isinstance checks (which fail under abstract tracing in jit).
+        T_norm = jnp.tanh((T_eff - self.T_opt) / 30.0) 
         Vx_arr = jnp.asarray(Vx)
 
-        # State tensor: (8,) to match TireOperatorPINN expanded feature vector.
-        # Indices 6-7 unused by PINN (forward-compat padding), GP uses [:5].
         state_in = jnp.array([
             alpha, kappa_c, gam, Fz_safe, Vx_arr, T_norm,
-            0.0, 0.0,   # padding slots for future features
+            0.0, 0.0,   
         ])
-        mods, sigma = self._pinn_module.apply(self._pinn_params, state_in,
-                                               stochastic_key)
-        mods = jnp.clip(mods, -0.25, 0.25)
+        mods, sigma = self._pinn_module.apply(self._pinn_params, state_in, stochastic_key)
+        mods        = jnp.clip(mods, -0.25, 0.25)
+        penalty     = jnp.clip(2.0 * sigma, 0.0, 0.15)
 
-        # BUGFIX-3: cap LCB penalty at 15%.
-        # Uncapped: uninit GP gives sigma≈0.28 → penalty=0.56 → forces at 44%
-        # of Pacejka → MPC finds physically impossible cornering speeds.
-        # Physical justification: the PINN corrects a RESIDUAL on top of
-        # Pacejka; the GP bounds uncertainty in that residual, not the baseline.
-        # 15% is the maximum physically credible Pacejka modeling error.
-        penalty = jnp.clip(2.0 * sigma, 0.0, 0.15)
+        Fx_final = Fx * (1.0 + mods[0] - penalty)
+        Fy_final = Fy * (1.0 + mods[1] - penalty)
 
-        Fy = Fy * (1.0 + mods[1] - penalty)
-        Fx = Fx * (1.0 + mods[0] - penalty)
+        return Fx_final, Fy_final, sigma
 
+    def compute_force(self, *args, **kwargs) -> tuple[jax.Array, jax.Array]:
+        """
+        Back-compat shim. Keeps existing callers (objectives, sanity_checks)
+        working without needing to unpack the new sigma return value.
+        """
+        Fx, Fy, _sigma = self.compute_force_and_sigma(*args, **kwargs)
         return Fx, Fy
-
     # ─────────────────────────────────────────────────────────────────────────
     # §4.5  Aligning torque  (MF6.2 Mz)
     # ─────────────────────────────────────────────────────────────────────────

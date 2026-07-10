@@ -1190,13 +1190,18 @@ class DifferentiableMultiBodyVehicle:
         d_kappa_rr = kappa_dot_rr
  
         # Segundo Bloque de Fuerzas Finales: Mapeo Canónico de 4 Esquinas
-        Fx_fl, Fy_fl = self.tire.compute_force(alpha_t_fl, kappa_t_fl, Fz_fl, gamma_fl, T_ribs_fl, T_gas_fl, v_fl_g, wz=wz)
-        Fx_fr, Fy_fr_tire = self.tire.compute_force(alpha_t_fr, kappa_t_fr, Fz_fr, -gamma_fr, T_ribs_fr, T_gas_fr, v_fr_g, wz=-wz)
+        Fx_fl, Fy_fl, sigma_fl = self.tire.compute_force_and_sigma(alpha_t_fl, kappa_t_fl, Fz_fl, gamma_fl, T_ribs_fl, T_gas_fl, v_fl_g, wz=wz)
+        
+        Fx_fr, Fy_fr_tire, sigma_fr = self.tire.compute_force_and_sigma(alpha_t_fr, kappa_t_fr, Fz_fr, -gamma_fr, T_ribs_fr, T_gas_fr, v_fr_g, wz=-wz)
         Fy_fr = -Fy_fr_tire
 
-        Fx_rl, Fy_rl = self.tire.compute_force(alpha_t_rl, kappa_t_rl, Fz_rl, gamma_rl, T_ribs_rl, T_gas_rl, v_rl_g, wz=wz)
-        Fx_rr, Fy_rr_tire = self.tire.compute_force(alpha_t_rr, kappa_t_rr, Fz_rr, -gamma_rr, T_ribs_rr, T_gas_rr, v_rr_g, wz=-wz)
+        Fx_rl, Fy_rl, sigma_rl = self.tire.compute_force_and_sigma(alpha_t_rl, kappa_t_rl, Fz_rl, gamma_rl, T_ribs_rl, T_gas_rl, v_rl_g, wz=wz)
+        
+        Fx_rr, Fy_rr_tire, sigma_rr = self.tire.compute_force_and_sigma(alpha_t_rr, kappa_t_rr, Fz_rr, -gamma_rr, T_ribs_rr, T_gas_rr, v_rr_g, wz=-wz)
         Fy_rr = -Fy_rr_tire
+        
+        # Captured for future diagnostics, gradients, or internal logging
+        tire_sigma_4 = jnp.array([sigma_fl, sigma_fr, sigma_rl, sigma_rr])
  
         Mz_rl = self.tire.compute_aligning_torque(alpha_t_rl, kappa_t_rl, Fz_rl, gamma_rl, Fy_rl, Fx_rl)
         Mz_rr_tire = self.tire.compute_aligning_torque(alpha_t_rr, kappa_t_rr, Fz_rr, -gamma_rr, -Fy_rr, Fx_rr)
@@ -1627,6 +1632,41 @@ class DifferentiableMultiBodyVehicle:
         return (x.at[0:14].set(q_new)
                   .at[14:28].set(v_new)
                   .at[28:108].set(aux_new))
+
+    @partial(jax.jit, static_argnums=(0,))
+    def estimate_corner_sigma(self, x: jax.Array, setup_params: jax.Array) -> jax.Array:
+        """
+        Cheap diagnostic: evaluates ONLY the 4 tire GP calls at the current
+        state, without running full dynamics. O(4× PINN/GP forward pass),
+        negligible next to a GLRK-4 substep. Call once per macro-step (200 Hz),
+        feed result into powertrain_step's gp_sigma argument.
+
+        Returns (4,) per-corner GP σ ∈ (0, ~0.3), same units as the LCB penalty.
+        """
+        q = x[0:14]; v = x[14:28]
+        T_4x7 = x[28:56].reshape((4, 7))
+        transient_4x4 = x[56:72].reshape((4, 4))
+        s = SuspensionSetup.from_vector(setup_params)
+
+        vx = jnp.clip(v[0], -80.0, 80.0)
+        # Reuse the exact same Fz/gamma computation the real derivative call
+        # uses would require re-deriving suspension forces — for a DIAGNOSTIC
+        # sigma feed (not control-critical), a static-load + aero approximation
+        # is sufficient since sigma only needs to track "am I in-distribution",
+        # not exact instantaneous Fz.
+        Fz_static = self.m * self.g * jnp.array([self.lr, self.lr, self.lf, self.lf]) / (2.0 * self._L)
+
+        alpha_t = transient_4x4[:, 0]
+        kappa_t = transient_4x4[:, 2]
+        T_ribs  = T_4x7[:, :3]
+        T_gas   = T_4x7[:, 5]
+
+        def _corner_sigma(a, k, fz, tr, tg):
+            _, _, sig = self.tire.compute_force_and_sigma(
+                a, k, fz, jnp.array(0.0), tr, tg, jnp.maximum(jnp.abs(vx), 0.5))
+            return sig
+
+        return jax.vmap(_corner_sigma)(alpha_t, kappa_t, Fz_static, T_ribs, T_gas)
 
     # ─────────────────────────────────────────────────────────────────────────
     # §5.5  Public simulate_step

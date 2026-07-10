@@ -146,6 +146,8 @@ class PowertrainManagerState(NamedTuple):
     ax_filtered:  jax.Array         # scalar: low-pass filtered longitudinal accel [m/s²]
     ay_filtered:  jax.Array         # scalar: low-pass filtered lateral accel [m/s²]
     regen_energy: RegenEnergyState  # Batch 9: cumulative regen / consumption accounting
+    gp_sigma_prev: jax.Array   # NEW — max(sigma_front, sigma_rear) from last step
+
 
     @staticmethod
     def default(config: PowertrainConfig = PowertrainConfig()) -> 'PowertrainManagerState':
@@ -158,6 +160,7 @@ class PowertrainManagerState(NamedTuple):
             ax_filtered=jnp.array(0.0),
             ay_filtered=jnp.array(0.0),
             regen_energy=RegenEnergyState.zero(),
+            gp_sigma_prev=jnp.array(0.05),   # matches old hardcoded floor for step 0
         )
 
 
@@ -486,20 +489,22 @@ def powertrain_step(
     # Build per-wheel κ-CBF rows from Koopman observer output.
     # These rows enter the extended 24×24 KKT in Step 8's V2 allocator.
     # During launch (launch_active → 1), the barrier is gated off smoothly.
+    # ═══════════════════════════════════════════════════════════════════════
+    # STEP 7b: Batch 8 — Slip Barrier Inputs (E-ABS + Trail-Brake Regen)
+    # ═══════════════════════════════════════════════════════════════════════
+    # Build per-wheel κ-CBF rows from Koopman observer output.
+    # We strip out the old hasattr fallbacks and stream true IMM variances.
     slip_inputs = make_slip_barrier_inputs(
         kappa_star_front = tc_output.kappa_star[0],    # FL (front axle)
-        kappa_star_rear  = tc_output.kappa_star[2],    # RL (rear  axle)
-        sigma_front      = tc_output.sigma_front if hasattr(tc_output, "sigma_front")
-                           else jnp.array(0.03),       # fallback if V1 TC
-        sigma_rear       = tc_output.sigma_rear  if hasattr(tc_output, "sigma_rear")
-                           else jnp.array(0.03),
+        kappa_star_rear  = tc_output.kappa_star[2],    # RL (rear axle)
+        sigma_front      = tc_output.sigma_front,       # True IMM front uncertainty
+        sigma_rear       = tc_output.sigma_rear,        # True IMM rear uncertainty
         kappa_measured   = tc_output.kappa_measured,
         T_prev           = manager_state.tv.T_prev,
         omega_wheel      = omega_wheel,
         omega_prev       = manager_state.tc.omega_prev,
         vx               = vx,
-        launch_active    = manager_state.launch.phase.astype(jnp.float32)
-                           / 5.0,                     # crude: phase 3 (LAUNCH) → ~0.6
+        launch_active    = manager_state.launch.phase.astype(jnp.float32) / 5.0,
         dt               = dt,
         r_w              = float(geo.r_w),
         I_w              = 1.2,
@@ -564,10 +569,11 @@ def powertrain_step(
     # STEP 9: CBF Safety Filter
     # ═══════════════════════════════════════════════════════════════════════
     Fy_total = jnp.sum(Fy)
+    gp_sigma_effective = jnp.maximum(gp_sigma, manager_state.gp_sigma_prev)
+
     T_safe = cbf_safety_filter(
-        T_alloc_regen, manager_state.tv.T_prev,
-        vx, vy, wz, Fz, Fy_total, mu_est, omega_wheel,
-        T_min, T_max, gp_sigma, geo, config.cbf,
+        T_alloc_regen, manager_state.tv.T_prev, vx, vy, wz, Fz, Fy_total, mu_est,
+        omega_wheel, T_min, T_max, gp_sigma_effective, geo, config.cbf,
         is_rwd=config.is_rwd,
     )
     cbf_intervention = jnp.linalg.norm(T_safe - T_alloc_regen)
@@ -684,8 +690,8 @@ def powertrain_step(
         ax_filtered=ax_filt,
         ay_filtered=ay_filt,
         regen_energy=regen_energy_new,
+        gp_sigma_prev=jnp.maximum(tc_output.sigma_front, tc_output.sigma_rear),
     )
-
     return diagnostics, new_state
 
 

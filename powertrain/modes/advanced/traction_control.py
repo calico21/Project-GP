@@ -50,13 +50,14 @@
 # All other tests: unaffected (TCOutput has new fields but old fields unchanged).
 # ═══════════════════════════════════════════════════════════════════════════════
 from __future__ import annotations
-from powertrain.modes.advanced.rls_tc import (
-    RLSParams, RLSState, RLSOutput,
-    rls_tc_step, make_rls_state,
-)
 from powertrain.modes.advanced.koopman_slip import (
     KoopmanState, KoopmanParams, make_koopman_state,
     koopman_observer_step, KoopmanOutput,
+    phi, dphi_dkappa,          # NEW — needed for IMM Fx-prediction
+)
+from powertrain.modes.advanced.rls_tc import (
+    RLSParams, RLSState, RLSOutput, RLSAxleState,
+    rls_tc_step, make_rls_state,
 )
 import jax
 import jax.numpy as jnp
@@ -263,6 +264,182 @@ def kappa_star_model(
     gamma_arr = jnp.full(4, gamma)
 
     return jax.vmap(kappa_star_pacejka)(Fz_arr, gamma_arr, mu_arr)
+
+# ─────────────────────────────────────────────────────────────────────────────
+# S3.5  IMM κ* Fusion — Bayesian model-probability blend of 3 competing
+#       kappa* estimators, replacing the two-stage sigmoid fusion
+#       (fuse_kappa_star + fuse_rls_desc). Zero new physics — every
+#       innovation and covariance below is ALREADY computed inside the
+#       three constituent observers and was previously discarded.
+# ─────────────────────────────────────────────────────────────────────────────
+
+@jax.jit
+def _pacejka_bcde(
+    Fz: jax.Array, gamma: jax.Array, mu_thermal: jax.Array,
+    Fz0: float = 654.0,
+    PCX1: float = 1.579, PDX1: float = 1.0, PDX2: float = -0.10, PDX3: float = 0.0,
+    PKX1: float = 18.5, PKX2: float = 0.0, PKX3: float = 0.20,
+    PEX1: float = -0.20, PEX2: float = 0.10,
+) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array]:
+    """Factored B/C/D/E shared with kappa_star_pacejka (duplicated, not
+    refactored into it, to avoid touching a sanity-check-validated function)."""
+    Fz_safe = jnp.maximum(Fz, 10.0)
+    dfz = (Fz_safe - Fz0) / (Fz0 + 1e-6)
+    Cx = PCX1
+    Dx = PDX1 * (1.0 + PDX2 * dfz) * (1.0 - PDX3 * gamma ** 2) * Fz_safe * mu_thermal
+    Kx = PKX1 * Fz_safe * jnp.exp(PKX3 * dfz) * (1.0 + PKX2 * dfz)
+    Bx = Kx / jnp.maximum(Cx * Dx, 1e-6)
+    Ex = jnp.clip(PEX1 + PEX2 * dfz, -10.0, 1.0)
+    return Bx, Cx, Dx, Ex
+
+
+@jax.jit
+def pacejka_fx_at_kappa(
+    kappa: jax.Array, Fz: jax.Array, gamma: jax.Array, mu_thermal: jax.Array,
+) -> jax.Array:
+    """Fx(κ) at ARBITRARY κ — not just the peak. This is the missing half
+    of kappa_star_pacejka: it finds argmax but never exposes the function
+    itself, so Pacejka could never participate in an innovation-based fusion."""
+    Bx, Cx, Dx, Ex = _pacejka_bcde(Fz, gamma, mu_thermal)
+    Bk = Bx * kappa
+    inner = Bk - Ex * (Bk - jnp.arctan(Bk))
+    return Dx * jnp.sin(Cx * jnp.arctan(inner))
+
+
+class IMMParams(NamedTuple):
+    """
+    S_pacejka: fixed prior Fx-innovation variance for the analytical model
+        [N²]. 50N std ≈ typical Pacejka MF6.2 residual vs. real tire data
+        at nominal conditions (conservative — wider than PINN correction
+        bound of ±25%·Dx would suggest, deliberately humble prior).
+    S_floor: measurement-noise floor [N²] added to every model's variance —
+        prevents a momentarily-perfect-looking model from acquiring
+        μ→1.0 on a single lucky sample (numerical floor, not physical).
+    persistence: geometric blend toward uniform prior each step. Without
+        this, μ is a pure sequential Bayes update and can permanently
+        collapse to one model after an unlucky transient (e.g. wheel hop
+        briefly breaking Koopman's linear regime) with no recovery path.
+        0.98 → effective forgetting horizon ≈ 1/(1-0.98) = 50 steps = 250ms
+        at 200Hz — fast enough to recover within one corner, slow enough
+        not to chatter.
+    """
+    S_pacejka:   float = 2500.0
+    S_floor:     float = 100.0
+    persistence: float = 0.98
+    kappa_min:   float = 0.02
+    kappa_max:   float = 0.35
+
+
+class IMMState(NamedTuple):
+    """Per-axle model-probability posterior. mu = [pacejka, rls, koopman]."""
+    mu: jax.Array   # (3,), sums to 1
+
+    @classmethod
+    def default(cls) -> "IMMState":
+        return cls(mu=jnp.array([1.0 / 3.0, 1.0 / 3.0, 1.0 / 3.0]))
+
+
+def make_imm_state() -> IMMState:
+    return IMMState.default()
+
+
+class IMMDiagnostics(NamedTuple):
+    """Full per-axle IMM diagnostics — wired into TCOutput."""
+    kappa_star_fused: jax.Array   # scalar
+    sigma_fused:      jax.Array   # scalar, κ-units
+    mu:               jax.Array   # (3,)
+    innovations:      jax.Array   # (3,) [N] — raw model disagreement, useful telemetry
+
+
+@jax.jit
+def imm_axle_fusion(
+    imm_state:   IMMState,
+    kappa_meas:  jax.Array,        # scalar: measured axle-mean slip ratio
+    Fx_meas:     jax.Array,        # scalar: motor-side Fx estimate (axle mean)
+    Fz:          jax.Array,        # scalar: axle-mean normal load [N]
+    gamma:       jax.Array,        # scalar: camber [rad] (0.0 — not yet plumbed into TC)
+    mu_thermal:  jax.Array,        # scalar: thermally-derated friction estimate
+    rls_axle:    RLSAxleState,
+    koop_axle:   "KoopmanAxleState",
+    kappa_star_pacejka_val: jax.Array,
+    params:      IMMParams = IMMParams(),
+) -> tuple[jax.Array, jax.Array, IMMState, IMMDiagnostics]:
+    """
+    One-axle Bayesian model-probability fusion of κ* estimators.
+
+    Pipeline:
+      1. Each model predicts Fx AT THE CURRENT measured κ (not at its own
+         claimed peak — this grounds the likelihood in an actual
+         observable, making disagreement measurable even when all three
+         models agree on κ* but disagree on the SHAPE of Fx(κ) elsewhere).
+      2. Gaussian log-likelihood of the innovation under each model's own
+         reported uncertainty.
+      3. Softmax posterior over (persisted prior × likelihood) — this
+         IS Bayes' rule, numerically stabilised via log-space softmax.
+      4. Fused κ* = probability-weighted mean of the three κ* CLAIMS
+         (Pacejka's argmax, RLS's, Koopman's) — note this is a DIFFERENT
+         quantity from the Fx-innovation likelihood test; the likelihood
+         asks "which model's Fx(κ) SHAPE fits reality here", the fusion
+         asks "given that, whose κ* CLAIM do we trust".
+      5. GMM total-variance decomposition for the reported σ: within-model
+         variance (propagated Fx-variance → κ-variance via 1/slope²) PLUS
+         between-model disagreement. This second term is the entire reason
+         this is better than picking a winner — three confidently-wrong
+         models produce a HIGH fused σ even if each individually reports
+         low S, because disagreement itself is information.
+    """
+    # ── 1. Per-model Fx prediction at measured kappa ──────────────────────
+    Fx_pred_pacejka = pacejka_fx_at_kappa(kappa_meas, Fz, gamma, mu_thermal)
+    Fx_pred_rls     = rls_axle.Fx_prev + rls_axle.slope * (kappa_meas - rls_axle.kappa_prev)
+    phi_meas        = phi(kappa_meas)                       # (8,)
+    Fx_pred_koopman = jnp.dot(koop_axle.c, phi_meas)
+
+    nu = jnp.array([
+        Fx_meas - Fx_pred_pacejka,
+        Fx_meas - Fx_pred_rls,
+        Fx_meas - Fx_pred_koopman,
+    ])
+
+    # ── 2. Per-model innovation variance ──────────────────────────────────
+    dkappa       = kappa_meas - rls_axle.kappa_prev
+    S_rls        = rls_axle.P * dkappa ** 2 + params.S_floor
+    S_koopman    = jnp.dot(phi_meas, koop_axle.P @ phi_meas) + params.S_floor
+    S            = jnp.array([params.S_pacejka, S_rls, S_koopman]) + 1e-3
+
+    # ── 3. Bayes update in log-space (numerically stable softmax) ────────
+    log_lik   = -0.5 * (nu ** 2) / S - 0.5 * jnp.log(2.0 * jnp.pi * S)
+    log_prior = (params.persistence * jnp.log(imm_state.mu + 1e-8)
+                 + (1.0 - params.persistence) * jnp.log(1.0 / 3.0))
+    mu_new    = jax.nn.softmax(log_prior + log_lik)
+
+    # ── 4. Fused kappa* claim ─────────────────────────────────────────────
+    kappa_candidates = jnp.array([
+        kappa_star_pacejka_val, rls_axle.kappa_star, koop_axle.kappa_star,
+    ])
+    kappa_star_fused = jnp.dot(mu_new, kappa_candidates)
+
+    # ── 5. GMM variance decomposition (Fx-variance → kappa-variance) ─────
+    slope_pacejka = jax.grad(
+        lambda k: pacejka_fx_at_kappa(k, Fz, gamma, mu_thermal)
+    )(kappa_meas)
+    slope_koopman = jnp.dot(koop_axle.c, dphi_dkappa(kappa_meas))
+    slopes = jnp.array([slope_pacejka, rls_axle.slope, slope_koopman])
+    kappa_var_per_model = S / jnp.maximum(slopes ** 2, 1.0)   # d(Fx)/d(kappa) Jacobian
+
+    within_model_var  = jnp.dot(mu_new, kappa_var_per_model)
+    between_model_var = jnp.dot(mu_new, (kappa_candidates - kappa_star_fused) ** 2)
+    sigma_fused = jnp.sqrt(within_model_var + between_model_var + 1e-8)
+
+    kappa_star_fused = jnp.clip(kappa_star_fused, params.kappa_min, params.kappa_max)
+
+    diag = IMMDiagnostics(
+        kappa_star_fused=kappa_star_fused,
+        sigma_fused=sigma_fused,
+        mu=mu_new,
+        innovations=nu,
+    )
+    return kappa_star_fused, sigma_fused, IMMState(mu=mu_new), diag
+
 # ─────────────────────────────────────────────────────────────────────────────
 # S4  Combined-Slip kappa* Reduction
 # ─────────────────────────────────────────────────────────────────────────────
@@ -389,11 +566,14 @@ def wheel_speed_confidence(
 
 class TCState(NamedTuple):
     desc_front: DESCState
-    desc_rear: DESCState
-    omega_prev: jax.Array     # (4,) previous wheel speeds
-    kappa_star: jax.Array     # (4,) current targets
-    t_current: jax.Array      # scalar: accumulated sim time [s] for DESC dither phase
-    koopman: KoopmanState     # Batch 4: Koopman slip observer state
+    desc_rear:  DESCState
+    omega_prev: jax.Array
+    kappa_star: jax.Array
+    t_current:  jax.Array
+    koopman:    KoopmanState
+    rls:        RLSState        # NEW — was imported, never instantiated
+    imm_front:  IMMState        # NEW
+    imm_rear:   IMMState        # NEW
 
     @classmethod
     def default(cls, params: DESCParams = DESCParams()) -> "TCState":
@@ -401,8 +581,8 @@ class TCState(NamedTuple):
 
 
 def make_tc_state(
-    params: DESCParams = DESCParams(),
-    rls_params: RLSParams = RLSParams(),
+    params:     DESCParams = DESCParams(),
+    rls_params: RLSParams  = RLSParams(),
 ) -> TCState:
     return TCState(
         desc_front=make_desc_state(params),
@@ -410,143 +590,153 @@ def make_tc_state(
         omega_prev=jnp.zeros(4),
         kappa_star=jnp.full(4, params.kappa_init),
         t_current=jnp.array(0.0),
-        koopman=make_koopman_state(),       # Batch 4: Koopman init
+        koopman=make_koopman_state(),
+        rls=make_rls_state(rls_params),      # NEW
+        imm_front=make_imm_state(),          # NEW
+        imm_rear=make_imm_state(),            # NEW
     )
 
+
 class TCOutput(NamedTuple):
-    kappa_star: jax.Array
-    kappa_measured: jax.Array
-    kappa_error: jax.Array
-    desc_grad_front: jax.Array
-    desc_grad_rear: jax.Array
-    blend_weights: BlendWeights
-    # Flat aliases for direct manager / diagnostics access
-    desc_grad: jax.Array      # = (desc_grad_front + desc_grad_rear) / 2
-    w_slip: jax.Array         # = blend_weights.w_slip
-    w_yaw: jax.Array          # = blend_weights.w_yaw
-    confidence: jax.Array     # wheel speed confidence score [0, 1]
-    # Batch 2 — RLS diagnostics (new fields appended; zero backward-compat risk)
-    rls_output: RLSOutput     # full RLS observer diagnostics
-    kappa_star_rls: jax.Array # (4,) RLS-only κ* (before fusion)
-    w_rls: jax.Array          # (2,) per-axle RLS fusion weight ∈ (0,1)
-    slope_front: jax.Array    # scalar: front axle dFx/dκ estimate [N/unit_κ]
-    slope_rear: jax.Array     # scalar: rear axle dFx/dκ estimate [N/unit_κ]
+    kappa_star:       jax.Array
+    kappa_measured:    jax.Array
+    kappa_error:       jax.Array
+    desc_grad_front:   jax.Array
+    desc_grad_rear:    jax.Array
+    blend_weights:     BlendWeights
+    desc_grad:         jax.Array
+    w_slip:            jax.Array
+    w_yaw:             jax.Array
+    confidence:        jax.Array
+    rls_output:        RLSOutput      # NOW genuinely RLS (was mislabeled Koopman)
+    kappa_star_rls:    jax.Array      # NOW genuinely rls_output.kappa_star_fused
+    w_rls:             jax.Array      # NOW genuinely RLS-vs-DESC internal blend
+    slope_front:       jax.Array      # from Koopman diagnostics (unchanged source)
+    slope_rear:        jax.Array
+    # ── NEW: IMM + wired GP-σ ──────────────────────────────────────────────
+    sigma_front:       jax.Array      # κ-units — feeds slip_barrier + CBF
+    sigma_rear:        jax.Array
+    mu_front:          jax.Array      # (3,) [pacejka, rls, koopman] — telemetry
+    mu_rear:           jax.Array
 
 @partial(jax.jit, static_argnums=())
 def tc_step(
-    vx: jax.Array,
-    vy: jax.Array,
-    ax: jax.Array,
-    ay: jax.Array,
-    omega_wheel: jax.Array,
-    alpha_t: jax.Array,
-    Fz: jax.Array,
-    T_applied: jax.Array,    # (4,) previous wheel torques [Nm]  ← was T_wheel
-    T_tire: jax.Array,       # (4,) tire surface temps [°C]      ← replaces mu_thermal
-    mu_est: jax.Array,       # scalar base friction estimate
-    gp_sigma: jax.Array,
-    tc_state: TCState,
-    dt: jax.Array,
+    vx: jax.Array, vy: jax.Array, ax: jax.Array, ay: jax.Array,
+    omega_wheel: jax.Array, alpha_t: jax.Array, Fz: jax.Array,
+    T_applied: jax.Array, T_tire: jax.Array,
+    mu_est: jax.Array, gp_sigma: jax.Array,
+    tc_state: TCState, dt: jax.Array,
     desc_params: DESCParams = DESCParams(),
     tc_weights: TCWeights = TCWeights(),
-    r_w: float = 0.2032,
-    alpha_peak: float = 0.12,
-    T_opt: float = 85.0,     # °C optimal tire temp for peak μ
-    T_range: float = 30.0,   # °C Gaussian derating half-width
+    rls_params: RLSParams = RLSParams(),
+    imm_params: IMMParams = IMMParams(),
+    r_w: float = 0.2032, alpha_peak: float = 0.12,
+    T_opt: float = 85.0, T_range: float = 30.0,
 ) -> tuple[TCOutput, TCState]:
-    """
-    Single TC timestep — manager-facing API.
-
-    Thermal μ derating:  mu_i = mu_est × exp(-((T_tire_i − T_opt)/T_range)²)
-    DESC dither phase:   t accumulated via tc_state.t_current
-    gamma / is_launch:   defaulted to 0 — handled at higher layers
-    """
-    t         = tc_state.t_current
-    gamma     = jnp.zeros(4)
+    t = tc_state.t_current
+    gamma = jnp.zeros(4)
     is_launch = jnp.array(0.0)
 
-    # ── 1. Thermal friction derating ──────────────────────────────────────
+    # ── 1. Thermal friction derating ─────────────────────────────────────
     mu_per_wheel    = mu_est * jnp.exp(-((T_tire - T_opt) / T_range) ** 2)
-    mu_thermal_mean = jnp.mean(mu_per_wheel)
 
-    # ── 2. Wheel slip measurement ─────────────────────────────────────────
+    # ── 2. Wheel slip measurement ────────────────────────────────────────
     kappa_measured = compute_slip_ratios(omega_wheel, vx, r_w)
 
-    # ── 3. Motor-side Fx (inertia-corrected) ──────────────────────────────
-    Fx_est       = estimate_fx_from_motors(T_applied, omega_wheel,
-                                           omega_prev=tc_state.omega_prev)
+    # ── 3. Motor-side Fx (inertia-corrected) — reused by ALL three models
+    Fx_est       = estimate_fx_from_motors(T_applied, omega_wheel, omega_prev=tc_state.omega_prev)
     Fx_front_avg = (Fx_est[0] + Fx_est[1]) * 0.5
     Fx_rear_avg  = (Fx_est[2] + Fx_est[3]) * 0.5
 
-    # ── 4. DESC step (demoted to secondary signal source) ─────────────────
-    desc_f_new, kappa_ref_f = desc_step(tc_state.desc_front, Fx_front_avg,
-                                         omega_wheel, vx, dt, desc_params)
-    desc_r_new, kappa_ref_r = desc_step(tc_state.desc_rear,  Fx_rear_avg,
-                                         omega_wheel, vx, dt, desc_params)
+    # ── 4. DESC (unchanged — retained as diagnostic/fallback, deliberately
+    #        kept OUT of the Bayesian fusion: DESC has no closed-form Fx(κ)
+    #        model to ground an innovation likelihood against; folding it
+    #        in would require a 4th ad-hoc treatment that undermines the
+    #        rigor of the other three. See Upgrade queue item: event-
+    #        triggered DESC activation when max(mu) < 0.4.) ────────────────
+    desc_f_new, kappa_ref_f = desc_step(tc_state.desc_front, Fx_front_avg, omega_wheel, vx, dt, desc_params)
+    desc_r_new, kappa_ref_r = desc_step(tc_state.desc_rear,  Fx_rear_avg,  omega_wheel, vx, dt, desc_params)
 
-    # ── 5. RLS observer step (Batch 2: primary κ* path) ──────────────────
-    rls_out, koopman_new = koopman_observer_step(
-        T_applied     = T_applied,
-        omega_wheel   = omega_wheel,
-        omega_prev    = tc_state.omega_prev,
-        vx            = vx,
-        Fz            = Fz,
-        alpha_t       = alpha_t,
-        alpha_peak    = jnp.array(alpha_peak),
-        mu_thermal    = mu_per_wheel,
-        koopman_state = tc_state.koopman,
-        dt            = dt,
-    )  
+    # ── 5. Two REAL parallel observers on the SAME axle data ─────────────
+    rls_output, rls_state_new = rls_tc_step(
+        T_applied=T_applied, omega_wheel=omega_wheel, omega_prev=tc_state.omega_prev,
+        vx=vx, Fz=Fz, alpha_t=alpha_t, alpha_peak=jnp.array(alpha_peak),
+        mu_thermal=mu_per_wheel,
+        desc_kappa_ref_f=kappa_ref_f, desc_kappa_ref_r=kappa_ref_r,
+        desc_lpf_front=desc_f_new.lpf_state, desc_lpf_rear=desc_r_new.lpf_state,
+        rls_state=tc_state.rls, dt=dt, params=rls_params,
+    )
+    koop_out, koopman_new = koopman_observer_step(
+        T_applied=T_applied, omega_wheel=omega_wheel, omega_prev=tc_state.omega_prev,
+        vx=vx, Fz=Fz, alpha_t=alpha_t, alpha_peak=jnp.array(alpha_peak),
+        mu_thermal=mu_per_wheel, koopman_state=tc_state.koopman, dt=dt,
+    )
 
-    # ── 6. kappa_star: RLS fused output replaces the old Pacejka+DESC blend
-    #     The Pacejka model is kept as a clip guard (physical upper bound).
-    kappa_model_vals = jax.vmap(
-        lambda fz, gam: kappa_star_pacejka(fz, gam, mu_thermal_mean)
-    )(Fz, gamma)
-    kappa_star_clipped = jnp.minimum(rls_out.kappa_star_fused, kappa_model_vals * 1.15)
+    # ── 6. IMM Bayesian fusion — replaces fuse_kappa_star + fuse_rls_desc ──
+    Fz_front_mean  = (Fz[0] + Fz[1]) * 0.5;  Fz_rear_mean  = (Fz[2] + Fz[3]) * 0.5
+    mu_front_mean  = (mu_per_wheel[0] + mu_per_wheel[1]) * 0.5
+    mu_rear_mean   = (mu_per_wheel[2] + mu_per_wheel[3]) * 0.5
+    kappa_front_m  = (kappa_measured[0] + kappa_measured[1]) * 0.5
+    kappa_rear_m   = (kappa_measured[2] + kappa_measured[3]) * 0.5
 
-    # Final GP-sigma soft guard: when GP is very uncertain, trust Pacejka
-    kappa_star = jax.vmap(
-        lambda kr, km: fuse_kappa_star(km, kr, gp_sigma)
-    )(kappa_star_clipped, kappa_model_vals)
+    kstar_pacejka_f = kappa_star_pacejka(Fz_front_mean, jnp.array(0.0), mu_front_mean)
+    kstar_pacejka_r = kappa_star_pacejka(Fz_rear_mean,  jnp.array(0.0), mu_rear_mean)
+
+    kstar_f, sigma_f, imm_front_new, diag_f = imm_axle_fusion(
+        tc_state.imm_front, kappa_front_m, Fx_front_avg,
+        Fz_front_mean, jnp.array(0.0), mu_front_mean,
+        rls_state_new.front, koopman_new.front, kstar_pacejka_f, imm_params,
+    )
+    kstar_r, sigma_r, imm_rear_new, diag_r = imm_axle_fusion(
+        tc_state.imm_rear, kappa_rear_m, Fx_rear_avg,
+        Fz_rear_mean, jnp.array(0.0), mu_rear_mean,
+        rls_state_new.rear, koopman_new.rear, kstar_pacejka_r, imm_params,
+    )
+
+    kappa_star_fused_4 = jnp.array([kstar_f, kstar_f, kstar_r, kstar_r])
+    sigma_4            = jnp.array([sigma_f, sigma_f, sigma_r, sigma_r])
+
+    # Combined-slip friction-ellipse reduction (unchanged — Upgrade 3 queued
+    # separately: replace with 2D Newton joint (κ*,α*) solve φ-aware to TV demand)
+    kappa_star = jnp.clip(
+        kappa_star_combined(kappa_star_fused_4, alpha_t, jnp.array(alpha_peak)),
+        imm_params.kappa_min, imm_params.kappa_max,
+    )
+    # NOTE: the old post-hoc thermal rescale (`clip(mu_thermal/mu_nom,0.7,1.2)`)
+    # is REMOVED here — it existed to compensate Pacejka's static prior, but
+    # Pacejka's Dx already consumes mu_thermal directly inside the IMM leg,
+    # and RLS/Koopman are data-driven off REAL (thermally-affected) Fx
+    # measurements. Re-applying a second thermal correction on top double-
+    # counts the effect and was never justified once IMM properly weights
+    # the data-driven legs during thermal transients.
 
     # ── 7. TC/TV blend weights (unchanged) ───────────────────────────────
     blend = compute_blend_weights(
         vx, ax, ay, is_launch,
-        w_slip_base=tc_weights.w_slip_base,
-        w_slip_launch_boost=tc_weights.w_slip_launch_boost,
-        w_yaw_base=tc_weights.w_yaw_base,
-        w_energy_base=tc_weights.w_energy_base,
+        w_slip_base=tc_weights.w_slip_base, w_slip_launch_boost=tc_weights.w_slip_launch_boost,
+        w_yaw_base=tc_weights.w_yaw_base, w_energy_base=tc_weights.w_energy_base,
     )
-
     conf = wheel_speed_confidence(omega_wheel, vx, r_w)
 
     output = TCOutput(
-        kappa_star     = kappa_star,
-        kappa_measured = kappa_measured,
-        kappa_error    = kappa_star - kappa_measured,
-        desc_grad_front = desc_f_new.lpf_state,
-        desc_grad_rear  = desc_r_new.lpf_state,
-        blend_weights  = blend,
-        desc_grad      = (desc_f_new.lpf_state + desc_r_new.lpf_state) * 0.5,
-        w_slip         = blend.w_slip,
-        w_yaw          = blend.w_yaw,
-        confidence     = conf,
-        # Batch 2 diagnostics
-        rls_output     = rls_out,
-        kappa_star_rls = rls_out.kappa_star_fused,
-        w_rls          = rls_out.w_rls,
-        slope_front    = rls_out.slope_front,
-        slope_rear     = rls_out.slope_rear,
+        kappa_star=kappa_star, kappa_measured=kappa_measured,
+        kappa_error=kappa_star - kappa_measured,
+        desc_grad_front=desc_f_new.lpf_state, desc_grad_rear=desc_r_new.lpf_state,
+        blend_weights=blend,
+        desc_grad=(desc_f_new.lpf_state + desc_r_new.lpf_state) * 0.5,
+        w_slip=blend.w_slip, w_yaw=blend.w_yaw, confidence=conf,
+        rls_output=rls_output,
+        kappa_star_rls=rls_output.kappa_star_fused,
+        w_rls=rls_output.w_rls,
+        slope_front=koop_out.slope_front, slope_rear=koop_out.slope_rear,
+        sigma_front=sigma_f, sigma_rear=sigma_r,
+        mu_front=diag_f.mu, mu_rear=diag_r.mu,
     )
-
     new_state = TCState(
-        desc_front  = desc_f_new,
-        desc_rear   = desc_r_new,
-        omega_prev  = omega_wheel,
-        kappa_star  = kappa_star,
-        t_current   = t + dt,
-        koopman     = koopman_new,      # Batch 4: propagate Koopman state
+        desc_front=desc_f_new, desc_rear=desc_r_new,
+        omega_prev=omega_wheel, kappa_star=kappa_star, t_current=t + dt,
+        koopman=koopman_new, rls=rls_state_new,
+        imm_front=imm_front_new, imm_rear=imm_rear_new,
     )
     return output, new_state
 
