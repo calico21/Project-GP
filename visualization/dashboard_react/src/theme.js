@@ -6,7 +6,7 @@
 
 export const C = {
   // ── Surface & Layout (unchanged) ──────────────────────────────────
-  bg: "#292727", bg2: "#080c14", card: "rgba(10,15,25,0.55)",
+  bg: "#292727", bg2: "#080c14", card: "rgba(30,28,28,0.55)",
   panel: "rgba(20,19,19,0.72)", surf: "rgba(30,28,28,0.6)",
   hover: "rgba(42,39,39,0.55)", glassB: "rgba(120,115,110,0.10)",
   b1: "rgba(68,64,64,0.45)", b2: "rgba(85,80,80,0.40)", b3: "rgba(105,99,99,0.35)",
@@ -84,7 +84,7 @@ export const C = {
   // ── Trust Region / FIM Visualization ──────────────────────────────
   tr_accepted: "#00e676",
   tr_rejected: "#e10600",
-  tr_boundary: "rgba(50,68,105,0.40)",   // δ circle stroke
+  tr_boundary: C.b2,   // δ circle stroke — reference, not copy, so it tracks b2
 };
 
 // ── Glass morphism preset (unchanged) ───────────────────────────────
@@ -98,11 +98,11 @@ export const GL = {
 };
 
 // ── Chart grid stroke (unchanged) ───────────────────────────────────
-export const GS = "rgba(25,35,55,0.5)";
+export const GS = "rgba(64,58,58,0.5)";
 
 // ── Tooltip style (unchanged) ───────────────────────────────────────
 export const TT = {
-  backgroundColor: "rgba(8,12,20,0.95)", backdropFilter: "blur(16px)",
+  backgroundColor: "rgba(24,22,22,0.95)", backdropFilter: "blur(16px)",
   border: `1px solid ${C.b2}`, borderRadius: 8,
   fontSize: 11, fontFamily: C.dt, color: C.br, padding: "10px 12px",
 };
