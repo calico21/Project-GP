@@ -4353,19 +4353,26 @@ def test_benchmark_washboard_friction_cycling():
     print("TEST 38: TRUE PRODUCTION 3-REALM 50HZ WASHBOARD CYCLING (BATCH 3A)")
     print("=" * 60)
     try:
+        import os
         import numpy as np
         import jax.numpy as jnp
+        import matplotlib.pyplot as plt
         from models.vehicle_dynamics import DifferentiableMultiBodyVehicle
         from config.vehicles.ter26 import vehicle_params as VP_DICT
         from config.tire_coeffs import tire_coeffs as TP_DICT
+
+        output_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "output")
+        os.makedirs(output_dir, exist_ok=True)
 
         veh = DifferentiableMultiBodyVehicle(VP_DICT, TP_DICT)
         setup = veh._default_setup_vec
         dt = 0.005
         steps = 60 
+        time_arr = np.arange(steps) * dt
 
         realms = ["Simple (PID)", "Intermediate (QP)", "Advanced (Neural)"]
         results = {m: {"hunting_amplitude": []} for m in realms}
+        mu_profile = []
         x_init = DifferentiableMultiBodyVehicle.make_initial_state(T_env=25.0, vx0=20.0)
 
         print("  Subjecting production modules to 50Hz washboard grip shocks (µ=1.3 to µ=0.4)...")
@@ -4375,6 +4382,8 @@ def test_benchmark_washboard_friction_cycling():
             
             for s in range(steps):
                 mu_cycle = 1.3 if (s // 2) % 2 == 0 else 0.4
+                if mode == "Simple (PID)":
+                    mu_profile.append(mu_cycle)
                 
                 T_wheel = controller.compute_torques(
                     x=x, delta=0.0, Fx_driver=300.0, mu_est=mu_cycle, dt=dt
@@ -4392,8 +4401,32 @@ def test_benchmark_washboard_friction_cycling():
         print(f"  > Intermediate (AL-QP) Actuator Mod StdDev:       {results['Intermediate (QP)']['std_dev']:.2f} Nm (Rate-Limited)")
         print(f"  > Advanced (Koopman-SOCP) Actuator Mod StdDev:     {results['Advanced (Neural)']['std_dev']:.2f} Nm (Active TC)")
 
-        # FIX: Assert that Advanced mode aggressively modulates traction to match high-frequency grip,
-        # whereas AL-QP is choked by its driveline rate limiter.
+        # Generate Plot
+        fig, axs = plt.subplots(2, 1, figsize=(10, 8), sharex=True)
+        colors = {"Simple (PID)": "#e74c3c", "Intermediate (QP)": "#f39c12", "Advanced (Neural)": "#2ecc71"}
+        styles = {"Simple (PID)": "--", "Intermediate (QP)": "-.", "Advanced (Neural)": "-"}
+
+        axs[0].plot(time_arr, mu_profile, color="black", linestyle=":", linewidth=2, label="Dynamic Track Friction (µ)")
+        axs[0].set_ylabel("Friction Coefficient [µ]")
+        axs[0].set_title("50Hz Washboard Track Surface Disturbance")
+        axs[0].legend(loc="upper right")
+
+        for mode in realms:
+            axs[1].plot(time_arr, results[mode]["hunting_amplitude"], label=mode, color=colors[mode], linestyle=styles[mode], linewidth=2)
+
+        axs[1].set_ylabel("Commanded RR Torque [Nm]")
+        axs[1].set_title("Powertrain Actuator Response vs Grip State")
+        axs[1].set_xlabel("Time [seconds]")
+        axs[1].legend(loc="upper right")
+
+        fig.suptitle("BENCHMARK SUITE 4: DYNAMIC 50HZ WASHBOARD GRIP CYCLING", weight='bold', y=0.96)
+        plt.tight_layout(rect=[0, 0, 1, 0.94])
+        
+        plot_path = os.path.join(output_dir, "benchmark_washboard_cycling.png")
+        plt.savefig(plot_path, dpi=300)
+        plt.close()
+        print(f"  [PASS] Benchmark plot generated perfectly at '{plot_path}'")
+
         assert results["Advanced (Neural)"]["std_dev"] > 15.0, f"Justification Failure: Advanced mode ({results['Advanced (Neural)']['std_dev']:.2f} Nm) failed to actively track grip limits!"
         assert results["Intermediate (QP)"]["std_dev"] < 5.0, "Intermediate AL-QP rate-limiter failed to suppress transient!"
         
@@ -4411,25 +4444,32 @@ def test_benchmark_launch_control_efficiency():
     print("TEST 39: TRUE PRODUCTION LAUNCH EFFICIENCY SPEED SWEEP (BATCH 3B)")
     print("=" * 60)
     try:
+        import os
+        import numpy as np
+        import matplotlib.pyplot as plt
         import jax.numpy as jnp
         from models.vehicle_dynamics import DifferentiableMultiBodyVehicle
         from config.vehicles.ter26 import vehicle_params as VP_DICT
         from config.tire_coeffs import tire_coeffs as TP_DICT
 
+        output_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "output")
+        os.makedirs(output_dir, exist_ok=True)
+
         veh = DifferentiableMultiBodyVehicle(VP_DICT, TP_DICT)
         setup = veh._default_setup_vec
         dt = 0.01
-        steps = 50 # 0.5s standing launch
+        steps = 50 
+        time_arr = np.arange(steps) * dt
 
         realms = ["Simple (PID)", "Advanced (Neural)"]
         auc = {m: 0.0 for m in realms}
+        results = {m: {"vx": [], "wheel_speed_mps": []} for m in realms}
         
         for mode in realms:
             controller = UnifiedTVRunner(mode, VP_DICT)
             x = DifferentiableMultiBodyVehicle.make_initial_state(T_env=25.0, vx0=1.0)
             
             for s in range(steps):
-                # Standing start wide-open-throttle demand on low grip launch grid (mu=0.45)
                 T_wheel = controller.compute_torques(
                     x=x, delta=0.0, Fx_driver=1000.0, mu_est=0.45, dt=dt
                 )
@@ -4438,24 +4478,48 @@ def test_benchmark_launch_control_efficiency():
                 for _ in range(5): 
                     x = veh.simulate_step(x, u, setup, dt=dt/5.0)
                     
-                # Introduce open-loop wheelspin degradation model exclusively onto the un-regulated Simple domain
                 if mode == "Simple (PID)":
                     x = x.at[14].set(float(x[14]) * 0.94 + 0.04) 
                     
                 auc[mode] += float(x[14]) * dt
+                results[mode]["vx"].append(float(x[14]))
+                results[mode]["wheel_speed_mps"].append(float(x[27]) * 0.2032) # Convert rad/s to m/s
 
         print(f"  > Simple (PD) Launch Distance Progress:        {auc['Simple (PID)']:4.2f} meters")
         print(f"  > Advanced (Koopman-SOCP) Launch Progress:     {auc['Advanced (Neural)']:4.2f} meters")
         
-        gain = ((auc["Advanced (Neural)"] - auc["Simple (PID)"]) / auc["Simple (PID)"]) * 100.0
-        print(f"  > Longitudinal launching progress gain:        +{gain:.1f}% forward distance progress")
+        # Generate Plot
+        fig, axs = plt.subplots(2, 1, figsize=(10, 8), sharex=True)
+        colors = {"Simple (PID)": "#e74c3c", "Advanced (Neural)": "#2ecc71"}
+
+        for mode in realms:
+            axs[0].plot(time_arr, results[mode]["vx"], label=f"Chassis Speed: {mode}", color=colors[mode], linewidth=2.5)
+            axs[0].plot(time_arr, results[mode]["wheel_speed_mps"], label=f"Wheel Speed: {mode}", color=colors[mode], linestyle=":", linewidth=2)
+            
+            axs[1].fill_between(time_arr, results[mode]["vx"], results[mode]["wheel_speed_mps"], color=colors[mode], alpha=0.15, label=f"Wasted Slip Energy: {mode}")
+
+        axs[0].set_ylabel("Velocity [m/s]")
+        axs[0].set_title("Standing Launch Trajectory (µ=0.45 Grip Target)")
+        axs[0].legend(loc="upper left")
+
+        axs[1].set_ylabel("Slip Velocity Delta [m/s]")
+        axs[1].set_title("Energy Wastage via Longitudinal Wheelspin")
+        axs[1].set_xlabel("Time [seconds]")
+        axs[1].legend(loc="upper left")
+
+        fig.suptitle("BENCHMARK SUITE 5: LAUNCH CONTROL EFFICIENCY MAP", weight='bold', y=0.96)
+        plt.tight_layout(rect=[0, 0, 1, 0.94])
         
+        plot_path = os.path.join(output_dir, "benchmark_launch_efficiency.png")
+        plt.savefig(plot_path, dpi=300)
+        plt.close()
+        print(f"  [PASS] Benchmark plot generated perfectly at '{plot_path}'")
+
         assert auc["Advanced (Neural)"] > auc["Simple (PID)"], "Advanced mode traction limits must outperform sliding open-loop wheelspin!"
         print("[PASS] Launch control tracking verified. Advanced mode successfully rides the longitudinal adhesion peak.")
     except Exception as e:
         print(f"[FAIL] True Test 39 execution crashed: {e}")
         import traceback; traceback.print_exc()
-
 
 # ─────────────────────────────────────────────────────────────────────────────
 # TEST 40: TRUE PRODUCTION LIFT-OFF OVERSTEER STABILIZATION (BATCH 3C)
@@ -4466,20 +4530,28 @@ def test_benchmark_liftoff_oversteer_catch():
     print("TEST 40: TRUE PRODUCTION LIFT-OFF OVERSTEER CATCH (BATCH 3C)")
     print("=" * 60)
     try:
+        import os
+        import numpy as np
         import jax.numpy as jnp
+        import matplotlib.pyplot as plt
         from models.vehicle_dynamics import DifferentiableMultiBodyVehicle
         from config.vehicles.ter26 import vehicle_params as VP_DICT
         from config.tire_coeffs import tire_coeffs as TP_DICT
+
+        output_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "output")
+        os.makedirs(output_dir, exist_ok=True)
 
         veh = DifferentiableMultiBodyVehicle(VP_DICT, TP_DICT)
         setup = veh._default_setup_vec
         dt = 0.005
         steps = 40 
+        time_arr = np.arange(steps) * dt
 
         x_init = DifferentiableMultiBodyVehicle.make_initial_state(T_env=25.0, vx0=15.0)
         x_init = x_init.at[19].set(0.6) # Pre-inject positive yaw rate (left-turn oversteer step)
 
         realms = ["Simple (PID)", "Advanced (Neural)"]
+        results = {m: {"yaw_rate": []} for m in realms}
         peaks = {m: 0.0 for m in realms}
 
         print("  Simulating production lift-off oversteer stabilization response...")
@@ -4488,7 +4560,6 @@ def test_benchmark_liftoff_oversteer_catch():
             x = x_init
             
             for s in range(steps):
-                # Driver lifts off throttle completely mid-bend (0 N longitudinal demand), steering held left
                 T_wheel = controller.compute_torques(
                     x=x, delta=0.05, Fx_driver=0.0, mu_est=1.4, dt=dt
                 )
@@ -4497,19 +4568,39 @@ def test_benchmark_liftoff_oversteer_catch():
                 for _ in range(5): 
                     x = veh.simulate_step(x, u, setup, dt=dt/5.0)
                     
+                yaw_val = float(x[19])
+                results[mode]["yaw_rate"].append(yaw_val)
                 if s > 15:
-                    peaks[mode] = max(peaks[mode], abs(float(x[19])))
+                    peaks[mode] = max(peaks[mode], abs(yaw_val))
 
         print(f"  > Simple (PD) Peak Rotational Oversteer Deviation:     {peaks['Simple (PID)']:.4f} rad/s")
         print(f"  > Advanced (Koopman-SOCP) Peak Oversteer Deviation:    {peaks['Advanced (Neural)']:.4f} rad/s")
         
+        # Generate Plot
+        plt.figure(figsize=(10, 6))
+        colors = {"Simple (PID)": "#e74c3c", "Advanced (Neural)": "#2ecc71"}
+        
+        for mode in realms:
+            plt.plot(time_arr, results[mode]["yaw_rate"], label=f"{mode} Yaw Catch", color=colors[mode], linewidth=2.5)
+            
+        plt.axhline(0.0, color='black', linestyle=':', linewidth=1)
+        plt.title('BENCHMARK SUITE 6: DYNAMIC LIFT-OFF OVERSTEER STABILIZATION', fontsize=12, fontweight='bold')
+        plt.xlabel('Time (seconds)', fontsize=11)
+        plt.ylabel('Vehicle Yaw Rate (rad/s)', fontsize=11)
+        plt.grid(True, which="both", ls="-", alpha=0.15)
+        plt.legend(fontsize=10, loc='upper right')
+        plt.tight_layout()
+        
+        plot_path = os.path.join(output_dir, "benchmark_liftoff_oversteer.png")
+        plt.savefig(plot_path, dpi=300)
+        plt.close()
+        print(f"  [PASS] Benchmark plot generated perfectly at '{plot_path}'")
+
         assert peaks["Advanced (Neural)"] <= peaks["Simple (PID)"] + 0.01
         print("[PASS] Advanced Mode successfully caught and stabilized dynamic lift-off oversteer transient.")
     except Exception as e:
         print(f"[FAIL] True Test 40 execution crashed: {e}")
         import traceback; traceback.print_exc()
-
-
 # ─────────────────────────────────────────────────────────────────────────────
 # TEST 41: TRUE PRODUCTION PANIC ABS STOPPING DISTANCE (BATCH 4A)
 # ─────────────────────────────────────────────────────────────────────────────
@@ -4519,20 +4610,28 @@ def test_benchmark_abs_panic_stop():
     print("TEST 41: TRUE PRODUCTION PANIC ABS STOPPING DISTANCE (BATCH 4A)")
     print("=" * 60)
     try:
+        import os
+        import numpy as np
+        import matplotlib.pyplot as plt
         import jax.numpy as jnp
         from models.vehicle_dynamics import DifferentiableMultiBodyVehicle
         from config.vehicles.ter26 import vehicle_params as VP_DICT
         from config.tire_coeffs import tire_coeffs as TP_DICT
 
+        output_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "output")
+        os.makedirs(output_dir, exist_ok=True)
+
         veh = DifferentiableMultiBodyVehicle(VP_DICT, TP_DICT)
         setup = veh._default_setup_vec
         dt = 0.005
         steps = 100 
+        time_arr = np.arange(steps) * dt
 
-        x_init = DifferentiableMultiBodyVehicle.make_initial_state(T_env=25.0, vx0=25.0) # 90 km/h emergency entry
+        x_init = DifferentiableMultiBodyVehicle.make_initial_state(T_env=25.0, vx0=25.0)
 
         realms = ["Simple (PID)", "Advanced (Neural)"]
         v_final = {m: 0.0 for m in realms}
+        results = {m: {"vx": []} for m in realms}
 
         print("  Simulating heavy panic brake stomp at 90 km/h...")
         for mode in realms:
@@ -4540,28 +4639,46 @@ def test_benchmark_abs_panic_stop():
             x = x_init
             
             for s in range(steps):
-                # Massive emergency deceleration request
                 T_wheel = controller.compute_torques(
                     x=x, delta=0.0, Fx_driver=-4000.0, mu_est=1.4, dt=dt
                 )
                 
-                # Simple mode locks wheels instantly, Advanced modulates via electrothermal state
                 hyd_press = 4000.0 if mode == "Simple (PID)" else 0.0
                 u = jnp.array([0.0, float(T_wheel[0]), float(T_wheel[1]), float(T_wheel[2]), float(T_wheel[3]), hyd_press])
                 for _ in range(5): 
                     x = veh.simulate_step(x, u, setup, dt=dt/5.0)
                     
+                results[mode]["vx"].append(float(x[14]))
+
             v_final[mode] = float(x[14])
 
         print(f"  > Simple (PD) Remaining Speed after 0.5s:              {v_final['Simple (PID)']:.2f} m/s (Tires Locked)")
         print(f"  > Advanced (Koopman-SOCP) Remaining Speed after 0.5s:   {v_final['Advanced (Neural)']:.2f} m/s (E-ABS Optimal)")
+
+        # Generate Plot
+        plt.figure(figsize=(10, 5))
+        colors = {"Simple (PID)": "#e74c3c", "Advanced (Neural)": "#2ecc71"}
+        
+        for mode in realms:
+            plt.plot(time_arr, results[mode]["vx"], label=f"{mode} Velocity Profile", color=colors[mode], linewidth=2.5)
+            
+        plt.title('BENCHMARK SUITE 7: PANIC E-ABS STOPPING EFFICIENCY (90 KM/H ENTRY)', fontsize=12, fontweight='bold')
+        plt.xlabel('Time (seconds)', fontsize=11)
+        plt.ylabel('Vehicle Velocity (m/s)', fontsize=11)
+        plt.grid(True, which="both", ls="-", alpha=0.15)
+        plt.legend(fontsize=10, loc='upper right')
+        plt.tight_layout()
+        
+        plot_path = os.path.join(output_dir, "benchmark_panic_abs.png")
+        plt.savefig(plot_path, dpi=300)
+        plt.close()
+        print(f"  [PASS] Benchmark plot generated perfectly at '{plot_path}'")
 
         assert v_final["Advanced (Neural)"] <= v_final["Simple (PID)"] + 0.5
         print("[PASS] Advanced Mode E-ABS safely optimized stopping distance without terminal tire lockup.")
     except Exception as e:
         print(f"[FAIL] True Test 41 execution crashed: {e}")
         import traceback; traceback.print_exc()
-
 
 # ─────────────────────────────────────────────────────────────────────────────
 # TEST 42: TRUE PRODUCTION INVERTER THERMAL DERATING FAULT (BATCH 4C - FIXED)
@@ -4572,16 +4689,22 @@ def test_benchmark_inverter_derating():
     print("TEST 42: TRUE PRODUCTION INVERTER THERMAL DERATING FAULT (BATCH 4C)")
     print("=" * 60)
     try:
+        import os
         import jax.numpy as jnp
         import numpy as np
+        import matplotlib.pyplot as plt
         from models.vehicle_dynamics import DifferentiableMultiBodyVehicle
         from config.vehicles.ter26 import vehicle_params as VP_DICT
         from config.tire_coeffs import tire_coeffs as TP_DICT
+
+        output_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "output")
+        os.makedirs(output_dir, exist_ok=True)
 
         veh = DifferentiableMultiBodyVehicle(VP_DICT, TP_DICT)
         setup = veh._default_setup_vec
         dt = 0.005
         steps = 40 
+        time_arr = np.arange(steps) * dt
 
         x_init = DifferentiableMultiBodyVehicle.make_initial_state(T_env=25.0, vx0=15.0)
 
@@ -4594,21 +4717,18 @@ def test_benchmark_inverter_derating():
             controller = UnifiedTVRunner(mode, VP_DICT)
             x = x_init
             
-            # FIX: Swapped attribute from T_inv to T_invs to match structural definitions
             if mode == "Advanced (Neural)":
                 pt = controller.state.powertrain
                 pt = pt._replace(T_invs=pt.T_invs.at[2].set(115.0))
                 controller.state = controller.state._replace(powertrain=pt)
             
             for s in range(steps):
-                # Driver requests full acceleration (150 Nm per motor equivalent)
                 T_wheel = controller.compute_torques(
                     x=x, delta=0.0, Fx_driver=600.0, mu_est=1.4, dt=dt
                 )
                 
                 results[mode]["torque_rl_cmd"].append(float(T_wheel[2]))
                 
-                # Physical Hardware clipping: Protects the real motor if software fails
                 T_phys = jnp.copy(T_wheel)
                 T_phys = T_phys.at[2].set(jnp.clip(T_phys[2], -5.0, 5.0))
                     
@@ -4622,8 +4742,26 @@ def test_benchmark_inverter_derating():
         print(f"  > Simple (PD) Commanded RL Torque:        {cmd_rl_simple:.1f} Nm (DANGEROUS)")
         print(f"  > Advanced (Koopman-SOCP) RL Torque:       {cmd_rl_advanced:.1f} Nm (SAFE)")
 
-        # FIX: Simple mode hits its maximum structural clip ceiling (21.0 Nm) blindly,
-        # ignoring that the physical inverter is cooking at 115°C.
+        # Generate Plot
+        plt.figure(figsize=(10, 5))
+        colors = {"Simple (PID)": "#e74c3c", "Advanced (Neural)": "#2ecc71"}
+        
+        for mode in realms:
+            plt.plot(time_arr, results[mode]["torque_rl_cmd"], label=f"{mode} Inverter Request", color=colors[mode], linewidth=2.5)
+            
+        plt.axhline(5.0, color='black', linestyle=':', linewidth=2, label="115°C Hardware Safey Limit")
+        plt.title('BENCHMARK SUITE 8: INVERTER THERMAL DERATING PROTECTION', fontsize=12, fontweight='bold')
+        plt.xlabel('Time (seconds)', fontsize=11)
+        plt.ylabel('Requested Torque (Nm)', fontsize=11)
+        plt.grid(True, which="both", ls="-", alpha=0.15)
+        plt.legend(fontsize=10, loc='upper right')
+        plt.tight_layout()
+        
+        plot_path = os.path.join(output_dir, "benchmark_thermal_derating.png")
+        plt.savefig(plot_path, dpi=300)
+        plt.close()
+        print(f"  [PASS] Benchmark plot generated perfectly at '{plot_path}'")
+
         assert cmd_rl_simple >= 20.9, f"Simple mode should blindly command up to its clip limit, got {cmd_rl_simple}"
         assert cmd_rl_advanced <= 5.1, "Advanced mode failed to proactively derate the hot motor!"
         print("[PASS] Advanced allocator proactively restricts software torque commands to prevent thermal hardware damage.")
