@@ -52,6 +52,7 @@ from models.vehicle_dynamics import (
     DifferentiableMultiBodyVehicle,  # <--- ADD THIS HERE
     SuspensionSetup, SETUP_NAMES, SETUP_DIM, SETUP_LB, SETUP_UB, DEFAULT_SETUP,
 )
+
 from optimization.objectives import (
     compute_skidpad_objective,
     compute_step_steer_objective,
@@ -160,7 +161,7 @@ def make_full_loop_step(
     dt: float = 0.005,
     use_domain_randomization: bool = True,
 ):
-    from powertrain.powertrain_manager import powertrain_step, make_manager_state
+    from powertrain.powertrain_manager import powertrain_step
 
     @jax.jit
     def _step(carry: FullLoopCarry, inputs):
@@ -491,16 +492,14 @@ class MORL_SB_TRPO_Optimizer:
         """
         Hybrid evaluation: fast model for BO screening, full model for Adam.
         """
-        from models.vehicle_dynamics import compute_equilibrium_suspension
+        # optimization/evolutionary.py, inside evaluate_setup_jax (phase == 'bo' branch)
+        from models.vehicle_dynamics import compute_equilibrium_suspension, DifferentiableMultiBodyVehicle
+
         setup_phys = self._norm_to_physical(setup_norm)
-        
-        # Setup-dependent equilibrium IC
-        z_eq   = compute_equilibrium_suspension(setup_phys, VP)
-        x_init = (jnp.zeros(46)
-                    .at[14].set(15.0)
-                    .at[6:10].set(z_eq)
-                    .at[28:38].set(jnp.array([85., 85., 85., 85., 80.,
-                                               85., 85., 85., 85., 80.])))
+        z_eq = compute_equilibrium_suspension(setup_phys, VP)
+
+        x_init = DifferentiableMultiBodyVehicle.make_initial_state(T_env=25.0, vx0=15.0)
+        x_init = x_init.at[6:10].set(z_eq)
 
         if phase == 'bo':
             # Phase 1: Fast Simplified Evaluation

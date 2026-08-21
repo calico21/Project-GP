@@ -766,6 +766,10 @@ class DifferentiableMultiBodyVehicle:
         self.R_net    = NeuralDissipationMatrix(dim=14)
         self.aero_map = create_aero_platform(self.vp)
 
+        # Reflection aliases for diagnostic probes in sanity_checks (§3e)
+        self._h_net = self.H_net
+        self._r_net = self.R_net
+
         rng = jax.random.PRNGKey(rng_seed)
         rng_h, rng_r = jax.random.split(rng, 2)
 
@@ -784,6 +788,10 @@ class DifferentiableMultiBodyVehicle:
                     setattr(self, attr,
                             flax.serialization.from_bytes(getattr(self, attr), f.read()))
                 print(f"[VehicleDynamics] Loaded {fname}")
+
+        # Update diagnostic parameter aliases after loading weights from disk
+        self._h_params = self.H_params
+        self._r_params = self.R_params
 
     # ─────────────────────────────────────────────────────────────────────────
     # §5.1  Powertrain
@@ -1690,12 +1698,12 @@ class DifferentiableMultiBodyVehicle:
           jnp.ndarray(8,)  — legacy 8-element (auto-upgraded via from_legacy_8)
         """
         if isinstance(setup, SuspensionSetup):
-            setup_vec = setup.to_vector()
+            setup_vec = setup.to_vector().astype(state.dtype)
         else:
-            # FIX: Maintain float64 input trajectories cleanly
-            v = jnp.asarray(setup, dtype=jnp.float64)
+            # Match setup vector precision to state vector precision
+            v = jnp.asarray(setup, dtype=state.dtype)
             if v.shape[0] == 8:
-                setup_vec = SuspensionSetup.from_legacy_8(v).to_vector()
+                setup_vec = SuspensionSetup.from_legacy_8(v).to_vector().astype(state.dtype)
             else:
                 setup_vec = v
 
