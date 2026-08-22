@@ -44,7 +44,6 @@ try:
 except ImportError:
     pass
 
-import jax.numpy as jnp
 
 
 # ─────────────────────────────────────────────────────────────────────────────

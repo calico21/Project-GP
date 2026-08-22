@@ -7,14 +7,12 @@ from __future__ import annotations
 import argparse
 import os
 import sys
-import time
 from pathlib import Path
 from functools import partial
 import numpy as np
 import pandas as pd
 import jax
 import jax.numpy as jnp
-import cantools
 
 current_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if current_dir not in sys.path:

@@ -31,7 +31,6 @@ from __future__ import annotations
 import os
 import sys
 import argparse
-import time
 
 import numpy as np
 from scipy.cluster.vq import kmeans2

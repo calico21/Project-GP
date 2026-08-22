@@ -650,7 +650,7 @@ def full_pipeline(df_human: pd.DataFrame,
     events     = generate_coaching_report(df_deltas, df_ghost, zones=zones)
 
     if output_dir:
-        import os, json
+        import os
         os.makedirs(output_dir, exist_ok=True)
         df_aligned.to_csv(f"{output_dir}/coaching_aligned.csv", index=False)
         df_deltas.to_csv(f"{output_dir}/coaching_deltas.csv",  index=False)

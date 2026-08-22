@@ -38,7 +38,6 @@ import socket
 import struct
 import time
 import argparse
-import signal
 import sys
 import os
 from collections import deque
@@ -56,8 +55,7 @@ except ImportError:
 
 from simulator.sim_config import (
     HOST, PORT_TELEM_VIZ, PORT_CTRL_RECV,
-    WS_HOST, WS_PORT, PHYSICS_HZ, TELEMETRY_HZ,
-    S,
+    WS_HOST, WS_PORT, TELEMETRY_HZ,
 )
 
 # ─────────────────────────────────────────────────────────────────────────────

@@ -22,7 +22,6 @@ except ImportError:
 import jax
 import jax.numpy as jnp
 import numpy as np
-import time
 
 
 def _header(test_num, title):
@@ -78,7 +77,7 @@ def test_19_hub_motor():
 def test_20_ukf_perfect():
     _header(20, "UKF CONVERGENCE (ZERO NOISE)")
     from powertrain.state_estimator import (
-        UKFState, UKFParams, ukf_step, extract_estimated_state,
+        UKFParams, ukf_step, extract_estimated_state,
         make_ukf_state, pack_measurement,
     )
 
@@ -316,7 +315,7 @@ def test_24_anti_geometry():
 def test_25_domain_randomization():
     _header(25, "DOMAIN RANDOMIZATION SAMPLING")
     from models.vehicle_dynamics import (
-        sample_domain_randomization, DomainRandomization,
+        sample_domain_randomization,
     )
 
     key = jax.random.PRNGKey(0)

@@ -28,7 +28,6 @@ import sys
 import json
 import time
 import argparse
-import threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
 _root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))

@@ -16,8 +16,6 @@ Usage:
 """
 
 import rerun as rr
-import numpy as np
-import math
 
 # ── Detect version ────────────────────────────────────────────────────────────
 try:

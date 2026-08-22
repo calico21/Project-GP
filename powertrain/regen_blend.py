@@ -53,7 +53,7 @@ from typing import NamedTuple
 import jax
 import jax.numpy as jnp
 
-from powertrain.motor_model import MotorParams, BatteryParams, PowertrainState
+from powertrain.motor_model import BatteryParams, PowertrainState
 
 
 # ─────────────────────────────────────────────────────────────────────────────

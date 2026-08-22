@@ -390,7 +390,6 @@ def validate_jax_pacejka(
     # Lazy import — only needed when validating against JAX model
     sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-    import jax
     import jax.numpy as jnp
 
     if coeffs is None:

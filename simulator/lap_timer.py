@@ -10,9 +10,8 @@ The timer works purely from the vehicle's (X, Y) position — no external
 trigger required.  It detects line crossings via signed-distance transitions.
 """
 
-import time
 import numpy as np
-from typing import List, Optional, Tuple
+from typing import List, Optional
 from dataclasses import dataclass, field
 
 
@@ -278,7 +277,6 @@ class LapTimer:
         """Compact timing string for HUD overlay."""
         if self._lap_start_sim is None:
             return "  --:--.--- | Lap --"
-        from time import gmtime, strftime
         def fmt(t): return f"{int(t//60):02d}:{t%60:06.3f}"
         lines = [f"  LAP {self.current_lap_n+1:3d} | {fmt(self._get_current_lap_time())}"]
         if self.best_lap:

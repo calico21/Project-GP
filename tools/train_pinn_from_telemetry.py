@@ -21,8 +21,6 @@ import jax.numpy as jnp
 import optax
 import flax.serialization
 from models.tire_model import PacejkaTire, TireOperatorPINN
-from config.tire_coeffs import tire_coeffs as TC
-from config.vehicles.ter26 import vehicle_params as VP
 
 
 def build_pinn_training_data(

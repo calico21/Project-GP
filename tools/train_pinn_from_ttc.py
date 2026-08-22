@@ -35,7 +35,6 @@ import os
 import sys
 import argparse
 import time
-from functools import partial
 
 import numpy as np
 

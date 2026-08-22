@@ -31,7 +31,7 @@
 
 from __future__ import annotations
 
-from typing import Dict, Optional, List
+from typing import Dict, List
 import jax.numpy as jnp
 
 from models.vehicle_dynamics import SETUP_NAMES, SETUP_DIM

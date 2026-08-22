@@ -12,7 +12,6 @@
 
 from __future__ import annotations
 
-from functools import partial
 from typing import NamedTuple
 
 import jax

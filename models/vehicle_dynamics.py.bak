@@ -64,6 +64,7 @@
 from __future__ import annotations
 
 import os
+import math
 from functools import partial
 from typing import NamedTuple
 
@@ -72,7 +73,8 @@ import jax.numpy as jnp
 import flax.linen as nn
 import flax.serialization
 from physics.h_net_icnn import PassiveHNet
-from models.aero_platform import create_aero_platform
+from models.aero_platform import AeroPlatformModel, create_aero_platform
+from models.damper_hysteresis import damper_force_legacy
 from models.tire_thermal_3d import four_corner_thermal_derivatives
 from models.tire_transient import four_corner_transient_derivatives
 # ─────────────────────────────────────────────────────────────────────────────
@@ -794,6 +796,39 @@ class DifferentiableMultiBodyVehicle:
     # ─────────────────────────────────────────────────────────────────────────
     # §5.1  Powertrain
     # ─────────────────────────────────────────────────────────────────────────
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # §5.2  Differential
+    # ─────────────────────────────────────────────────────────────────────────
+
+    ):
+        eps  = 0.5
+        tr   = self.track_r
+        eta  = self.vp.get('drivetrain_efficiency', 0.92)
+        vx_s = jnp.maximum(safe_abs(vx), eps)
+
+        v_rl       = vx_s - wz * tr / 2.0
+        v_rr       = vx_s + wz * tr / 2.0
+        omega_diff = (v_rl + v_rr) / (2.0 * self.R_wheel)
+
+        d_omega    = omega_diff - v_rl / self.R_wheel
+        T_lock     = diff_lock * 500.0 * d_omega
+
+        T_rl_input = T_drive_wheel * 0.5 * eta - T_lock
+        T_rr_input = T_drive_wheel * 0.5 * eta + T_lock
+
+        omega_rl = v_rl / self.R_wheel + T_rl_input / (10.0 * self.R_wheel)
+        omega_rr = v_rr / self.R_wheel + T_rr_input / (10.0 * self.R_wheel)
+
+        kappa_rl = 0.5 * jnp.tanh((omega_rl * self.R_wheel - v_rl) / (vx_s * 0.5))
+        kappa_rr = 0.5 * jnp.tanh((omega_rr * self.R_wheel - v_rr) / (vx_s * 0.5))
+
+        Fx_rl, Fy_rl = self.tire.compute_force(
+            alpha_t_rl, kappa_rl, Fz_rl, gamma_rl, T_ribs_r, T_gas_r, vx, wz=wz)
+        Fx_rr, Fy_rr = self.tire.compute_force(
+            alpha_t_rr, kappa_rr, Fz_rr, gamma_rr, T_ribs_r, T_gas_r, vx, wz=wz)
+
+        return Fx_rl, Fx_rr, Fy_rl, Fy_rr, kappa_rl, kappa_rr
 
     # ─────────────────────────────────────────────────────────────────────────
     # §5.3  Core derivatives

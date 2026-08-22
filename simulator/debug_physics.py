@@ -5,8 +5,7 @@ simulator/debug_physics.py
 Advanced diagnostics to isolate lateral mass scaling and brake failures.
 """
 
-import sys, os, math
-import numpy as np
+import sys, os
 import jax.numpy as jnp
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))

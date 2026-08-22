@@ -365,7 +365,7 @@ if __name__ == "__main__":
 def test_sweep():
     """Sanity-check the SweepResult arrays."""
     from suspension.kinematics import SuspensionKinematics
-    from suspension.sweep_analysis import compute_sweep, compute_roll_analysis
+    from suspension.sweep_analysis import compute_sweep
 
     r = TestResult()
     print("\n[test_sweep] Running heave sweep tests...")

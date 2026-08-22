@@ -41,7 +41,6 @@ if not all([ok_jax, ok_tc, ok_vp, ok_tm]):
     print("\nFix imports before continuing.")
     sys.exit(1)
 
-import jax
 import jax.numpy as jnp
 from config.tire_coeffs import tire_coeffs
 from config.vehicles.ter26 import vehicle_params as VP

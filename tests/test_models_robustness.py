@@ -39,7 +39,7 @@ import numpy as np
 import jax
 import jax.numpy as jnp
 
-from tests.conftest import TestResult, suppress_jax_logs, all_finite
+from tests.conftest import TestResult, all_finite
 
 
 # =============================================================================

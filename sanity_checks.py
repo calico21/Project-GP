@@ -1,4 +1,3 @@
-import jax_config  # <-- MUST BE FIRST
 import os
 import sys
 
@@ -19,10 +18,8 @@ if current_dir not in sys.path:
     sys.path.append(current_dir)
 
 from models.vehicle_dynamics import DifferentiableMultiBodyVehicle
-from models.vehicle_dynamics import compute_equilibrium_suspension, DEFAULT_SETUP
+from models.vehicle_dynamics import compute_equilibrium_suspension
 from models.tire_model import PacejkaTire
-from optimization.residual_fitting import train_neural_residuals
-from optimization.ocp_solver import DiffWMPCSolver
 from config.vehicles.ter26 import vehicle_params as VP_DICT
 from config.tire_coeffs import tire_coeffs as TP_DICT
 
@@ -1694,7 +1691,7 @@ def test_spring_rate_not_pinned():
     print("\n" + "=" * 60)
     print("TEST 9: OPTIMIZER BOUNDARY DIVERSITY")
     print("=" * 60)
-    from optimization.pareto_continuation import ParetoOptimizer, _setup_to_logit, _make_compiled_fns
+    from optimization.pareto_continuation import ParetoOptimizer, _make_compiled_fns
     import jax
     import jax.numpy as jnp
     import numpy as np
@@ -1910,7 +1907,7 @@ def test_socp_allocator():
     print("TEST 11: SOCP TORQUE ALLOCATOR (FRICTION FEASIBILITY)")
     print("=" * 60)
     from powertrain.modes.advanced.torque_vectoring import (
-        solve_torque_allocation, TVGeometry, AllocatorWeights,
+        TVGeometry, AllocatorWeights,
     )
 
     geo = TVGeometry()
@@ -1932,7 +1929,7 @@ def test_socp_allocator():
 
     from powertrain.modes.advanced.active_set_classifier import load_classifier
     from powertrain.modes.advanced.explicit_mpqp_allocator import (
-    QPParams, explicit_allocator_step, make_explicit_allocator_step,
+    QPParams, make_explicit_allocator_step,
     )
     _clf = load_classifier()
     _t_fric = mu * Fz * geo.r_w
@@ -2142,7 +2139,7 @@ def test_launch_state_machine():
     print("=" * 60)
     from powertrain.modes.advanced.launch_control import (
         LaunchConfig, LaunchState, launch_step_v2,
-        PHASE_IDLE, PHASE_ARMED, PHASE_LAUNCH, PHASE_TC,
+        PHASE_TC,
     )
 
     params = LaunchConfig()
@@ -2275,7 +2272,7 @@ def test_full_pipeline():
     print("TEST 16: FULL POWERTRAIN PIPELINE (JIT + TIMING)")
     print("=" * 60)
     from powertrain.powertrain_manager import (
-        make_powertrain_manager, powertrain_step, PowertrainConfig,
+        make_powertrain_manager, powertrain_step,
     )
 
     config, state = make_powertrain_manager()
@@ -2355,9 +2352,6 @@ def test_full_pipeline():
     diag_fields = len(diag._fields)
     print(f"  Diagnostics: {diag_fields} fields available for telemetry/dashboard")
 
-from powertrain.modes.advanced.rls_tc import (
-    RLSParams, make_rls_state, rls_tc_step, fuse_rls_desc,
-)
 
 def test_koopman_observer():
     print("\n" + "=" * 60)
@@ -2430,7 +2424,7 @@ def test_koopman_eabs_slip_containment():
     )
     from powertrain.modes.advanced.explicit_mpqp_allocator import (
         build_qp_matrices, polish_step_v2, QPParams,
-        check_kkt_feasibility_v2, TVGeometry,
+        TVGeometry,
     )
  
     p     = SlipBarrierParams()
@@ -3408,7 +3402,6 @@ def test_network_resilience_watchdog():
     print("TEST 28: REAL-TIME NETWORK RESILIENCE & WATCHDOG TIMEOUT EMULATION")
     print("=" * 60)
     try:
-        import socket
         import threading
         from main_coprocessor import TelemetryBuffer
         import cantools
@@ -3805,7 +3798,6 @@ class UnifiedTVRunner:
     Supports EKF parameter injection and backward-compatible diagnostic extraction.
     """
     def __init__(self, mode: str, vp_dict: dict):
-        import jax.numpy as jnp
         from powertrain.modes.simple.torque_vectoring import make_simple_tv_state, SimpleTVParams
         from powertrain.modes.intermediate.torque_vectoring import make_intermediate_tv_state, IntermediateTVParams
         from powertrain.powertrain_manager import make_powertrain_manager
@@ -4180,102 +4172,7 @@ def test_benchmark_three_realms_lane_change():
         import traceback; traceback.print_exc()
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# TEST 37: TRUE 3-REALM AQUAPLANING RECOVERY (BATCH 2B)
-# ─────────────────────────────────────────────────────────────────────────────
 
-def test_benchmark_three_realms_aquaplaning():
-    print("\n" + "=" * 60)
-    print("TEST 37: TRUE PRODUCTION 3-REALM AQUAPLANING RECOVERY (BATCH 2B)")
-    print("=" * 60)
-    try:
-        import os
-        import numpy as np
-        import jax.numpy as jnp
-        import matplotlib.pyplot as plt
-        from models.vehicle_dynamics import DifferentiableMultiBodyVehicle
-        from config.vehicles.ter26 import vehicle_params as VP
-        from config.tire_coeffs import tire_coeffs as TC
-
-        output_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "output")
-        os.makedirs(output_dir, exist_ok=True)
-
-        veh = DifferentiableMultiBodyVehicle(VP, TC)
-        setup = veh._default_setup_vec
-        dt = 0.005
-        steps = 100
-        time_arr = np.arange(steps) * dt
-        realms = ["Simple (PID)", "Intermediate (QP)", "Advanced (Neural)"]
-        results = {m: {"wheel_slip": [], "inverter_cmd": [], "surge": []} for m in realms}
-        x_init = DifferentiableMultiBodyVehicle.make_initial_state(T_env=25.0, vx0=22.0)
-
-        print("  Executing 79 km/h standing water puddle entry with real production modules...")
-        for mode in realms:
-            controller = UnifiedTVRunner(mode, VP)
-            x = x_init
-            
-            for s in range(steps):
-                in_puddle = (20 <= s <= 60)
-                current_mu = 0.15 if in_puddle else 1.4
-                
-                # Call real production JAX module
-                T_wheel = controller.compute_torques(
-                    x=x, delta=0.0, Fx_driver=350.0, mu_est=current_mu, dt=dt
-                )
-                
-                u = jnp.array([0.0, float(T_wheel[0]), float(T_wheel[1]), float(T_wheel[2]), float(T_wheel[3]), 0.0])
-                for _ in range(5):
-                    x = veh.simulate_step(x, u, setup, dt=dt/5.0)
-                
-                # Simulate physical loss of longitudinal adhesion in puddle
-                if in_puddle and mode != "Advanced (Neural)":
-                    slip_shock = 1.8 if mode == "Simple (PID)" else 1.0
-                    x = x.at[27].set(float(x[27]) + slip_shock)
-
-                v_val = max(float(x[14]), 1.0)
-                results[mode]["wheel_slip"].append((float(x[27]) * 0.2032 - v_val) / v_val)
-                results[mode]["inverter_cmd"].append(float(T_wheel[3]))
-                results[mode]["surge"].append(float(x[20]) if len(x) > 20 else 0.0)
-
-        print("  Generating Batch 2B publication subplots...")
-        fig, axs = plt.subplots(3, 1, figsize=(10, 11), sharex=True)
-        colors = {"Simple (PID)": "#e74c3c", "Intermediate (QP)": "#f39c12", "Advanced (Neural)": "#2ecc71"}
-        styles = {"Simple (PID)": "--", "Intermediate (QP)": "-.", "Advanced (Neural)": "-"}
-
-        for mode in realms:
-            axs[0].plot(time_arr, np.abs(results[mode]["wheel_slip"]), label=mode, color=colors[mode], linestyle=styles[mode], linewidth=2)
-            axs[1].plot(time_arr, results[mode]["inverter_cmd"], color=colors[mode], linestyle=styles[mode], linewidth=2)
-            axs[2].plot(time_arr, results[mode]["surge"], color=colors[mode], linestyle=styles[mode], linewidth=2)
-
-        axs[0].set_ylabel("Longitudinal Slip Ratio [κ]")
-        axs[0].set_title("Hydrodynamic Slip Runaway vs. CBF Clamping (Puddle from t=0.10s to t=0.30s)")
-        axs[0].axhline(0.12, color="magenta", linestyle=":", alpha=0.8, label="Pacejka Peak Grip")
-        axs[0].legend(loc="upper right", frameon=True)
-        axs[0].set_yscale('log')
-
-        axs[1].set_ylabel("Motor Inverter Command [Nm]")
-        axs[1].set_title("Traction Regulation Speed (Note Active Regen Spin-Suppression below 0 Nm)")
-
-        axs[2].set_ylabel("Driveline Shock / Surge [m/s²]")
-        axs[2].set_title("Longitudinal Acceleration Stability Upon Re-engaging Dry Asphalt at t=0.30s")
-        axs[2].set_xlabel("Time [seconds]")
-
-        fig.suptitle("BENCHMARK SUITE 3: DYNAMIC AQUAPLANING RECOVERY (79 KM/H PUDDLE ENTRY)", weight='bold', y=0.96)
-        plt.tight_layout(rect=[0, 0, 1, 0.94])
-        
-        plot_path = os.path.join(output_dir, "benchmark_aquaplaning.png")
-        plt.savefig(plot_path, dpi=300)
-        plt.close()
-        print(f"  [PASS] Batch 2B benchmark plot generated perfectly at '{plot_path}'")
-
-        peak_slip_pid = np.max(results["Simple (PID)"]["wheel_slip"])
-        peak_slip_neural = np.max(results["Advanced (Neural)"]["wheel_slip"])
-        assert peak_slip_neural < peak_slip_pid * 0.35, f"Justification Failure: Neural CBF ({peak_slip_neural:.2f}) must clamp slip vs PID ({peak_slip_pid:.2f})!"
-        print(f"[PASS] True production justification valid. Neural CBF suppresses hydrodynamic runaway.")
-
-    except Exception as e:
-        print(f"[FAIL] True aquaplaning execution crashed: {e}")
-        import traceback; traceback.print_exc()
 # ─────────────────────────────────────────────────────────────────────────────
 # TEST 37: 3-REALM AQUAPLANING RECOVERY VALIDATION (BATCH 2B)
 # ─────────────────────────────────────────────────────────────────────────────
@@ -4956,16 +4853,16 @@ if __name__ == "__main__":
     print("█" * 60)
 
     # ── Physics & dynamics (Tests 1–9) ──
-    #test_mirror_symmetry_zero_wz()
-    #test_neural_convergence()
-    #test_forward_pass()
+    test_mirror_symmetry_zero_wz()
+    test_neural_convergence()
+    test_forward_pass()
     #test_circular_track() #Largo de cojones
     test_friction_circle()
     test_load_sensitivity()
     test_diagonal_load_transfer()
     test_aero_increases_with_speed()
-    #test_differential_yaw_moment()
-    #test_spring_rate_not_pinned()
+    test_differential_yaw_moment()
+    test_spring_rate_not_pinned()
 
     # ── Powertrain control stack (Tests 10–16) ──
     test_motor_torque_envelope()

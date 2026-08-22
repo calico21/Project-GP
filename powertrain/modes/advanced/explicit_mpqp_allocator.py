@@ -44,8 +44,8 @@ import jax
 import jax.numpy as jnp
 
 from powertrain.modes.advanced.active_set_classifier import (
-    ClassifierBundle, predict_active_set, normalise_theta,
-    THETA_DIM, N_CONSTRAINTS,
+    ClassifierBundle, normalise_theta,
+    N_CONSTRAINTS,
 )
 try:
     from powertrain.modes.advanced.active_set_classifier import (

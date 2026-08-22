@@ -36,7 +36,6 @@ try:
 except ImportError:
     pass
 
-import jax
 import jax.numpy as jnp
 import scipy.io as sio
 

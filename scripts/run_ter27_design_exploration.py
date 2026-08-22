@@ -32,21 +32,16 @@ import time
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 import jax_config  # noqa: F401
 
-import jax
 import jax.numpy as jnp
-import numpy as np
 import pandas as pd
 
 from config.car_config import (
     get_car_config,
-    get_design_bounds,
     format_optimizer_output,
 )
 from config.design_freeze import DesignFreeze, install_freeze
 from models.vehicle_dynamics import (
-    SuspensionSetup,
     SETUP_NAMES,
-    SETUP_DIM,
     make_setup_from_params,
 )
 

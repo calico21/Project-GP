@@ -1,0 +1,23 @@
+{
+  "twin_fidelity_pct": 0.0,
+  "channels": {
+    "speed": {
+      "r2": -1.0,
+      "nrmse_pct": 623.31,
+      "lag_ms": 115180.0
+    },
+    "yaw_rate": {
+      "r2": -1.0,
+      "nrmse_pct": 145041.25,
+      "lag_ms": 138480.0
+    },
+    "ay": {
+      "r2": -1.0,
+      "nrmse_pct": 7013542.0,
+      "lag_ms": 50680.0
+    }
+  },
+  "n_steps": 23517,
+  "duration_s": 235.2,
+  "elapsed_wall_s": 1364.0
+}

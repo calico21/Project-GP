@@ -30,7 +30,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import sys
 import time
 import warnings
@@ -151,7 +150,6 @@ def run_validation(controls: dict, measurements: dict) -> dict:
 
     # ── Import JAX inside the function so --validate-only still works even
     #    without the full JAX GPU stack (CPU fallback)
-    import jax
     import jax.numpy as jnp
     from models.vehicle_dynamics import (
         DifferentiableMultiBodyVehicle,

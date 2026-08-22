@@ -36,21 +36,17 @@
 
 from __future__ import annotations
 
-import os
 import math
-import time
 from functools import partial
 from typing import List, Tuple, Optional, NamedTuple
 import numpy as np
-import scipy
-import pandas as pd
 import optax
 import jax
 import jax.numpy as jnp
 
 from models.vehicle_dynamics import (
     DifferentiableMultiBodyVehicle,  # <--- ADD THIS HERE
-    SuspensionSetup, SETUP_NAMES, SETUP_DIM, SETUP_LB, SETUP_UB, DEFAULT_SETUP,
+    SETUP_NAMES, SETUP_DIM, SETUP_LB, SETUP_UB,
 )
 
 from optimization.objectives import (
@@ -64,16 +60,12 @@ from config.tire_coeffs import tire_coeffs as TC
 
 # --- BATCH 10.5 IMPORTS ---
 from models.vehicle_dynamics import (
-    observe_sensors, step_imu_bias, DomainRandomization,
-    sample_domain_randomization,
+    observe_sensors, step_imu_bias,
 )
 from powertrain.state_estimator import (
     UKFState, UKFParams, ukf_step,
     extract_estimated_state, pack_measurement_from_reading,
     make_ukf_state,
-)
-from powertrain.powertrain_wiring_v2 import (
-    pack_hub_motor_command, HubMotorCommand,
 )
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -248,7 +240,7 @@ def evaluate_setup_full_fidelity(
     key: jax.Array,
     dt: float = 0.005,
 ) -> Tuple[jax.Array, jax.Array]:
-    from powertrain.powertrain_manager import PowertrainConfig, PowertrainManagerState
+    from powertrain.powertrain_manager import PowertrainManagerState
 
     # ═══════════════════════════════════════════════════════════════════════
     # FIX: Expansión de Dimensiones de variables de Estado (46 -> 108 DOF)

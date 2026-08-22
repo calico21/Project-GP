@@ -1,7 +1,6 @@
 # scripts/vcu_bridge.py
 import jax
 import jax.numpy as jnp
-import numpy as np
 import struct
 
 Q15_ONE = 32768

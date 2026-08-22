@@ -38,34 +38,29 @@ from powertrain.motor_model import (
 )
 from powertrain.modes.advanced.torque_vectoring import (
     TVGeometry, AllocatorWeights, CBFParams,
-    tv_step, TVState, TVOutput, make_tv_state,
-    yaw_moment_arms, solve_torque_allocation, cbf_safety_filter,
+    TVState, make_tv_state,
+    yaw_moment_arms, cbf_safety_filter,
     smooth_output,
 )
 from powertrain.modes.advanced.koopman_tv import (
-    KoopmanTVBundle, KoopmanTVConfig, make_default_koopman_bundle,
-    load_koopman_bundle,
+    KoopmanTVBundle,
 )
 from powertrain.modes.advanced.traction_control import (
-    DESCParams, TCWeights, TCState, TCOutput,
-    tc_step, compute_blend_weights as compute_blending_weights,
-    compute_slip_ratios as estimate_slip_ratios,
-    wheel_speed_confidence,
+    DESCParams, TCWeights, TCState, tc_step,
 )
 from powertrain.modes.advanced.launch_control import (
-    LaunchConfig, LaunchState, LaunchOutput,
-    launch_step, launch_step_v2,
+    LaunchConfig, LaunchState, launch_step_v2,
 )
 from powertrain.modes.advanced.virtual_impedance import (
     ImpedanceParams, ImpedanceState,
     impedance_step,
 )
 from powertrain.modes.advanced.slip_barrier import (
-    SlipBarrierInputs, SlipBarrierParams,
-    make_slip_barrier_inputs, build_slip_barrier_rows,
+    SlipBarrierParams,
+    make_slip_barrier_inputs,
 )
 from powertrain.regen_blend import (
-    RegenBlendParams, RegenDiagnostics, RegenEnergyState,
+    RegenBlendParams, RegenEnergyState,
     compute_regen_blend, update_regen_energy, regen_efficiency,
 )
 try:

@@ -51,9 +51,8 @@
 # ═══════════════════════════════════════════════════════════════════════════════
 from __future__ import annotations
 from powertrain.modes.advanced.koopman_slip import (
-    KoopmanState, KoopmanParams, make_koopman_state,
-    koopman_observer_step, KoopmanOutput,
-    phi, dphi_dkappa,          # NEW — needed for IMM Fx-prediction
+    KoopmanState, make_koopman_state,
+    koopman_observer_step, phi, dphi_dkappa,          # NEW — needed for IMM Fx-prediction
 )
 from powertrain.modes.advanced.rls_tc import (
     RLSParams, RLSState, RLSOutput, RLSAxleState,

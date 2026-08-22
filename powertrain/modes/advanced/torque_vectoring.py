@@ -45,12 +45,11 @@ from powertrain.motor_model import (
     motor_torque_limits_at_wheel, motor_power_loss, total_power_limit,
 )
 from powertrain.modes.advanced.koopman_tv import (
-    KoopmanTVBundle, KoopmanTVConfig, make_default_koopman_bundle,
+    KoopmanTVBundle, make_default_koopman_bundle,
     koopman_mz_reference,
 )
 from powertrain.modes.advanced.explicit_mpqp_allocator import (
-    QPParams, explicit_allocator_step, ExplicitAllocatorState,
-    init_explicit_allocator_state,
+    QPParams,
 )
 from powertrain.modes.advanced.active_set_classifier import load_classifier
 

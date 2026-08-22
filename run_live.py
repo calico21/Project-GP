@@ -188,7 +188,6 @@ def main():
     print(f"[Live] Racing line ready in {time.time()-t0:.2f}s")
 
     # ── 3. Vehicle dynamics + powertrain stack ────────────────────────────────
-    import jax
     import jax.numpy as jnp
     from models.vehicle_dynamics import (
         DifferentiableMultiBodyVehicle, build_default_setup_28,

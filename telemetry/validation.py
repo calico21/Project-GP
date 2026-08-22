@@ -38,7 +38,6 @@ import numpy as np
 import scipy.interpolate as interp
 import scipy.signal as signal
 from scipy.spatial import KDTree
-from typing import Dict, List, Optional
 
 
 # ─────────────────────────────────────────────────────────────────────────────

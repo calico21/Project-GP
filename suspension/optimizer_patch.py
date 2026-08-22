@@ -27,18 +27,17 @@ from __future__ import annotations
 
 import math
 import warnings
-from functools import partial
-from typing import Dict, Any, Optional, Tuple
+from typing import Dict, Any, Tuple
 
 import numpy as np
 import jax
 import jax.numpy as jnp
 
 from models.vehicle_dynamics import (
-    SuspensionSetup, SETUP_NAMES, SETUP_DIM, SETUP_LB, SETUP_UB, DEFAULT_SETUP,
+    SETUP_NAMES, SETUP_DIM, SETUP_LB, SETUP_UB,
 )
 from suspension.kinematics import (
-    SuspensionKinematics, KinematicGains, build_ter27_vp_from_kinematics,
+    SuspensionKinematics, build_ter27_vp_from_kinematics,
 )
 
 

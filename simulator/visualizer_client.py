@@ -12,7 +12,7 @@ _D = os.path.dirname(os.path.abspath(__file__))
 if _D not in sys.path: sys.path.insert(0, _D)
 from rerun_compat import (rr_set_time, rr_scalar, rr_text, rr_init,
                            rr_points3d, rr_boxes3d, rr_lines3d,
-                           rr_arrows3d, rr_transform3d, rr_clear)
+                           rr_arrows3d, rr_transform3d)
 from scipy.spatial.transform import Rotation as SciRot
 
 _ROOT = os.path.dirname(_D)
@@ -215,7 +215,7 @@ class SimVisualizer:
         finally: sock.close()
 
 def main():
-    import argparse, socket as _s
+    import argparse
     p=argparse.ArgumentParser(); p.add_argument('--track',default='fsg_autocross')
     p.add_argument('--host',default=HOST); p.add_argument('--port',type=int,default=PORT_TELEM_VIZ)
     a=p.parse_args()

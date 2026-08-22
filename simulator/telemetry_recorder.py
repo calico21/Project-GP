@@ -38,17 +38,15 @@ import struct
 import signal
 import argparse
 import csv
-from collections import defaultdict
-from typing import Optional
 
 import numpy as np
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from simulator.sim_config import (
-    HOST, PORT_TELEM_VIZ, PORT_TELEM_DEBUG,
+    PORT_TELEM_DEBUG,
     PHYSICS_HZ, LOG_DIR, DEFAULT_SETUP_28,
-    SETUP_PARAM_NAMES, S,
+    SETUP_PARAM_NAMES,
 )
 
 # ─────────────────────────────────────────────────────────────────────────────

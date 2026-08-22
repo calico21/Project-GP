@@ -18,8 +18,7 @@ Output:
 import os
 import sys
 import argparse
-import csv
-from typing import Optional, List, Dict, Tuple
+from typing import Optional, Dict
 
 import numpy as np
 

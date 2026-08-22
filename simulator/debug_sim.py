@@ -29,10 +29,7 @@ Usage (run each test independently):
 import sys
 import os
 import socket
-import struct
 import time
-import threading
-import math
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 try:
@@ -44,8 +41,7 @@ try:
 except ImportError:
     from sim_protocol import (
         pack_controls, unpack_controls, TelemetryFrame,
-        CMD, TX_BYTES, RX_BYTES, TX_FMT, RX_FMT,
-        DEFAULT_HOST, DEFAULT_PORT_RECV, DEFAULT_PORT_SEND
+        TX_BYTES, DEFAULT_HOST, DEFAULT_PORT_RECV, DEFAULT_PORT_SEND
     )
 
 SEP  = "─" * 60

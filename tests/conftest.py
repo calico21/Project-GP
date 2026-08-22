@@ -18,12 +18,11 @@ from __future__ import annotations
 
 import os
 import sys
-import math
 import time
 import contextlib
 import logging
 from pathlib import Path
-from typing import Iterator, Tuple
+from typing import Iterator
 
 import numpy as np
 

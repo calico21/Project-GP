@@ -23,10 +23,9 @@ import os
 import sys
 import time
 import socket
-import struct
 import threading
 import math
-from typing import Optional, Tuple
+from typing import Optional
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
@@ -42,13 +41,12 @@ try:
     )
 except ImportError:
     from sim_protocol import (
-        pack_controls, unpack_controls, CMD,
-        TelemetryFrame, TX_BYTES, TX,
+        pack_controls, CMD,
+        TelemetryFrame, TX_BYTES,
     )
     from sim_config import (
         HOST, PORT_CTRL_RECV, PORT_TELEM_CTRL,
-        PRESET_SETUPS, SETUP_PARAM_NAMES,
-        VehicleConstants,
+        PRESET_SETUPS, VehicleConstants,
     )
 
 VC = VehicleConstants()
@@ -154,7 +152,7 @@ class KeyboardInput:
         self._old_settings = None
 
     def start(self) -> bool:
-        import tty, termios
+        import termios
         try:
             self._old_settings = termios.tcgetattr(sys.stdin.fileno())
         except termios.error:

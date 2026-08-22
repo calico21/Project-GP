@@ -22,7 +22,6 @@ from __future__ import annotations
 
 import math
 import sys
-import os
 from pathlib import Path
 
 import numpy as np
@@ -32,8 +31,7 @@ import jax.numpy as jnp
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from tests.conftest import (
-    TestResult, FRONT_HPTS, REAR_HPTS, get_vp, get_tc,
-    suppress_jax_logs, is_psd, all_finite, finite_grad,
+    TestResult, FRONT_HPTS, REAR_HPTS, get_vp, suppress_jax_logs, all_finite,
 )
 
 
@@ -247,7 +245,7 @@ def test_sweep_block(r: TestResult) -> None:
     from suspension.sweep_analysis import (
         compute_sweep, compute_steer_sweep, compute_roll_analysis,
         run_full_kinematic_analysis,
-        SweepResult, SteerSweepResult, RollAnalysisResult,
+        SteerSweepResult, RollAnalysisResult,
     )
 
     f_L = SuspensionKinematics(FRONT_HPTS, side="left")
@@ -552,7 +550,7 @@ def test_optimizer_patch_block(r: TestResult) -> None:
         return
 
     from models.vehicle_dynamics import (
-        SETUP_DIM, SETUP_LB, SETUP_UB, DEFAULT_SETUP, SETUP_NAMES,
+        SETUP_DIM, DEFAULT_SETUP, SETUP_NAMES,
     )
 
     # ── D1: KINEMATIC_DERIVED_INDICES are bump_steer_f/_r (26, 27) ───────────

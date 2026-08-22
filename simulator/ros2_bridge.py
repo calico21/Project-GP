@@ -54,13 +54,11 @@ import socket
 import math
 import time
 import argparse
-from typing import Optional
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from simulator.sim_config import (
     HOST, PORT_TELEM_ROS, PORT_CTRL_RECV, PHYSICS_HZ,
-    S, WS_PORT,
 )
 
 # ─────────────────────────────────────────────────────────────────────────────

@@ -29,7 +29,6 @@ import os
 import sys
 import time
 import socket
-import struct
 import csv
 import argparse
 from collections import deque
@@ -64,8 +63,8 @@ try:
     )
 except ImportError:
     from sim_protocol import (
-        TelemetryFrame, TX, RX, CMD,
-        TX_FMT, RX_FMT, TX_BYTES, RX_BYTES,
+        TelemetryFrame, CMD,
+        RX_BYTES,
         unpack_controls,
     )
     from lap_timer import LapTimer
@@ -74,8 +73,7 @@ except ImportError:
         S, HOST, PORT_CTRL_RECV, PORT_TELEM_VIZ, PORT_TELEM_CTRL,
         PORT_TELEM_ROS, PORT_TELEM_DEBUG, PHYSICS_HZ, DT, SUBSTEPS, DT_SUB,
         LOG_DECIMATION, LOG_DIR, LOG_COLUMNS,
-        DEFAULT_SETUP_28, SETUP_DIM, SETUP_PARAM_NAMES,
-        PRESET_SETUPS, DriveAssistConfig, VehicleConstants,
+        DEFAULT_SETUP_28, SETUP_DIM, DriveAssistConfig, VehicleConstants,
         setup_28_to_sim8,
     )
 

@@ -31,7 +31,6 @@ from __future__ import annotations
 
 import os
 import sys
-from functools import partial
 
 _root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, _root)
@@ -44,7 +43,6 @@ from optimization.differentiable_track import (
     DifferentiableTrack, interp_track_at_s, make_differentiable_track,
 )
 from config.vehicles.ter26 import vehicle_params as VP
-from config.tire_coeffs import tire_coeffs as TC
 
 
 # ─────────────────────────────────────────────────────────────────────────────

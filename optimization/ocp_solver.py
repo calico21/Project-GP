@@ -40,7 +40,6 @@
 from __future__ import annotations
 
 import os
-import sys
 import math
 from functools import partial
 
@@ -57,8 +56,7 @@ from jax import jit, value_and_grad
 import numpy as np
 import scipy.optimize
 from models.vehicle_dynamics import (
-    DifferentiableMultiBodyVehicle, SuspensionSetup,
-    DEFAULT_SETUP, build_default_setup_28, compute_equilibrium_suspension,
+    DifferentiableMultiBodyVehicle, build_default_setup_28, compute_equilibrium_suspension,
 )
 from config.vehicles.ter26 import vehicle_params as VP
 

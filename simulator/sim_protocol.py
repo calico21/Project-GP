@@ -16,7 +16,7 @@ downstream structural unpacking in Godot and the ROS 2 driverless stack.
 from __future__ import annotations
 import struct
 import numpy as np
-from typing import Optional, Dict, Any
+from typing import Optional, Dict
 
 # ─────────────────────────────────────────────────────────────────────────────
 # §1  Wire Constants & Protocol Struct Configurations (FROZEN)

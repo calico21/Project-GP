@@ -22,13 +22,13 @@ geometry, cone positions, and per-corner track widths.
 import numpy as np
 import json
 import os
-from typing import List, Tuple, Optional, NamedTuple
+from typing import List, Tuple, Optional
 from dataclasses import dataclass, field
 
 try:
     from simulator.lap_timer import TimingLine, LapTimer
 except ImportError:
-    from lap_timer import TimingLine, LapTimer
+    from lap_timer import TimingLine
 
 
 # ─────────────────────────────────────────────────────────────────────────────

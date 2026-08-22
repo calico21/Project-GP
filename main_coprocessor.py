@@ -25,7 +25,6 @@ except (ImportError, AttributeError):
 import can
 import cantools
 import numpy as np
-import jax
 import jax.numpy as jnp
 
 from powertrain.powertrain_manager import make_powertrain_manager, powertrain_step

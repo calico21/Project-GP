@@ -16,8 +16,7 @@ Every other simulator module imports from here — no magic numbers.
 
 from __future__ import annotations
 import numpy as np
-from dataclasses import dataclass, field
-from typing import Tuple
+from dataclasses import dataclass
 
 # ─────────────────────────────────────────────────────────────────────────────
 # §1  Network Configuration

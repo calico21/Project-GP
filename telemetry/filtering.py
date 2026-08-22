@@ -1,9 +1,8 @@
 import jax
 import jax.numpy as jnp
-from jax import jit, value_and_grad
+from jax import jit
 import optax
 import pandas as pd
-import numpy as np
 
 class SE3Manifold:
     """

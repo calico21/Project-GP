@@ -28,7 +28,6 @@ Author: Project-GP contributor • Target: Ter27 / FSG 2026 Siemens DT Award
 """
 
 from __future__ import annotations
-from functools import partial
 from typing import NamedTuple, Tuple
 
 import jax
