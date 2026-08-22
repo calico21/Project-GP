@@ -56,7 +56,8 @@ from models.vehicle_dynamics import (
 from optimization.objectives import (
     compute_skidpad_objective,
     compute_step_steer_objective,
-    compute_endurance_lte_objective,  # <-- ADD THIS
+    compute_endurance_lte_objective,
+    compute_twin_fidelity_objective,  # <-- GP-vX7: real telemetry fidelity
 )
 from config.vehicles.ter26 import vehicle_params as VP
 from config.tire_coeffs import tire_coeffs as TC
@@ -79,7 +80,13 @@ from powertrain.powertrain_wiring_v2 import (
 # §1  Constants
 # ─────────────────────────────────────────────────────────────────────────────
 
-STABILITY_MAX    = 5.0     # rad/s  overshoot hard cap
+# BUGFIX-C (objectives.py): STABILITY_MAX was 5.0 — caused the safety-margin
+# constraint to pass trivially for all setups regardless of sign convention.
+# Correct value is 0.0: only setups with (LLTD_f - LLTD_r) > 0.05 (understeering)
+# are admitted to the Pareto archive.  Previously-archived setups generated with
+# STABILITY_MAX=5.0 remain valid — they just won't be re-accepted on a restart
+# if they fail the corrected safety_margin check.
+STABILITY_MAX    = 0.0     # safety_margin threshold (understeering = positive)
 SAFETY_THRESHOLD = 0.10    # minimum acceptable grip [G]
 _RNPG_JAC_EVERY  = 10      # Jacobian refresh interval (gradient steps)
 _RNPG_CLIP_NORM  = 5.0     # max natural gradient ℓ₂-norm before clipping
@@ -470,12 +477,58 @@ class MORL_SB_TRPO_Optimizer:
         self._params_history: List = []
         self._G_phys_cache  = None   # (K, 2, dim) lazy Riemannian Jacobian cache
 
+        # Real-telemetry data (loaded via load_telemetry for phase='telemetry')
+        self._real_controls:    Optional[dict] = None
+        self._real_measurements: Optional[dict] = None
+
         # Initialize ensemble params
         key = jax.random.PRNGKey(42)
         self.ensemble_params = {
             'mu':      jax.random.normal(key, (ensemble_size, self.dim)) * 0.5,
             'log_std': jnp.full((ensemble_size, self.dim), -1.0),
         }
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # §3.0  Telemetry loading
+    # ─────────────────────────────────────────────────────────────────────────
+
+    def load_telemetry(
+        self,
+        controls: dict,
+        measurements: dict,
+        max_steps: int = 2000,
+    ) -> None:
+        """
+        Load real telemetry data for phase='telemetry' evaluation.
+
+        Parameters
+        ----------
+        controls : dict
+            Output of CANLogReader.get_controls() or LapData.controls.
+            Keys: 'steer', 'throttle', 'brake', 'dt'  (all np.float32 arrays).
+        measurements : dict
+            Output of CANLogReader.get_measurements() or LapData.measurements.
+            Keys: 'speed', 'yaw_rate', 'ay', 'ax', 'x_m', 'y_m'.
+        max_steps : int
+            Maximum number of simulation steps to use.  Longer telemetry is
+            truncated to this length to bound XLA compile time and memory.
+            Default: 2000 steps = 20 s @ 10 ms grid.
+        """
+        import jax.numpy as jnp
+        N = min(max_steps, len(controls['steer']))
+        self._real_controls = {
+            k: jnp.array(v[:N], dtype=jnp.float32)
+            for k, v in controls.items()
+        }
+        self._real_measurements = {
+            k: jnp.array(v[:N], dtype=jnp.float32)
+            for k, v in measurements.items()
+            if k in ('speed', 'yaw_rate', 'ay', 'ax')
+        }
+        print(f"[MORL] Telemetry loaded: {N} steps "
+              f"({N * float(controls['dt'][0]):.1f} s @ "
+              f"{float(controls['dt'][0])*1000:.0f} ms grid). "
+              f"phase='telemetry' now active.")
 
     # ─────────────────────────────────────────────────────────────────────────
     # §3.1  Setup evaluation
@@ -508,6 +561,30 @@ class MORL_SB_TRPO_Optimizer:
             lte     = compute_endurance_lte_objective(self._vehicle.simulate_step, setup_phys, x_init) 
             safety  = jax.nn.sigmoid((grip - SAFETY_THRESHOLD) * 10.0)
             return grip, stab, safety, lte
+
+        elif phase == 'telemetry':
+            # Phase T: Fast objectives + real-data twin fidelity
+            # Requires self.load_telemetry() to have been called first.
+            if not hasattr(self, '_real_controls') or self._real_controls is None:
+                raise RuntimeError(
+                    "[MORL] phase='telemetry' requires calling load_telemetry() first.")
+            grip, _ = compute_skidpad_objective(self._vehicle.simulate_step, setup_phys, x_init)
+            stab    = compute_step_steer_objective(self._vehicle.simulate_step, setup_phys, x_init)
+            lte     = compute_endurance_lte_objective(self._vehicle.simulate_step, setup_phys, x_init)
+            tf      = compute_twin_fidelity_objective(
+                self._vehicle.simulate_step,
+                setup_phys,
+                self._real_controls['steer'],
+                self._real_controls['throttle'],
+                self._real_controls['brake'],
+                self._real_measurements['speed'],
+                self._real_measurements['yaw_rate'],
+                self._real_measurements['ay'],
+                x_init,
+                dt=float(self._real_controls['dt'][0]),
+            )
+            safety  = jax.nn.sigmoid((grip - SAFETY_THRESHOLD) * 10.0)
+            return grip, stab, safety, lte, tf
         
         else:
             # Phase 2: Full Fidelity (Adam Refinement)

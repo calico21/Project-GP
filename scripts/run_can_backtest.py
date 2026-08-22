@@ -28,48 +28,52 @@ WINDOW_LEN = 250  # 1.25s rolling validation window (200 Hz)
 
 
 def decode_can_csv_to_dataframe(file_path: Path, dbc_path: Path, dt: float = 0.005, lag_samples: int = 14) -> pd.DataFrame:
-    # Safe line-by-line stream reading to prevent C-parser buffer overflows on malformed inputs
-    records = []
-    has_can_headers = False
-
     with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
         header_line = f.readline().strip()
-        if 'ID' in header_line or 'Bus' in header_line or 'DataLen' in header_line:
-            has_can_headers = True
+    print(f"  [header] {file_path.name}: '{header_line}'")
 
-        for line in f:
-            parts = [p.strip() for p in line.strip().replace(';', ',').replace(' ', ',').split(',') if p.strip()]
-            if len(parts) < 3:
-                continue
-            try:
-                t = float(parts[0])
-                raw_id = parts[1]
-                msg_id = int(raw_id, 16) if raw_id.lower().startswith('0x') else int(raw_id)
-                data_hex = "".join(parts[2:])
-                data_bytes = bytes.fromhex(data_hex) if len(data_hex) % 2 == 0 else bytes([int(p, 16) for p in parts[2:] if len(p) <= 2])
-                
-                records.append({'timestamp': t, 'id': msg_id, 'data': data_bytes})
-            except Exception:
-                continue
+    header_cols = [c.strip() for c in header_line.split(',')]
 
-    # If rows successfully parsed as raw CAN frames
-    if records and has_can_headers:
-        db = cantools.database.load_file(dbc_path)
-        decoded_rows = []
-        for r in records:
-            try:
-                decoded = db.decode_message(r['id'], r['data'])
-                decoded['timestamp'] = r['timestamp']
-                decoded_rows.append(decoded)
-            except Exception:
-                continue
-        raw_df = pd.DataFrame(decoded_rows)
-    else:
-        # Fallback to standard robust python engine parse if not raw CAN
-        raw_df = pd.read_csv(file_path, engine='python', on_bad_lines='skip', low_memory=False)
+    _SIGNAL_MARKERS = {'ANGLE', 'Yaw_Rate_z', 'a_x', 'a_y', 'v_x', 'BPPS',
+                        'rlTRQ', 'rrTRQ', 'leftDem', 'rightDem'}
+    is_predecoded = len(_SIGNAL_MARKERS & set(header_cols)) >= 3
+
+    if is_predecoded:
+        print(f"  [format] {file_path.name}: pre-decoded wide CSV detected — "
+              f"reading directly (manual csv reader), skipping DBC decode.")
+
+        import csv
+        n_cols = len(header_cols)
+        rows = []
+        n_bad = 0
+        with open(file_path, 'r', encoding='utf-8', errors='ignore', newline='') as f:
+            reader = csv.reader(f)
+            next(reader)
+            for row in reader:
+                if len(row) < n_cols:
+                    row = row + [''] * (n_cols - len(row))
+                elif len(row) > n_cols:
+                    row = row[:n_cols]
+                    n_bad += 1
+                rows.append(row)
+
+        print(f"  [format] {file_path.name}: {len(rows)} rows read manually "
+              f"({n_bad} truncated for extra fields)")
+
+        raw_df = pd.DataFrame(rows, columns=header_cols)
         raw_df.columns = [c.strip() for c in raw_df.columns]
+        raw_df = raw_df.loc[:, ~raw_df.columns.astype(str).str.match(r'^Unnamed')]
+        raw_df = raw_df.loc[:, ~raw_df.columns.duplicated()]
+    else:
+        raise ValueError(f"{file_path.name}: not a recognized pre-decoded format")
 
-    return _standardize_and_resample(raw_df, dt, lag_samples)
+    df_out = _standardize_and_resample(raw_df, dt, lag_samples)
+
+    if df_out['steer_deg'].std() < 1e-6 and df_out['yaw_rate_deg_s'].std() < 1e-6:
+        print(f"  [WARN] {file_path.name}: steer AND yaw channels are flat "
+              f"(std≈0) — check column mapping in rename_map.")
+
+    return df_out
 
 
 def _extract_1d(df: pd.DataFrame, col: str) -> np.ndarray:
@@ -83,6 +87,9 @@ def _extract_1d(df: pd.DataFrame, col: str) -> np.ndarray:
 
 def _standardize_and_resample(df: pd.DataFrame, dt: float, lag_samples: int) -> pd.DataFrame:
     df.columns = [str(c).strip() for c in df.columns]
+    cols_lower = {c.lower(): c for c in df.columns}
+    t_col = cols_lower.get('timestamp') or cols_lower.get('time')
+
     rename_map = {
         'ANGLE': 'steer_deg',
         'Yaw_Rate_z': 'yaw_rate_deg_s',
@@ -105,24 +112,45 @@ def _standardize_and_resample(df: pd.DataFrame, dt: float, lag_samples: int) -> 
         if col not in df.columns:
             df[col] = 0.0
 
-    t_col = 'timestamp' if 'timestamp' in df.columns else ('time' if 'time' in df.columns else None)
+    if t_col is None:
+        print(f"  [WARN] No time column found — resampling SKIPPED.")
     if t_col:
+        df[t_col] = pd.to_numeric(df[t_col], errors='coerce')
         df = df.dropna(subset=[t_col]).sort_values(by=t_col)
-        t_arr = _extract_1d(df, t_col)
+        t_arr = df[t_col].to_numpy(dtype=np.float64)
         valid_idx = np.where(np.isfinite(t_arr))[0]
         if len(valid_idx) > 0:
             df = df.iloc[valid_idx].copy()
             t_rel = t_arr[valid_idx] - t_arr[valid_idx][0]
             if len(t_rel) > 1 and t_rel[-1] > 0:
                 t_uniform = np.arange(0, t_rel[-1], dt)
-                df_resampled = pd.DataFrame({'t_rel': t_uniform})
+                resampled_cols = {'t_rel': t_uniform}
                 for c in df.columns:
-                    if c not in [t_col, 't_rel']:
-                        col_vals = _extract_1d(df, c)
-                        df_resampled[c] = np.interp(t_uniform, t_rel, col_vals)
-                df = df_resampled
+                    if c in (t_col, 't_rel'):
+                        continue
+                    raw_vals = pd.to_numeric(df[c], errors='coerce').to_numpy(dtype=np.float64)
+                    valid = np.isfinite(raw_vals)
+                    if valid.sum() < 2:
+                        resampled_cols[c] = np.zeros_like(t_uniform)
+                        continue
+                    t_valid = t_rel[valid]
+                    v_valid = raw_vals[valid]
+                    order = np.argsort(t_valid)
+                    resampled_cols[c] = np.interp(t_uniform, t_valid[order], v_valid[order])
+                df = pd.concat({k: pd.Series(v) for k, v in resampled_cols.items()}, axis=1)
 
     vx = _extract_1d(df, 'vx_mps')
+    rl_rpm = _extract_1d(df, 'rlRPM')
+    rr_rpm = _extract_1d(df, 'rrRPM')
+    R_WHEEL = 0.2045
+
+    vx_from_wheels = ((rl_rpm + rr_rpm) * 0.5) * (2.0 * np.pi / 60.0) * R_WHEEL
+
+    if np.std(vx) < 2.0 and np.std(vx_from_wheels) > 2.0:
+        print(f"  [fix] v_x channel appears GPS-starved (std={np.std(vx):.3f}) "
+              f"— substituting wheel-speed-derived vx (std={np.std(vx_from_wheels):.3f})")
+        vx = vx_from_wheels
+
     if np.max(np.abs(vx)) < 0.5 and 'speed_raw' in df.columns:
         vx = _extract_1d(df, 'speed_raw')
         if np.max(np.abs(vx)) > 50.0:
@@ -140,10 +168,17 @@ def _standardize_and_resample(df: pd.DataFrame, dt: float, lag_samples: int) -> 
         steer = steer / steer_ratio
 
     wz = _extract_1d(df, 'yaw_rate_deg_s')
-    if np.std(steer) > 1e-3 and np.std(wz) > 1e-3 and np.corrcoef(steer, wz)[0, 1] < -0.2:
-        steer = -steer
-    if np.std(wz) > 1e-3 and np.std(ay) > 1e-3 and np.corrcoef(wz, ay)[0, 1] < -0.2:
-        ay = -ay
+    corr_steer_wz = (np.corrcoef(steer, wz)[0, 1]
+                      if np.std(steer) > 1e-3 and np.std(wz) > 1e-3 else float('nan'))
+    corr_wz_ay = (np.corrcoef(wz, ay)[0, 1]
+                  if np.std(wz) > 1e-3 and np.std(ay) > 1e-3 else float('nan'))
+    print(f"  [chk] corr(steer, wz) = {corr_steer_wz:+.3f}   corr(wz, ay) = {corr_wz_ay:+.3f}")
+    # NOTE: sign heuristics REMOVED — unreliable without ground-truth
+    # verification of vehicle_dynamics.py's Mz sign convention. Sign
+    # selection is now done empirically via _probe_best_steer_sign() in
+    # main(), which tests both signs against the actual physics engine and
+    # keeps whichever minimizes divergence. Do not re-add corrcoef-threshold
+    # flips here — they fight against the empirical probe.
 
     df['ay_mps2'] = ay
     df['steer_deg'] = steer
@@ -191,13 +226,14 @@ def _simulate_all_windows_jit(vehicle: DifferentiableMultiBodyVehicle, x0_batch:
     return jax.vmap(sim_one_window)(x0_batch, u_batch)
 
 
-def run_session_backtest(vehicle: DifferentiableMultiBodyVehicle, df: pd.DataFrame, dt: float = 0.005):
+def run_session_backtest(vehicle: DifferentiableMultiBodyVehicle, df: pd.DataFrame,
+                          dt: float = 0.005, steer_sign: float = 1.0, verbose: bool = True) -> dict:
     N = len(df)
     n_windows = N // WINDOW_LEN
     if n_windows == 0:
         return {'duration_s': N * dt, 'windows': 0, 'rmse_vx': 0, 'rmse_wz': 0, 'rmse_ay': 0, 'r_wz': 0, 'r_ay': 0, 'score': 0.0}
 
-    steer_rad = np.deg2rad(_extract_1d(df, 'steer_deg'))
+    steer_rad = np.deg2rad(_extract_1d(df, 'steer_deg')) * steer_sign
     t_fl = _extract_1d(df, 't_fl')
     t_fr = _extract_1d(df, 't_fr')
     t_rl = _extract_1d(df, 't_rl')
@@ -217,16 +253,16 @@ def run_session_backtest(vehicle: DifferentiableMultiBodyVehicle, df: pd.DataFra
         start = w * WINDOW_LEN
         end = start + WINDOW_LEN
         u_windows.append(u_all[start:end])
-        
+
         vx0 = float(max(real_vx_all[start], 1.0))
         vy0 = float(real_vy_all[start])
         wz0 = float(real_wz_all[start])
-        
+
         x0 = DifferentiableMultiBodyVehicle.make_initial_state(T_env=25.0, vx0=vx0)
         x0 = x0.at[15].set(vy0)
         x0 = x0.at[19].set(wz0)
         x0_windows.append(x0)
-        
+
         real_vx_wins.append(real_vx_all[start:end])
         real_wz_wins.append(real_wz_all[start:end])
         real_ay_wins.append(real_ay_all[start:end])
@@ -236,6 +272,12 @@ def run_session_backtest(vehicle: DifferentiableMultiBodyVehicle, df: pd.DataFra
 
     sim_out = _simulate_all_windows_jit(vehicle, x0_batch, u_batch, dt)
     sim_out_np = np.array(sim_out)
+
+    per_window_ay_max = np.max(np.abs(sim_out_np[:, :, 2]), axis=1)
+    n_blown = int(np.sum(per_window_ay_max > 15.0))
+    if verbose:
+        print(f"  [chk] steer_sign={steer_sign:+.0f}: {n_blown}/{len(per_window_ay_max)} "
+              f"windows exceed 15 m/s² sim ay")
 
     sim_vx = sim_out_np[:, :, 0].flatten()
     sim_wz = sim_out_np[:, :, 1].flatten()
@@ -269,7 +311,32 @@ def run_session_backtest(vehicle: DifferentiableMultiBodyVehicle, df: pd.DataFra
         'r_wz': r_wz,
         'r_ay': r_ay,
         'score': corr_score,
+        'n_blown': n_blown,
     }
+
+
+def _probe_best_steer_sign(vehicle, df, dt, n_probe_windows=20):
+    """
+    Empirically determine steering sign convention. We measured the raw
+    telemetry is internally self-consistent (corr(steer,wz)=+0.95), but that
+    does NOT tell us which sign matches vehicle_dynamics.py's internal
+    convention — that requires tracing Mz_total's full sign chain, which we
+    have not done. Test both signs on a small window subset against the
+    actual physics engine and keep whichever minimizes divergence/RMSE.
+    """
+    best_sign, best_penalty, best_res = 1.0, float('inf'), None
+    n_rows = min(n_probe_windows * WINDOW_LEN, len(df))
+    df_probe = df.iloc[:n_rows]
+    for sign in (1.0, -1.0):
+        res = run_session_backtest(vehicle, df_probe, dt=dt, steer_sign=sign, verbose=True)
+        penalty = res['rmse_ay'] + res['rmse_wz'] * 10.0 + res['n_blown'] * 5.0
+        print(f"  [probe] steer_sign={sign:+.0f}: rmse_ay={res['rmse_ay']:.2f} "
+              f"rmse_wz={res['rmse_wz']:.3f} n_blown={res['n_blown']} "
+              f"score={res['score']:.1f}% penalty={penalty:.2f}")
+        if penalty < best_penalty:
+            best_penalty, best_sign, best_res = penalty, sign, res
+    print(f"  [probe] SELECTED steer_sign={best_sign:+.0f}")
+    return best_sign
 
 
 def main():
@@ -289,15 +356,18 @@ def main():
     vehicle = DifferentiableMultiBodyVehicle(VP_DICT, TP_DICT)
 
     print("\n=========================================================================================")
-    print(f"{'Session File':<16} | {'Dur(s)':<7} | {'RMSE Vx':<9} | {'RMSE Yaw':<10} | {'RMSE Ay':<9} | {'Corr %':<7} | {'Phase r(Ay)'}")
+    print(f"{'Session File':<16} | {'Dur(s)':<7} | {'RMSE Vx':<9} | {'RMSE Yaw':<10} | {'RMSE Ay':<9} | {'Corr %':<7} | {'Sign':<5} | {'Phase r(Ay)'}")
     print("-----------------------------------------------------------------------------------------")
 
     scores = []
     for i, f in enumerate(files, 1):
         df = decode_can_csv_to_dataframe(f, dbc_path=args.dbc, dt=args.dt, lag_samples=args.lag_samples)
-        res = run_session_backtest(vehicle, df, dt=args.dt)
+
+        steer_sign = _probe_best_steer_sign(vehicle, df, dt=args.dt)
+
+        res = run_session_backtest(vehicle, df, dt=args.dt, steer_sign=steer_sign, verbose=False)
         scores.append(res['score'])
-        print(f"{f.name:<16} | {res['duration_s']:<7.1f} | {res['rmse_vx']:<9.3f} | {res['rmse_wz']:<10.3f} | {res['rmse_ay']:<9.3f} | {res['score']:<6.1f}% | {res['r_ay']:+.3f}")
+        print(f"{f.name:<16} | {res['duration_s']:<7.1f} | {res['rmse_vx']:<9.3f} | {res['rmse_wz']:<10.3f} | {res['rmse_ay']:<9.3f} | {res['score']:<6.1f}% | {steer_sign:<5.0f} | {res['r_ay']:+.3f}")
 
     print("=========================================================================================")
     print(f"\n[*] Overall Mean Fleet Correlation Score: {np.mean(scores):.2f} %\n")

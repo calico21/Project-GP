@@ -581,3 +581,128 @@ def compute_endurance_lte_objective(
     )
 
     return J_LTE
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# §3  Twin Fidelity Objective  (real-telemetry grounded)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def compute_twin_fidelity_objective(
+    simulate_step_fn,
+    setup_params: jax.Array,           # (28,) physical setup
+    real_steer:    jax.Array,          # (N,) front wheel steer [rad]
+    real_throttle: jax.Array,          # (N,) normalised throttle [0-1]
+    real_brake:    jax.Array,          # (N,) normalised brake pressure [0-1]
+    real_speed:    jax.Array,          # (N,) longitudinal speed [m/s]
+    real_yaw_rate: jax.Array,          # (N,) yaw rate [rad/s]
+    real_ay:       jax.Array,          # (N,) lateral accel [m/s²]
+    x_init:        jax.Array,          # (108,) initial vehicle state
+    dt:            float = 0.010,      # sample interval [s]
+    w_speed:       float = 0.50,       # weight for speed R²
+    w_yaw_rate:    float = 0.30,       # weight for yaw-rate R²
+    w_ay:          float = 0.20,       # weight for lateral acceleration R²
+) -> jax.Array:
+    """
+    Open-loop twin-fidelity objective: drives the 108-DOF digital twin with
+    real recorded control inputs and returns a differentiable fidelity score.
+
+    Score ∈ [0, 1]:
+        fidelity = w_speed * R²(speed)  +  w_yaw_rate * R²(yaw_rate)  +  w_ay * R²(ay)
+
+    R² is approximated in a differentiable way:
+        R²_soft = 1 − MSE(sim, real) / (Var(real) + ε)
+    Clamped to [0, 1] via sigmoid so gradients are always finite even if the
+    simulation diverges (would otherwise produce R² << 0 with large gradient norms).
+
+    DESIGN NOTES
+    ────────────
+    · The simulation is run as a pure jax.lax.scan — entirely inside XLA.
+      No Python-side loop. Fully vmappable and differentiable w.r.t. setup_params.
+    · The control signal packs steering + a net longitudinal force demand:
+        F_lon = throttle * F_DRIVE_MAX - brake * F_BRAKE_MAX
+        u = [delta, F_lon, F_lon, F_lon, F_lon, F_brake_hyd]
+      This matches the u-vector expected by DifferentiableMultiBodyVehicle.simulate_step
+      (steer + 4 hub motor torques + hydraulic brake — simplified here as a split
+      between drive/brake channels, consistent with the endurance LTE objective).
+    · Higher is better — the MORL optimizer maximises all objectives.
+
+    Parameters
+    ----------
+    simulate_step_fn : callable
+        vehicle.simulate_step — signature (state, u, setup, dt) → state
+    setup_params : (28,) jax.Array
+        Physical SuspensionSetup vector.  Gradients flow through this.
+    real_* : (N,) jax.Array
+        Real telemetry channels aligned to a uniform dt grid (from CANLogReader).
+    x_init : (108,) jax.Array
+        Initial vehicle state (from DifferentiableMultiBodyVehicle.make_initial_state).
+    dt : float
+        Simulation step size, must match the telemetry grid spacing.
+    w_speed, w_yaw_rate, w_ay : float
+        Objective weights summing to 1.0.
+    """
+    # ── Constants matching forward_sim / endurance_lte channels ──────────────
+    F_DRIVE_MAX  = 3000.0   # N per axle, consistent with LTE objective
+    F_BRAKE_MAX  = 4000.0   # N total, divided across axles via brake_bias_f
+
+    N = real_steer.shape[0]
+
+    def scan_step(carry, k):
+        x = carry
+
+        delta   = real_steer[k]
+        thr     = real_throttle[k]
+        brk     = real_brake[k]
+
+        # Aggregate longitudinal demand into hub-motor torques and hydraulic brake
+        F_lon  = thr * F_DRIVE_MAX         # driving force per axle [N]
+        F_hyd  = brk * F_BRAKE_MAX         # hydraulic braking force [N]
+
+        # u = [steer, T_fl, T_fr, T_rl, T_rr, F_brake_hyd]
+        # Distribute equally across four corners: T_per_wheel = F_lon * R_w / 4
+        # R_wheel ≈ 0.2045 m — matches vehicle_dynamics.py default
+        T_wheel = F_lon * 0.2045 / 4.0
+        u = jnp.array([delta, T_wheel, T_wheel, T_wheel, T_wheel, F_hyd])
+
+        x_next = simulate_step_fn(x, u, setup_params, dt)
+
+        # Extract simulated observables
+        vx_sim  = x_next[14]                            # longitudinal speed (q-dot[0])
+        wz_sim  = x_next[19]                            # yaw rate (q-dot[5])
+        # Lateral acceleration from centripetal: ay_sim = vx * wz  (bicycle model)
+        ay_sim  = vx_sim * wz_sim
+
+        return x_next, jnp.array([vx_sim, wz_sim, ay_sim])
+
+    _, predictions = jax.lax.scan(scan_step, x_init, jnp.arange(N))
+
+    # predictions: (N, 3) — [speed, yaw_rate, ay]
+    sim_speed    = predictions[:, 0]
+    sim_yaw_rate = predictions[:, 1]
+    sim_ay       = predictions[:, 2]
+
+    # ── Differentiable R² (soft, clamped) ────────────────────────────────────
+    def soft_r2(sim: jax.Array, real: jax.Array) -> jax.Array:
+        """
+        R² = 1 - MSE(sim, real) / (Var(real) + ε)
+        Mapped through sigmoid(10·(R²-0.5)) to:
+          · R²=1.0 → 0.993  (small loss at perfect fit — negligible)
+          · R²=0.5 → 0.500  (midpoint of the score)
+          · R²<0   → 0.007  (saturates, bounded gradient, no gradient explosion)
+        This sigmoid mapping is consistent with the smooth feasibility gate in
+        compute_skidpad_objective and prevents NaN when simulation diverges.
+        """
+        mse_val   = jnp.mean((sim - real) ** 2)
+        var_real  = jnp.mean((real - jnp.mean(real)) ** 2) + 1e-6
+        r2_raw    = 1.0 - mse_val / var_real
+        # Smooth clamp to [0, 1] via sigmoid centred at 0.5
+        # Gradient at r2_raw=1: sigmoid'(5)=0.007 — finite, not zero
+        return jax.nn.sigmoid(10.0 * (r2_raw - 0.5))
+
+    r2_speed    = soft_r2(sim_speed,    real_speed)
+    r2_yaw_rate = soft_r2(sim_yaw_rate, real_yaw_rate)
+    r2_ay       = soft_r2(sim_ay,       real_ay)
+
+    fidelity = w_speed * r2_speed + w_yaw_rate * r2_yaw_rate + w_ay * r2_ay
+
+    return fidelity
