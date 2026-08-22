@@ -40,6 +40,7 @@ from scripts.run_can_backtest import (
 
 N_CAL_WINDOWS = 40   # subsample per session — a 5-param fit doesn't need the full log
 
+jax.config.update("jax_debug_nans", True)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # §1  Batch construction (mirrors run_session_backtest's windowing exactly)
@@ -83,14 +84,39 @@ def _build_calib_batch(df, dt: float, steer_sign: float, rng: np.random.Generato
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _soft_corr_loss(sim: jax.Array, real: jax.Array) -> jax.Array:
-    """1 - Pearson r, averaged over the window batch. Scale-invariant,
-    differentiable, and directly targets the fidelity metric being reported."""
+    """1 - Pearson r, averaged over the window batch. Windows where the real
+    signal has near-zero variance (straight-line segments) are excluded from
+    both the loss value AND the gradient — Pearson r is mathematically
+    undefined there, and even though num/den ~ 0/eps is forward-finite, the
+    backward pass through that division has a true 0/0 singularity as the
+    variance -> 0, which poisons the whole batch via jnp.mean (a single NaN
+    anywhere in the batch NaNs the mean)."""
     sim_c  = sim  - jnp.mean(sim,  axis=1, keepdims=True)
     real_c = real - jnp.mean(real, axis=1, keepdims=True)
+
+    var_sim  = jnp.sum(sim_c ** 2,  axis=1)
+    var_real = jnp.sum(real_c ** 2, axis=1)
+
+    # Variance floor: below this, the window carries no correlation signal.
+    # Units: (rad/s)^2 for wz, (m/s^2)^2 for ay — 1e-3 is well below sensor
+    # noise floor variance over a 250-sample (1.25s) window for either channel.
+    VAR_FLOOR = 1e-3
+
+    # Regularized denominator: floor keeps it bounded away from 0, so the
+    # gradient d(num/den)/d(...) stays finite everywhere (no true 0/0).
+    den = jnp.sqrt(jnp.maximum(var_sim * var_real, VAR_FLOOR ** 2))
     num = jnp.sum(sim_c * real_c, axis=1)
-    den = jnp.sqrt(jnp.sum(sim_c ** 2, axis=1) * jnp.sum(real_c ** 2, axis=1)) + 1e-6
-    r = num / den
-    return jnp.mean(1.0 - r)
+    r   = num / den
+
+    # Per-window validity mask: only windows with enough real-signal variance
+    # contribute to the loss. stop_gradient on the mask itself (it's a boolean
+    # selection, not something we differentiate through).
+    valid = jax.lax.stop_gradient((var_real > VAR_FLOOR) & (var_sim > VAR_FLOOR))
+    valid_f = valid.astype(r.dtype)
+
+    per_window_loss = (1.0 - r) * valid_f
+    n_valid = jnp.maximum(jnp.sum(valid_f), 1.0)
+    return jnp.sum(per_window_loss) / n_valid
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -129,17 +155,19 @@ def main():
 
     # ── Rollout: params -> (wz_hist, ay_hist) per window ────────────────────
     def rollout(mu_scale, steer_gain, brake_gain, torque_gain, u_seq, x0):
-        u_scaled = u_seq.at[:, 0].multiply(steer_gain)        # steer channel
-        u_scaled = u_scaled.at[:, 1:5].multiply(torque_gain)  # 4 hub torques
-        u_scaled = u_scaled.at[:, 5].multiply(brake_gain)     # hydraulic brake
+        u_scaled = u_seq.at[:, 0].multiply(steer_gain)
+        u_scaled = u_scaled.at[:, 1:5].multiply(torque_gain)
+        u_scaled = u_scaled.at[:, 5].multiply(brake_gain)
+
+        tire_cal = jnp.array([mu_scale[0], mu_scale[1], -1.0, 1.0], dtype=jnp.float32)
 
         def step_fn(x, u):
             x_next = vehicle.simulate_step(x, u, setup, dt=args.dt,
-                                            n_substeps=2, mu_scale=mu_scale)
+                                            n_substeps=2, tire_cal=tire_cal)
             return x_next, jnp.array([x_next[19], x_next[14] * x_next[19]])
 
         _, out = jax.lax.scan(step_fn, x0, u_scaled)
-        return out[:, 0], out[:, 1]   # wz_hist, ay_hist
+        return out[:, 0], out[:, 1]
 
     v_rollout = jax.vmap(rollout, in_axes=(None, None, None, None, 0, 0))
 
@@ -166,10 +194,11 @@ def main():
     for step in range(args.steps):
         u_seq, x0, wz_real, ay_real = batches[step % len(batches)]
         loss, g = grad_fn(theta, u_seq, x0, wz_real, ay_real)
+        g_clean = jnp.nan_to_num(g, nan=0.0, posinf=0.0, neginf=0.0)
         if not bool(jnp.all(jnp.isfinite(g))):
-            print(f"  step {step:4d}  NaN gradient — skipping update")
-            continue
-        updates, opt_state = opt.update(g, opt_state, theta)
+            n_bad = int(jnp.sum(~jnp.isfinite(g)))
+            print(f"  step {step:4d}  {n_bad}/5 NaN grad components — zeroed and continuing")
+        updates, opt_state = opt.update(g_clean, opt_state, theta)
         theta = jnp.clip(optax.apply_updates(theta, updates), theta_lb, theta_ub)
 
         if step % 10 == 0:

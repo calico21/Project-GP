@@ -796,8 +796,12 @@ class DifferentiableMultiBodyVehicle:
     # ─────────────────────────────────────────────────────────────────────────
 
     @partial(jax.jit, static_argnums=(0,))
-    def _compute_derivatives(
-        self, x, u, setup_params,
+    def _glrk4_step(
+        self,
+        x: jax.Array,
+        u: jax.Array,
+        setup_params: jax.Array,
+        dt_step: float,
         tire_cal: jax.Array = jnp.array([1.0, 1.0, -1.0, 1.0], dtype=jnp.float32),
     ) -> jax.Array:
 
@@ -1347,181 +1351,6 @@ class DifferentiableMultiBodyVehicle:
         return next_108[:46]
     
     @partial(jax.jit, static_argnums=(0,))
-    def _glrk4_step(
-        self, x, u, setup_params, dt_step,
-        tire_cal: jax.Array = jnp.array([1.0, 1.0, -1.0, 1.0], dtype=jnp.float32),
-    ) -> jax.Array:
-
-        """
-        Identical to _compute_derivatives except:
-        1. h_params is a traced argument, not closed over self.H_params.
-        2. stop_gradient is OMITTED on dH_dq / dH_dp — that is the entire
-           point: OnlineSysID needs ∂loss/∂h_params to flow back through
-           the Hamiltonian gradient.
-
-        Only called from _glrk4_step_with_h → step_with_params → OnlineSysID.
-        Never used in WMPC or MORL loops (those use _compute_derivatives with
-        stop_gradient for scan stability).
-        """
-        q = x[0:14];  v = x[14:28];  p = self.M_diag * v
-
-        T_4x7         = x[28:56].reshape((4, 7))
-        transient_4x4 = x[56:72].reshape((4, 4))
-        damper_4x3    = x[72:84].reshape((4, 3))
-        elastokin_4x6 = x[84:108].reshape((4, 6))
-
-        def _full_H(h_params_, q_, p_, setup_):
-            # TIGHTER CLAMP: Strictly bound velocities to physical limits 
-            # to prevent H_net from hallucinating yaw spins.
-            v_raw = p_ / (self.M_diag + 1e-8)
-            v_safe = jnp.clip(v_raw, -35.0, 35.0)                    # Max 35 m/s linear
-            v_safe = v_safe.at[5].set(jnp.clip(v_safe[5], -8.0, 8.0)) # Max 8 rad/s yaw
-            p_safe = v_safe * self.M_diag
-            
-            # ✅ ENFORCED SE(2) INVARIANCE: Strip absolute coordinates (X, Y, psi)
-            # This kills any non-zero dH/dpsi residual leaking into the yaw moment
-            q_inv = q_.at[0].set(0.0).at[1].set(0.0).at[5].set(0.0)
-
-            T       = 0.5 * jnp.sum((p_safe ** 2) / (self.M_diag + 1e-8))
-            V       = 0.5 * jnp.sum(q_inv[6:10] ** 2) * _V_STRUCT_PRIOR_K
-            susp_sq = jnp.sum((q_inv[6:10] - _Z_EQ) ** 2) + 1e-4
-            
-            # ✅ MANIFEST SYMMETRY: Mirror fully both inputs to wipe out ULP noise
-            q_mirrored = q_inv.at[3].set(-q_inv[3]).at[6].set(q_inv[7]).at[7].set(q_inv[6]).at[8].set(q_inv[9]).at[9].set(q_inv[8])
-            p_mirrored = (p_safe.at[1].set(-p_safe[1]).at[5].set(-p_safe[5])
-                                 .at[6].set(p_safe[7]).at[7].set(p_safe[6])
-                                 .at[8].set(p_safe[9]).at[9].set(p_safe[8]))
-            
-            H_val = self.H_net.apply(h_params_, q_inv, p_safe, setup_)
-            H_val_mirrored = self.H_net.apply(h_params_, q_mirrored, p_mirrored, setup_)
-            
-            return T + V + (0.5 * (H_val + H_val_mirrored)) * susp_sq
-
-        grad_H_fn    = jax.grad(_full_H, argnums=(1, 2))
-        dH_dq, dH_dp = grad_H_fn(h_params, q, p, setup_params)   # h_params traced
-
-        FORCE_CAP = 12000.0;  VEL_CAP = 150.0
-        dH_dq = FORCE_CAP * jnp.tanh(dH_dq / (FORCE_CAP + 1e-8))
-        dH_dp = VEL_CAP   * jnp.tanh(dH_dp / (VEL_CAP   + 1e-8))
-        # ↑ NO stop_gradient here — intentional. Grad must reach h_params.
-
-        grad_H   = jnp.concatenate([dH_dq, dH_dp])
-        J = jnp.zeros((28, 28)).at[0:14, 14:28].set(jnp.eye(14)).at[14:28, 0:14].set(-jnp.eye(14))
-        R = jnp.zeros((28, 28)).at[14:28, 14:28].set(self.R_net.apply(self.R_params, q, p))
-        PH_accel = jnp.dot(J - R, grad_H)
-
-        # All remaining physics (suspension, tire, Fz, aux ODEs) are identical
-        # to _compute_derivatives — delegate to avoid duplication.
-        # Strategy: compute full dx with self.H_params (stop_gradient path),
-        # then surgically replace only the dv_dt block with the h_params version.
-        dx_ref   = self._compute_derivatives(x, u, setup_params)
-        dv_ref   = dx_ref[14:28] * self.M_diag          # undo /M to get force
-        # dv_ref = PH_accel_self[14:28] + F_ext[14:28]
-        # → F_ext[14:28] = dv_ref - PH_accel_self[14:28]
-        # But PH_accel_self[14:28] = dot(J-R, grad_H_self)[14:28] = -grad_H_self[0:14]
-        # (from J structure: (J-R)[14:28, 0:14] = -I)
-        # So we can isolate F_ext without re-running all tire/suspension code.
-        # Instead: directly patch dv_dt using the new PH_accel.
-        PH_accel_self = jax.lax.stop_gradient(
-            jnp.dot(J - R,
-                    jnp.concatenate(
-                        jax.grad(lambda q_, p_: (
-                            0.5 * jnp.sum((p_ ** 2) / (self.M_diag + 1e-8))
-                            + 0.5 * jnp.sum(q_[6:10] ** 2) * _V_STRUCT_PRIOR_K
-                            + (lambda q_in, p_in: (
-                                # ✅ SE(2) INVARIANCE INSIDE GRADIENT ENGINE
-                                # Purgamos X, Y, psi para asegurar dH/dpsi == 0 exacto
-                                0.5 * (
-                                    self.H_net.apply(self.H_params, q_in.at[0].set(0.0).at[1].set(0.0).at[5].set(0.0), p_in, setup_params)
-                                    + self.H_net.apply(
-                                        self.H_params,
-                                        q_in.at[0].set(0.0).at[1].set(0.0).at[5].set(0.0).at[3].set(-q_in[3]).at[6].set(q_in[7]).at[7].set(q_in[6]).at[8].set(q_in[9]).at[9].set(q_in[8]),
-                                        p_in.at[1].set(-p_in[1]).at[5].set(-p_in[5]).at[6].set(p_in[7]).at[7].set(p_in[6]).at[8].set(p_in[9]).at[9].set(p_in[8]),
-                                        setup_params
-                                    )
-                                )
-                            ))(q_, p_) * (jnp.sum((q_[6:10] - _Z_EQ) ** 2) + 1e-4)
-                        ), argnums=(0, 1))(q, p)
-                    )
-                )
-        )
-        dv_correction = (PH_accel[14:28] - PH_accel_self[14:28]) / self.M_diag
-        return dx_ref.at[14:28].add(dv_correction)
-
-    # ─────────────────────────────────────────────────────────────────────────
-    # §5.4  Gauss-Legendre RK4 Variational Integrator
-    # ─────────────────────────────────────────────────────────────────────────
-
-    @partial(jax.jit, static_argnums=(0,))
-    def _glrk4_step(
-        self,
-        x:            jax.Array,
-        u:            jax.Array,
-        setup_params: jax.Array,
-        dt_step:      float,
-    ) -> jax.Array:
-        sqrt3    = jnp.sqrt(3.0)
-        a11, a12 = 0.25, 0.25 - sqrt3 / 6.0
-        a21, a22 = 0.25 + sqrt3 / 6.0, 0.25
-        b1, b2   = 0.5, 0.5
-
-        q0   = x[0:14];  v0   = x[14:28];  aux0 = x[28:108]
-        _AUX = 80
-
-        # Fully differentiable implicit forward pass
-        dx0 = self._compute_derivatives(x, u, setup_params, tire_cal)
-        k1_q, k1_v  = dx0[0:14], dx0[14:28]
-        k2_q, k2_v  = k1_q,      k1_v
-
-        def newton_iter(carry, _):
-            k1_q_, k1_v_, k2_q_, k2_v_, _a1, _a2 = carry
-
-            q1 = q0 + dt_step * (a11 * k1_q_ + a12 * k2_q_)
-            v1 = v0 + dt_step * (a11 * k1_v_ + a12 * k2_v_)
-            x1 = x.at[0:14].set(q1).at[14:28].set(v1)
-
-            q2 = q0 + dt_step * (a21 * k1_q_ + a22 * k2_q_)
-            v2 = v0 + dt_step * (a21 * k1_v_ + a22 * k2_v_)
-            x2 = x.at[0:14].set(q2).at[14:28].set(v2)
-
-            dx1 = self._compute_derivatives(x1, u, setup_params, tire_cal)
-            dx2 = self._compute_derivatives(x2, u, setup_params, tire_cal)
-
-            _DC = 500.0
-            return (jnp.clip(dx1[0:14],  -_DC, _DC),
-                    jnp.clip(dx1[14:28], -_DC, _DC),
-                    jnp.clip(dx2[0:14],  -_DC, _DC),
-                    jnp.clip(dx2[14:28], -_DC, _DC),
-                    jnp.clip(dx1[28:108], -_DC, _DC),
-                    jnp.clip(dx2[28:108], -_DC, _DC)), None
-
-        # 1. Run 4 iterations and discard the backward tape
-        carry_converged, _ = jax.lax.scan(
-            newton_iter,
-            (k1_q, k1_v, k2_q, k2_v, jnp.zeros(_AUX), jnp.zeros(_AUX)),
-            None, length=4
-        )
-        
-        # 2. Sever the Jacobian chain (kills the 10^15 explosion)
-        carry_stopped = jax.tree_util.tree_map(jax.lax.stop_gradient, carry_converged)
-
-        # 3. Take ONE final Newton step WITH gradients enabled. 
-        # This reattaches the converged state to the controls (u) and x0.
-        (k1_q_final, k1_v_final, k2_q_final, k2_v_final,
-         dx1_aux_final, dx2_aux_final), _ = newton_iter(carry_stopped, None)
-
-        # 4. Integrate
-        q_new   = q0   + dt_step * (b1 * k1_q_final + b2 * k2_q_final)
-        v_new   = v0   + dt_step * (b1 * k1_v_final + b2 * k2_v_final)
-        aux_new = aux0 + dt_step * (b1 * dx1_aux_final + b2 * dx2_aux_final)
-
-        aux_new = jnp.clip(aux_new, -1000.0, 1000.0)
-
-        return (x.at[0:14].set(q_new)
-                  .at[14:28].set(v_new)
-                  .at[28:108].set(aux_new))
-    
-    @partial(jax.jit, static_argnums=(0,))
     def _glrk4_step_with_h(
         self,
         h_params:     dict,
@@ -1538,7 +1367,7 @@ class DifferentiableMultiBodyVehicle:
         q0 = x[0:14];  v0 = x[14:28];  aux0 = x[28:108]
         _AUX = 80
 
-        dx0 = self._compute_derivatives(x, u, setup_params, mu_scale)   # was: (x, u, setup_params)
+        dx0 = self._compute_derivatives(x, u, setup_params)
 
         k1_q, k1_v = dx0[0:14], dx0[14:28]
         k2_q, k2_v = k1_q, k1_v
@@ -1554,8 +1383,8 @@ class DifferentiableMultiBodyVehicle:
             v2 = v0 + dt_step * (a21 * k1_v_ + a22 * k2_v_)
             x2 = x.at[0:14].set(q2).at[14:28].set(v2)
 
-            dx1 = self._compute_derivatives(x1, u, setup_params, mu_scale)
-            dx2 = self._compute_derivatives(x2, u, setup_params, mu_scale)
+            dx1 = self._compute_derivatives(x1, u, setup_params)
+            dx2 = self._compute_derivatives(x2, u, setup_params)
 
             _DC = 500.0
             return (jnp.clip(dx1[0:14],  -_DC, _DC),
