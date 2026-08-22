@@ -792,20 +792,15 @@ class DifferentiableMultiBodyVehicle:
         self._r_params = self.R_params
 
     # ─────────────────────────────────────────────────────────────────────────
-    # §5.1  Powertrain
-    # ─────────────────────────────────────────────────────────────────────────
-
-    # ─────────────────────────────────────────────────────────────────────────
     # §5.3  Core derivatives
     # ─────────────────────────────────────────────────────────────────────────
 
     @partial(jax.jit, static_argnums=(0,))
     def _compute_derivatives(
-        self,
-        x:            jax.Array,
-        u:            jax.Array,
-        setup_params: jax.Array,
+        self, x, u, setup_params,
+        tire_cal: jax.Array = jnp.array([1.0, 1.0, -1.0, 1.0], dtype=jnp.float32),
     ) -> jax.Array:
+
         # ── 74-DOF STATE UNPACKING ──────────────────────────────
         # 1. Kinematics (0:28) - Unchanged
         q = x[0:14]
@@ -1143,15 +1138,24 @@ class DifferentiableMultiBodyVehicle:
         d_kappa_rl = kappa_dot_rl
         d_kappa_rr = kappa_dot_rr
  
-        # Segundo Bloque de Fuerzas Finales: Mapeo Canónico de 4 Esquinas
-        Fx_fl, Fy_fl, sigma_fl = self.tire.compute_force_and_sigma(alpha_t_fl, kappa_t_fl, Fz_fl, gamma_fl, T_ribs_fl, T_gas_fl, v_fl_g, wz=wz)
-        
-        Fx_fr, Fy_fr_tire, sigma_fr = self.tire.compute_force_and_sigma(alpha_t_fr, kappa_t_fr, Fz_fr, -gamma_fr, T_ribs_fr, T_gas_fr, v_fr_g, wz=-wz)
+        mu_f, mu_r, T_opt_ovr, alpha_scl = tire_cal[0], tire_cal[1], tire_cal[2], tire_cal[3]
+
+        Fx_fl, Fy_fl, sigma_fl = self.tire.compute_force_and_sigma(
+            alpha_t_fl, kappa_t_fl, Fz_fl, gamma_fl, T_ribs_fl, T_gas_fl, v_fl_g,
+            wz=wz, mu_scale=mu_f, T_opt_override=T_opt_ovr, alpha_scale=alpha_scl)
+
+        Fx_fr, Fy_fr_tire, sigma_fr = self.tire.compute_force_and_sigma(
+            alpha_t_fr, kappa_t_fr, Fz_fr, -gamma_fr, T_ribs_fr, T_gas_fr, v_fr_g,
+            wz=-wz, mu_scale=mu_f, T_opt_override=T_opt_ovr, alpha_scale=alpha_scl)
         Fy_fr = -Fy_fr_tire
 
-        Fx_rl, Fy_rl, sigma_rl = self.tire.compute_force_and_sigma(alpha_t_rl, kappa_t_rl, Fz_rl, gamma_rl, T_ribs_rl, T_gas_rl, v_rl_g, wz=wz)
-        
-        Fx_rr, Fy_rr_tire, sigma_rr = self.tire.compute_force_and_sigma(alpha_t_rr, kappa_t_rr, Fz_rr, -gamma_rr, T_ribs_rr, T_gas_rr, v_rr_g, wz=-wz)
+        Fx_rl, Fy_rl, sigma_rl = self.tire.compute_force_and_sigma(
+            alpha_t_rl, kappa_t_rl, Fz_rl, gamma_rl, T_ribs_rl, T_gas_rl, v_rl_g,
+            wz=wz, mu_scale=mu_r, T_opt_override=T_opt_ovr, alpha_scale=alpha_scl)
+
+        Fx_rr, Fy_rr_tire, sigma_rr = self.tire.compute_force_and_sigma(
+            alpha_t_rr, kappa_t_rr, Fz_rr, -gamma_rr, T_ribs_rr, T_gas_rr, v_rr_g,
+            wz=-wz, mu_scale=mu_r, T_opt_override=T_opt_ovr, alpha_scale=alpha_scl)
         Fy_rr = -Fy_rr_tire
         
         # Captured for future diagnostics, gradients, or internal logging
@@ -1343,13 +1347,11 @@ class DifferentiableMultiBodyVehicle:
         return next_108[:46]
     
     @partial(jax.jit, static_argnums=(0,))
-    def _compute_derivatives_with_h(
-        self,
-        h_params:     dict,        # ← traced: grad flows through H_net
-        x:            jax.Array,
-        u:            jax.Array,
-        setup_params: jax.Array,
+    def _glrk4_step(
+        self, x, u, setup_params, dt_step,
+        tire_cal: jax.Array = jnp.array([1.0, 1.0, -1.0, 1.0], dtype=jnp.float32),
     ) -> jax.Array:
+
         """
         Identical to _compute_derivatives except:
         1. h_params is a traced argument, not closed over self.H_params.
@@ -1467,7 +1469,7 @@ class DifferentiableMultiBodyVehicle:
         _AUX = 80
 
         # Fully differentiable implicit forward pass
-        dx0         = self._compute_derivatives(x, u, setup_params)
+        dx0 = self._compute_derivatives(x, u, setup_params, tire_cal)
         k1_q, k1_v  = dx0[0:14], dx0[14:28]
         k2_q, k2_v  = k1_q,      k1_v
 
@@ -1482,8 +1484,8 @@ class DifferentiableMultiBodyVehicle:
             v2 = v0 + dt_step * (a21 * k1_v_ + a22 * k2_v_)
             x2 = x.at[0:14].set(q2).at[14:28].set(v2)
 
-            dx1 = self._compute_derivatives(x1, u, setup_params)
-            dx2 = self._compute_derivatives(x2, u, setup_params)
+            dx1 = self._compute_derivatives(x1, u, setup_params, tire_cal)
+            dx2 = self._compute_derivatives(x2, u, setup_params, tire_cal)
 
             _DC = 500.0
             return (jnp.clip(dx1[0:14],  -_DC, _DC),
@@ -1536,7 +1538,8 @@ class DifferentiableMultiBodyVehicle:
         q0 = x[0:14];  v0 = x[14:28];  aux0 = x[28:108]
         _AUX = 80
 
-        dx0 = self._compute_derivatives_with_h(h_params, x, u, setup_params)
+        dx0 = self._compute_derivatives(x, u, setup_params, mu_scale)   # was: (x, u, setup_params)
+
         k1_q, k1_v = dx0[0:14], dx0[14:28]
         k2_q, k2_v = k1_q, k1_v
 
@@ -1551,8 +1554,8 @@ class DifferentiableMultiBodyVehicle:
             v2 = v0 + dt_step * (a21 * k1_v_ + a22 * k2_v_)
             x2 = x.at[0:14].set(q2).at[14:28].set(v2)
 
-            dx1 = self._compute_derivatives_with_h(h_params, x1, u, setup_params)
-            dx2 = self._compute_derivatives_with_h(h_params, x2, u, setup_params)
+            dx1 = self._compute_derivatives(x1, u, setup_params, mu_scale)
+            dx2 = self._compute_derivatives(x2, u, setup_params, mu_scale)
 
             _DC = 500.0
             return (jnp.clip(dx1[0:14],  -_DC, _DC),
@@ -1628,13 +1631,10 @@ class DifferentiableMultiBodyVehicle:
 
     @partial(jax.jit, static_argnums=(0, 5))
     def simulate_step(
-        self,
-        state:      jax.Array,
-        controls:   jax.Array,
-        setup,
-        dt:         float = 0.005,
-        n_substeps: int   = 5,
+        self, state, controls, setup, dt=0.005, n_substeps=5,
+        tire_cal: jax.Array = jnp.array([1.0, 1.0, -1.0, 1.0], dtype=jnp.float32),
     ) -> jax.Array:
+
         """
         Advance simulation by `dt` using `n_substeps` GLRK-4 steps.
 
@@ -1656,7 +1656,7 @@ class DifferentiableMultiBodyVehicle:
         dt_sub = dt / n_substeps
 
         def substep(x, _):
-            return self._glrk4_step(x, controls, setup_vec, dt_sub), None
+            return self._glrk4_step(x, controls, setup_vec, dt_sub, tire_cal), None
         
         # CRITICAL RAM FIX: Checkpoint the substep
         substep_ckpt = jax.checkpoint(substep)

@@ -24,6 +24,27 @@ from config.tire_coeffs import tire_coeffs as TP_DICT
 
 WINDOW_LEN = 250  # 1.25s rolling validation window (200 Hz)
 
+def _estimate_vy_kinematic(ay: np.ndarray, vx: np.ndarray, wz: np.ndarray,
+                            dt: float, tau: float = 2.0) -> np.ndarray:
+    """
+    Leaky-integrator (complementary-filter) estimate of body-frame lateral
+    velocity, used ONLY to seed window initial conditions in
+    run_session_backtest — real v_y is not on the CAN bus.
+
+    Planar rigid-body kinematics: ay_meas ≈ vy_dot + vx*wz
+        => vy_dot ≈ ay_meas - vx*wz
+    The -vy/tau leak term prevents open-loop drift over a full session while
+    preserving the transient dynamics needed for a physically correct vy0
+    at the start of each 1.25s backtest window. Without this, every window
+    currently starts at vy0=0.0 exactly, biasing ay/wz correlation across
+    the whole first braking/turn-in phase of every window.
+    """
+    vy = np.zeros_like(ay)
+    leak = dt / tau
+    for i in range(1, len(ay)):
+        vy_dot = ay[i - 1] - vx[i - 1] * wz[i - 1]
+        vy[i] = vy[i - 1] + dt * vy_dot - leak * vy[i - 1]
+    return vy
 
 def decode_can_csv_to_dataframe(file_path: Path, dbc_path: Path, dt: float = 0.005, lag_samples: int = 14) -> pd.DataFrame:
     with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
@@ -209,23 +230,24 @@ def _standardize_and_resample(df: pd.DataFrame, dt: float, lag_samples: int) -> 
 
 
 @partial(jax.jit, static_argnums=(0, 3))
-def _simulate_all_windows_jit(vehicle: DifferentiableMultiBodyVehicle, x0_batch: jax.Array, u_batch: jax.Array, dt: float):
+def _simulate_all_windows_jit(vehicle: DifferentiableMultiBodyVehicle, x0_batch: jax.Array,
+                               u_batch: jax.Array, dt: float,
+                               tire_cal: jax.Array = jnp.array([1.0, 1.0, -1.0, 1.0], dtype=jnp.float32)):
     setup = vehicle._default_setup_vec
 
     def sim_one_window(x0, u_seq):
         def step_fn(x, u):
-            x_next = vehicle.simulate_step(x, u, setup, dt=dt, n_substeps=2)
+            x_next = vehicle.simulate_step(x, u, setup, dt=dt, n_substeps=2, tire_cal=tire_cal)
             ay = x_next[14] * x_next[19]
             return x_next, jnp.stack([x_next[14], x_next[19], ay])
-
         _, out = jax.lax.scan(step_fn, x0, u_seq)
         return out
 
     return jax.vmap(sim_one_window)(x0_batch, u_batch)
 
 
-def run_session_backtest(vehicle: DifferentiableMultiBodyVehicle, df: pd.DataFrame,
-                          dt: float = 0.005, steer_sign: float = 1.0, verbose: bool = True) -> dict:
+def run_session_backtest(vehicle, df, dt=0.005, steer_sign=1.0, verbose=True,
+                          tire_cal: jax.Array = jnp.array([1.0, 1.0, -1.0, 1.0], dtype=jnp.float32)):
     N = len(df)
     n_windows = N // WINDOW_LEN
     if n_windows == 0:
@@ -243,7 +265,7 @@ def run_session_backtest(vehicle: DifferentiableMultiBodyVehicle, df: pd.DataFra
     real_wz_all = np.deg2rad(_extract_1d(df, 'yaw_rate_deg_s'))
     real_ay_all = _extract_1d(df, 'ay_mps2')
     real_vx_all = _extract_1d(df, 'vx_mps')
-    real_vy_all = _extract_1d(df, 'v_y') if 'v_y' in df.columns else np.zeros(N)
+    real_vy_all = _estimate_vy_kinematic(real_ay_all, real_vx_all, real_wz_all, dt)  # was: np.zeros(N)
 
     u_windows, x0_windows, real_vx_wins, real_wz_wins, real_ay_wins = [], [], [], [], []
 
@@ -268,7 +290,7 @@ def run_session_backtest(vehicle: DifferentiableMultiBodyVehicle, df: pd.DataFra
     u_batch = jnp.asarray(np.stack(u_windows))
     x0_batch = jnp.asarray(np.stack(x0_windows))
 
-    sim_out = _simulate_all_windows_jit(vehicle, x0_batch, u_batch, dt)
+    sim_out = _simulate_all_windows_jit(vehicle, x0_batch, u_batch, dt, tire_cal)
     sim_out_np = np.array(sim_out)
 
     per_window_ay_max = np.max(np.abs(sim_out_np[:, :, 2]), axis=1)

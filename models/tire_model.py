@@ -574,82 +574,62 @@ class PacejkaTire:
 
     def _thermal_grip_factor(
         self,
-        T_ribs: jax.Array,   # (3,) surface temperatures
-        T_gas:  jax.Array,   # scalar internal gas temp
+        T_ribs: jax.Array,
+        T_gas:  jax.Array,
+        T_opt:  jax.Array = None,   # NEW: EKF-estimated optimal temp override
     ) -> jax.Array:
-        """
-        μ_thermal = exp(-β·(T_eff - T_opt)²)
-        Gaussian thermal window around T_opt, with Gay-Lussac pressure correction.
-        """
+        T_opt_eff = self.T_opt if T_opt is None else T_opt   # static Python branch — fine under jit
         T_eff   = jnp.mean(T_ribs[:3])
-        beta    = 0.0008        # K⁻²  (peak width ≈ 35°C)
-        mu_T    = jnp.exp(-beta * (T_eff - self.T_opt) ** 2)
+        beta    = 0.0008
+        mu_T    = jnp.exp(-beta * (T_eff - T_opt_eff) ** 2)
 
         T_ref   = self.T_env + 273.15
         T_gas_K = T_gas + 273.15
         P_ratio = jnp.clip(T_gas_K / (T_ref + 1e-3), 0.70, 1.30)
         mu_P    = 1.0 + 0.05 * (P_ratio - 1.0)
-
         return jnp.clip(mu_T * mu_P, 0.30, 1.20)
-
-    # ─────────────────────────────────────────────────────────────────────────
-    # §4.4  Pacejka MF6.2 force computation
-    # ─────────────────────────────────────────────────────────────────────────
 
     def compute_force_and_sigma(
         self,
-        alpha:          jax.Array,
-        kappa:          jax.Array,
-        Fz:             jax.Array,
-        gamma:          jax.Array,
-        T_ribs:         jax.Array,   # (3,) surface rib temperatures
-        T_gas:          jax.Array,   # scalar internal gas temperature
-        Vx:             jax.Array,
-        stochastic_key          = None,
-        wz:             jax.Array = jnp.array(0.0),
+        alpha, kappa, Fz, gamma, T_ribs, T_gas, Vx,
+        stochastic_key   = None,
+        wz:               jax.Array = jnp.array(0.0),
+        mu_scale:         jax.Array = jnp.array(1.0),
+        T_opt_override:   jax.Array = jnp.array(-1.0),   # NEW: <0 = "use default T_opt"
+        alpha_scale:      jax.Array = jnp.array(1.0),    # NEW: shifts Fy peak slip angle
     ) -> tuple[jax.Array, jax.Array, jax.Array]:
-        """
-        Full Pacejka MF6.2 lateral and longitudinal force + GP Uncertainty.
-        Returns (Fx, Fy, sigma).
-        Sign convention: positive Fy = left force (SAE z-up).
-        """
         c   = self.coeffs
         eps = 1e-6
 
         Fz0     = c.get('FNOMIN', 654.0)
-        # Permanently shield Pacejka exponentials from optimizer spikes
-        Fz_safe = jnp.clip(Fz, 10.0, 15000.0) 
+        Fz_safe = jnp.clip(Fz, 10.0, 15000.0)
         dfz     = (Fz_safe - Fz0) / (Fz0 + eps)
 
-        lam_muy = self._thermal_grip_factor(T_ribs, T_gas)
-        gam     = gamma
+        # EKF-estimated T_opt: sentinel -1.0 means "not overridden"
+        T_opt_eff = jnp.where(T_opt_override < 0.0, self.T_opt, T_opt_override)
+        lam_muy   = self._thermal_grip_factor(T_ribs, T_gas, T_opt=T_opt_eff) * mu_scale
+        gam       = gamma
 
-        # ════════════════════════════════════════════════════════════════════
-        # PURE LATERAL FORCE  (MF6.2)
-        # ════════════════════════════════════════════════════════════════════
-        PCY1 = c.get('PCY1',  1.53041)
-        PDY1 = c.get('PDY1',  2.40275)
-        PDY2 = c.get('PDY2',  0.343535)
-        PDY3 = c.get('PDY3',  3.89743)
-        PEY1 = c.get('PEY1',  0.000)
-        PEY2 = c.get('PEY2', -0.280762)
-        PEY3 = c.get('PEY3',  0.70403)
-        PEY4 = c.get('PEY4', -0.478297)
-        PKY1 = c.get('PKY1', 53.2421)
-        PKY2 = c.get('PKY2',  2.38205)
-        PKY3 = c.get('PKY3',  0.15)
-        PKY4 = c.get('PKY4',  2.0)
-        PHY1 = c.get('PHY1', -0.0009)
-        PHY2 = c.get('PHY2', -0.00082)
-        PVY1 = c.get('PVY1',  0.045)
-        PVY2 = c.get('PVY2', -0.024)
+        # ── (unchanged block down to Ky) ──
+        PCY1 = c.get('PCY1',  1.53041); PDY1 = c.get('PDY1',  2.40275)
+        PDY2 = c.get('PDY2',  0.343535); PDY3 = c.get('PDY3',  3.89743)
+        PEY1 = c.get('PEY1',  0.000); PEY2 = c.get('PEY2', -0.280762)
+        PEY3 = c.get('PEY3',  0.70403); PEY4 = c.get('PEY4', -0.478297)
+        PKY1 = c.get('PKY1', 53.2421); PKY2 = c.get('PKY2',  2.38205)
+        PKY3 = c.get('PKY3',  0.15);   PKY4 = c.get('PKY4',  2.0)
+        PHY1 = c.get('PHY1', -0.0009); PHY2 = c.get('PHY2', -0.00082)
+        PVY1 = c.get('PVY1',  0.045);  PVY2 = c.get('PVY2', -0.024)
 
         SHy  = PHY1 + PHY2 * dfz
         SVy  = Fz_safe * (PVY1 + PVY2 * dfz) * lam_muy
 
-        Ky   = (PKY1 * Fz0
-                * jnp.sin(PKY4 * jnp.arctan(Fz_safe / jnp.maximum(PKY2 * Fz0, eps)))
-                * (1.0 - PKY3 * safe_abs(gam)))
+        # alpha_scale rescales cornering stiffness Ky → shifts the peak slip
+        # angle location: x_y = By·a_s, peak at a_s ≈ const/By, so scaling Ky
+        # (which drives By) directly implements the EKF's "b_scale" shift.
+        Ky = (PKY1 * Fz0
+              * jnp.sin(PKY4 * jnp.arctan(Fz_safe / jnp.maximum(PKY2 * Fz0, eps)))
+              * (1.0 - PKY3 * safe_abs(gam))) * alpha_scale
+
         Dy   = PDY1 * (1.0 + PDY2 * dfz) * (1.0 - PDY3 * gam ** 2) * Fz_safe * lam_muy
         Cy   = PCY1
         By   = Ky / jnp.maximum(Cy * Dy, eps)
