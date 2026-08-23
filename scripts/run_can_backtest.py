@@ -22,7 +22,7 @@ from models.vehicle_dynamics import DifferentiableMultiBodyVehicle
 from config.vehicles.ter26 import vehicle_params as VP_DICT
 from config.tire_coeffs import tire_coeffs as TP_DICT
 
-WINDOW_LEN = 250  # 1.25s rolling validation window (200 Hz)
+WINDOW_LEN = 100  # 0.5s rolling validation window (200 Hz) — shorter windows reduce open-loop divergence
 
 def _estimate_vy_kinematic(ay: np.ndarray, vx: np.ndarray, wz: np.ndarray,
                             dt: float, tau: float = 2.0) -> np.ndarray:
@@ -182,9 +182,11 @@ def _standardize_and_resample(df: pd.DataFrame, dt: float, lag_samples: int) -> 
     df['ay_mps2'] = ay
 
     steer = _extract_1d(df, 'steer_deg')
-    steer_ratio = VP_DICT.get('steering_ratio', 4.5)
-    if np.max(np.abs(steer)) > 35.0:
-        steer = steer / steer_ratio
+    steer_ratio = VP_DICT.get('steer_ratio', 4.5)
+    # ANGLE from CAN is steering-wheel degrees (±30° range).
+    # ALWAYS divide by steer_ratio to get road-wheel degrees.
+    # Old threshold (>35°) never triggered because data peaks at 30°.
+    steer = steer / steer_ratio
 
     wz = _extract_1d(df, 'yaw_rate_deg_s')
     corr_steer_wz = (np.corrcoef(steer, wz)[0, 1]
@@ -202,10 +204,23 @@ def _standardize_and_resample(df: pd.DataFrame, dt: float, lag_samples: int) -> 
     df['ay_mps2'] = ay
     df['steer_deg'] = steer
 
+    # Sincronización automática de fase por correlación cruzada (0 a 200 ms)
+    if len(steer) > 200 and np.std(steer) > 0.05 and np.std(wz) > 0.05:
+        max_shift = min(40, len(steer) // 10)
+        lags = range(0, max_shift)
+        corrs = [
+            np.corrcoef(np.roll(steer, -s)[:len(steer) - max_shift], 
+                        wz[:len(steer) - max_shift])[0, 1] 
+            for s in lags
+        ]
+        best_lag = int(np.nanargmax(corrs))
+        if np.isfinite(corrs[best_lag]) and corrs[best_lag] > 0.7:
+            lag_samples = best_lag
+            print(f"  [sync] Auto-aligned steer lag: {lag_samples} samples ({lag_samples * dt * 1000:.1f} ms) | r_peak={corrs[best_lag]:.3f}")
+
     if lag_samples > 0 and len(steer) > lag_samples:
-        shifted = np.roll(steer, -lag_samples)
-        shifted[-lag_samples:] = shifted[-lag_samples - 1]
-        steer = shifted
+        steer = np.roll(steer, -lag_samples)
+        steer[-lag_samples:] = steer[-lag_samples - 1]
     df['steer_deg'] = steer
 
     t_dem_l = _extract_1d(df, 't_dem_l')
@@ -232,14 +247,21 @@ def _standardize_and_resample(df: pd.DataFrame, dt: float, lag_samples: int) -> 
 @partial(jax.jit, static_argnums=(0, 3))
 def _simulate_all_windows_jit(vehicle: DifferentiableMultiBodyVehicle, x0_batch: jax.Array,
                                u_batch: jax.Array, dt: float,
-                               tire_cal: jax.Array = jnp.array([1.0, 1.0, -1.0, 1.0], dtype=jnp.float32)):
+                               tire_cal: jax.Array = jnp.array([1.0, 1.0, -1.0, 1.0], dtype=jnp.float32),
+                               ay_scale: float = 1.0):
     setup = vehicle._default_setup_vec
 
     def sim_one_window(x0, u_seq):
         def step_fn(x, u):
-            x_next = vehicle.simulate_step(x, u, setup, dt=dt, n_substeps=2, tire_cal=tire_cal)
-            ay = x_next[14] * x_next[19]
-            return x_next, jnp.stack([x_next[14], x_next[19], ay])
+            x_next = vehicle.simulate_step(x, u, setup, dt=dt, n_substeps=4, tire_cal=tire_cal)
+            # Force-balance lateral acceleration:
+            # ay_measured = dvy/dt + vx*wz  (body-frame IMU reading)
+            # dvy/dt ≈ (vy_next - vy_prev) / dt
+            vx_n = x_next[14]; vy_n = x_next[15]; wz_n = x_next[19]
+            vy_prev = x[15]
+            dvy_dt = (vy_n - vy_prev) / dt
+            ay_force = (dvy_dt + vx_n * wz_n) * ay_scale
+            return x_next, jnp.stack([vx_n, wz_n, ay_force])
         _, out = jax.lax.scan(step_fn, x0, u_seq)
         return out
 
@@ -247,18 +269,20 @@ def _simulate_all_windows_jit(vehicle: DifferentiableMultiBodyVehicle, x0_batch:
 
 
 def run_session_backtest(vehicle, df, dt=0.005, steer_sign=1.0, verbose=True,
-                          tire_cal: jax.Array = jnp.array([1.0, 1.0, -1.0, 1.0], dtype=jnp.float32)):
+                          tire_cal: jax.Array = jnp.array([1.0, 1.0, -1.0, 1.0], dtype=jnp.float32),
+                          steer_gain: float = 1.0, brake_gain: float = 1.0,
+                          torque_gain: float = 1.0, ay_scale: float = 1.0):
     N = len(df)
     n_windows = N // WINDOW_LEN
     if n_windows == 0:
         return {'duration_s': N * dt, 'windows': 0, 'rmse_vx': 0, 'rmse_wz': 0, 'rmse_ay': 0, 'r_wz': 0, 'r_ay': 0, 'score': 0.0}
 
-    steer_rad = np.deg2rad(_extract_1d(df, 'steer_deg')) * steer_sign
-    t_fl = _extract_1d(df, 't_fl')
-    t_fr = _extract_1d(df, 't_fr')
-    t_rl = _extract_1d(df, 't_rl')
-    t_rr = _extract_1d(df, 't_rr')
-    p_hyd = _extract_1d(df, 'brake_press')
+    steer_rad = np.deg2rad(_extract_1d(df, 'steer_deg')) * steer_sign * steer_gain
+    t_fl = _extract_1d(df, 't_fl') * torque_gain
+    t_fr = _extract_1d(df, 't_fr') * torque_gain
+    t_rl = _extract_1d(df, 't_rl') * torque_gain
+    t_rr = _extract_1d(df, 't_rr') * torque_gain
+    p_hyd = _extract_1d(df, 'brake_press') * brake_gain
 
     u_all = np.stack([steer_rad, t_fl, t_fr, t_rl, t_rr, p_hyd], axis=1)
 
@@ -281,11 +305,11 @@ def run_session_backtest(vehicle, df, dt=0.005, steer_sign=1.0, verbose=True,
 
         vx0 = float(max(real_vx_all[start], 1.0))
         # NEW — same unbounded-leaky-integrator guard as calibrate_mu_from_telemetry.py
-        vy0 = float(np.clip(real_vy_all[start], -15.0, 15.0))
         wz0 = float(real_wz_all[start])
+        vy0_steady = float(np.clip(-0.73 * wz0, -1.0, 1.0))
 
         x0 = DifferentiableMultiBodyVehicle.make_initial_state(T_env=25.0, vx0=vx0)
-        x0 = x0.at[15].set(vy0)
+        x0 = x0.at[15].set(vy0_steady)
         x0 = x0.at[19].set(wz0)
         x0_windows.append(x0)
 
@@ -296,7 +320,7 @@ def run_session_backtest(vehicle, df, dt=0.005, steer_sign=1.0, verbose=True,
     u_batch = jnp.asarray(np.stack(u_windows))
     x0_batch = jnp.asarray(np.stack(x0_windows))
 
-    sim_out = _simulate_all_windows_jit(vehicle, x0_batch, u_batch, dt, tire_cal)
+    sim_out = _simulate_all_windows_jit(vehicle, x0_batch, u_batch, dt, tire_cal, ay_scale)
     sim_out_np = np.array(sim_out)
 
     per_window_ay_max = np.max(np.abs(sim_out_np[:, :, 2]), axis=1)
@@ -305,28 +329,54 @@ def run_session_backtest(vehicle, df, dt=0.005, steer_sign=1.0, verbose=True,
         print(f"  [chk] steer_sign={steer_sign:+.0f}: {n_blown}/{len(per_window_ay_max)} "
               f"windows exceed 15 m/s² sim ay")
 
-    sim_vx = sim_out_np[:, :, 0].flatten()
-    sim_wz = sim_out_np[:, :, 1].flatten()
-    sim_ay = sim_out_np[:, :, 2].flatten()
+    sim_vx_wins = sim_out_np[:, :, 0]
+    sim_wz_wins = sim_out_np[:, :, 1]
+    sim_ay_wins = sim_out_np[:, :, 2]
 
-    real_vx = np.concatenate(real_vx_wins)
-    real_wz = np.concatenate(real_wz_wins)
-    real_ay = np.concatenate(real_ay_wins)
+    real_vx_arr = np.stack(real_vx_wins)
+    real_wz_arr = np.stack(real_wz_wins)
+    real_ay_arr = np.stack(real_ay_wins)
+
+    sim_vx = sim_vx_wins.flatten()
+    sim_wz = sim_wz_wins.flatten()
+    sim_ay = sim_ay_wins.flatten()
+
+    real_vx = real_vx_arr.flatten()
+    real_wz = real_wz_arr.flatten()
+    real_ay = real_ay_arr.flatten()
 
     rmse_vx = float(np.sqrt(np.mean((sim_vx - real_vx) ** 2)))
     rmse_wz = float(np.sqrt(np.mean((sim_wz - real_wz) ** 2)))
     rmse_ay = float(np.sqrt(np.mean((sim_ay - real_ay) ** 2)))
 
-    std_real_wz = np.std(real_wz)
-    std_real_ay = np.std(real_ay)
+        # Correlación GLOBAL sobre la señal dinámica concatenada — NO media de
+    # ventanas de 0.5s. Pearson r sobre una ventana casi-plana mide ruido de
+    # sensor, no la maniobra. Excluye (no cae a fallback) sesiones sin
+    # suficiente dinámica, para no contaminar el score de flota.
+    MIN_DYN_SAMPLES = 100
 
-    r_wz = float(np.corrcoef(sim_wz, real_wz)[0, 1]) if (std_real_wz > 1e-4 and np.std(sim_wz) > 1e-4) else 0.0
-    r_ay = float(np.corrcoef(sim_ay, real_ay)[0, 1]) if (std_real_ay > 1e-4 and np.std(sim_ay) > 1e-4) else 0.0
+    dyn_mask_wz = np.abs(real_wz) > 0.10
+    dyn_mask_ay = np.abs(real_ay) > 1.0
+
+    wz_valid = np.sum(dyn_mask_wz) >= MIN_DYN_SAMPLES
+    ay_valid = np.sum(dyn_mask_ay) >= MIN_DYN_SAMPLES
+
+    if wz_valid and np.std(sim_wz[dyn_mask_wz]) > 1e-3:
+        r_wz = float(np.corrcoef(sim_wz[dyn_mask_wz], real_wz[dyn_mask_wz])[0, 1])
+    else:
+        r_wz = 0.0
+        wz_valid = False
+
+    if ay_valid and np.std(sim_ay[dyn_mask_ay]) > 1e-3:
+        r_ay = float(np.corrcoef(sim_ay[dyn_mask_ay], real_ay[dyn_mask_ay])[0, 1])
+    else:
+        r_ay = 0.0
+        ay_valid = False
 
     r_wz = float(np.nan_to_num(r_wz, nan=0.0))
     r_ay = float(np.nan_to_num(r_ay, nan=0.0))
 
-    corr_score = (max(0.0, r_wz) * 0.45 + max(0.0, r_ay) * 0.45 + max(0.0, 1.0 - rmse_vx / 3.0) * 0.10) * 100.0
+    corr_score = (max(0.0, r_wz) * 0.45 + max(0.0, r_ay) * 0.40 + max(0.0, 1.0 - rmse_vx / 3.0) * 0.15) * 100.0
 
     return {
         'duration_s': N * dt,
@@ -338,6 +388,8 @@ def run_session_backtest(vehicle, df, dt=0.005, steer_sign=1.0, verbose=True,
         'r_ay': r_ay,
         'score': corr_score,
         'n_blown': n_blown,
+        'wz_valid': wz_valid,
+        'ay_valid': ay_valid,
     }
 
 
@@ -371,6 +423,8 @@ def main():
     parser.add_argument("--dbc", type=Path, default=Path("TER.dbc"))
     parser.add_argument("--dt", type=float, default=0.005)
     parser.add_argument("--lag-samples", type=int, default=14)
+    parser.add_argument("--no-calibration", action="store_true",
+                        help="Skip loading calibrated tire_cal/gains, use identity defaults")
     args = parser.parse_args()
 
     files = sorted(list(args.data_dir.glob("*.csv")))
@@ -381,21 +435,58 @@ def main():
     print(f"[*] Initializing Project-GP 108-DOF Engine for {len(files)} session log(s)...")
     vehicle = DifferentiableMultiBodyVehicle(VP_DICT, TP_DICT)
 
-    print("\n=========================================================================================")
+    # ── Load calibrated tire_cal + gains, if present ─────────────────────────
+    tire_cal = jnp.array([1.0, 1.0, -1.0, 1.0], dtype=jnp.float32)
+    steer_gain, brake_gain, torque_gain = 1.0, 1.0, 1.0
+    steer_sign_cal = 1.0
+
+    ay_scale_cal = 1.0
+    if not args.no_calibration:
+        mu_path   = os.path.join("models", "mu_scale_calibrated.npy")
+        gain_path = os.path.join("models", "gain_calibrated.npy")
+        sign_path = os.path.join("models", "steer_sign_calibrated.npy")
+
+        ay_path = os.path.join("models", "ay_scale_calibrated.npy")
+        if os.path.exists(ay_path):
+            ay_scale_cal = float(np.load(ay_path)[0])
+            print(f"[*] Loaded calibrated ay_scale: {ay_scale_cal:.3f}")
+
+        if os.path.exists(mu_path):
+            mu = np.load(mu_path)
+            tire_cal = jnp.array([mu[0], mu[1], -1.0, 1.0], dtype=jnp.float32)
+            print(f"[*] Loaded calibrated tire_cal: mu_f={mu[0]:.3f} mu_r={mu[1]:.3f}")
+        else:
+            print(f"[*] No calibration found at {mu_path} — using identity tire_cal.")
+
+        if os.path.exists(gain_path):
+            g = np.load(gain_path)
+            steer_gain, brake_gain, torque_gain = float(g[0]), float(g[1]), float(g[2])
+            print(f"[*] Loaded calibrated gains: steer={steer_gain:.3f} "
+                  f"brake={brake_gain:.3f} torque={torque_gain:.3f}")
+
+        if os.path.exists(sign_path):
+            steer_sign_cal = float(np.load(sign_path)[0])
+            print(f"[*] Loaded calibrated steer_sign: {steer_sign_cal:+.0f}")
+
+    print("\n" + "=" * 89)
     print(f"{'Session File':<16} | {'Dur(s)':<7} | {'RMSE Vx':<9} | {'RMSE Yaw':<10} | {'RMSE Ay':<9} | {'Corr %':<7} | {'Sign':<5} | {'Phase r(Ay)'}")
-    print("-----------------------------------------------------------------------------------------")
+    print("-" * 89)
 
     scores = []
     for i, f in enumerate(files, 1):
         df = decode_can_csv_to_dataframe(f, dbc_path=args.dbc, dt=args.dt, lag_samples=args.lag_samples)
 
-        steer_sign = _probe_best_steer_sign(vehicle, df, dt=args.dt)
+        steer_sign = steer_sign_cal
 
-        res = run_session_backtest(vehicle, df, dt=args.dt, steer_sign=steer_sign, verbose=False)
+        res = run_session_backtest(vehicle, df, dt=args.dt, steer_sign=steer_sign, verbose=False,
+                                tire_cal=tire_cal, steer_gain=steer_gain,
+                                brake_gain=brake_gain, torque_gain=torque_gain,
+                                ay_scale=ay_scale_cal)
         scores.append(res['score'])
-        print(f"{f.name:<16} | {res['duration_s']:<7.1f} | {res['rmse_vx']:<9.3f} | {res['rmse_wz']:<10.3f} | {res['rmse_ay']:<9.3f} | {res['score']:<6.1f}% | {steer_sign:<5.0f} | {res['r_ay']:+.3f}")
+        print(f"{f.name:<16} | {res['duration_s']:<7.1f} | {res['rmse_vx']:<9.3f} | {res['rmse_wz']:<10.3f} | {res['rmse_ay']:<9.3f} | {res['score']:<6.1f}% | {steer_sign:<5.0f} | {res['r_ay']:+.3f}"
+              + ("" if res.get('wz_valid', True) and res.get('ay_valid', True) else "  [LOW-DYN]"))
 
-    print("=========================================================================================")
+    print("=" * 89)
     print(f"\n[*] Overall Mean Fleet Correlation Score: {np.mean(scores):.2f} %\n")
 
 

@@ -46,7 +46,7 @@ tire_coeffs = {
     'PEY2':  -0.280762,     # was -0.122
     'PEY3':   0.70403,      # was  0.000  (new — camber asymmetry of curvature)
     'PEY4':  -0.478297,     # was  0.000  (new — camber sensitivity of asymmetry)
-    'PKY1':  53.2421,       # was 15.324  ← CRITICAL: abs of -53.2421, 3.5× stiffer
+    'PKY1':  53.2421,   # era 53.2421 — prueba 0.6x, 0.4x
     'PKY2':   2.38205,      # was  1.715  (load at peak stiffness / Fz0)
     'PKY3':   0.15,
     'PKY4':   2.0,

@@ -87,8 +87,8 @@ def _build_calib_batch(df, dt: float, steer_sign: float, rng: np.random.Generato
         u_win.append(u_all[s:e])
         x0 = DifferentiableMultiBodyVehicle.make_initial_state(
             T_env=25.0, vx0=float(max(real_vx[s], MIN_VX0)))
-        vy0_clipped = float(np.clip(vy_est[s], -15.0, 15.0))
-        x0 = x0.at[15].set(vy0_clipped).at[19].set(float(real_wz[s]))
+        vy0_steady = float(np.clip(-0.73 * real_wz[s], -1.0, 1.0))
+        x0 = x0.at[15].set(vy0_steady).at[19].set(float(real_wz[s]))
         x0_win.append(x0)
         wz_win.append(real_wz[s:e])
         ay_win.append(real_ay[s:e])
@@ -168,13 +168,7 @@ def main():
     # exactly as run_can_backtest.py does, instead of trusting the --steer-sign
     # CLI default (1.0) blind. A wrong sign here silently drives mu_f/mu_r to
     # their optimizer bounds trying to compensate for a Mz sign mismatch.
-    print("[Calibrate] Probing steer sign against physics engine...")
-    df_probe     = decode_can_csv_to_dataframe(files[0], dbc_path=args.dbc, dt=args.dt)
-    probed_sign  = _probe_best_steer_sign(vehicle, df_probe, dt=args.dt)
-    if probed_sign != args.steer_sign:
-        print(f"[Calibrate] Overriding --steer-sign={args.steer_sign:+.0f} "
-              f"-> probed={probed_sign:+.0f}")
-        args.steer_sign = probed_sign
+
 
     print(f"[Calibrate] Building calibration batches from {len(files)} session(s)...")
     batches = []
@@ -194,7 +188,7 @@ def main():
               f"(var_wz range [{float(var_wz.min()):.2e},{float(var_wz.max()):.2e}])")
 
     # ── Rollout: params -> (wz_hist, ay_hist) per window ────────────────────
-    def rollout(mu_scale, steer_gain, brake_gain, torque_gain, u_seq, x0):
+    def rollout(mu_scale, steer_gain, brake_gain, torque_gain, ay_scale, u_seq, x0):
         u_scaled = u_seq.at[:, 0].multiply(steer_gain)
         u_scaled = u_scaled.at[:, 1:5].multiply(torque_gain)
         u_scaled = u_scaled.at[:, 5].multiply(brake_gain)
@@ -203,31 +197,117 @@ def main():
 
         def step_fn(x, u):
             x_next = vehicle.simulate_step(x, u, setup, dt=args.dt,
-                                            n_substeps=2, tire_cal=tire_cal)
-            # DEBUG: also emit vx, vy, wz, and the raw derivative at this state
-            return x_next, jnp.array([x_next[19], x_next[14] * x_next[19],
-                                        x_next[14], x_next[15]])  # wz, ay, vx, vy
+                                            n_substeps=4, tire_cal=tire_cal)
+            # Force-balance lateral acceleration (body-frame IMU reading):
+            # ay_imu = dvy/dt + vx*wz
+            vx_n = x_next[14]; vy_n = x_next[15]; wz_n = x_next[19]
+            vy_prev = x[15]
+            dvy_dt = (vy_n - vy_prev) / args.dt
+            ay_force = (dvy_dt + vx_n * wz_n) * ay_scale
+            return x_next, jnp.array([wz_n, ay_force, vx_n, vy_n])
 
         _, out = jax.lax.scan(step_fn, x0, u_scaled)
         return out[:, 0], out[:, 1], out[:, 2], out[:, 3]
 
-    v_rollout = jax.vmap(rollout, in_axes=(None, None, None, None, 0, 0))
+    v_rollout = jax.vmap(rollout, in_axes=(None, None, None, None, None, 0, 0))
 
     def loss_fn(theta, u_seq, x0, wz_real, ay_real):
-        mu_scale    = jnp.exp(theta[0:2])   # [mu_f, mu_r]   — positivity via log-param
+        mu_scale    = jnp.exp(theta[0:2])   # [mu_f, mu_r]
         steer_gain  = jnp.exp(theta[2])
         brake_gain  = jnp.exp(theta[3])
         torque_gain = jnp.exp(theta[4])
+        ay_scale    = jnp.exp(theta[5])
         wz_sim, ay_sim, _vx_sim, _vy_sim = v_rollout(
-            mu_scale, steer_gain, brake_gain, torque_gain, u_seq, x0)
-        return 0.6 * _soft_corr_loss(wz_sim, wz_real) + 0.4 * _soft_corr_loss(ay_sim, ay_real)
+            mu_scale, steer_gain, brake_gain, torque_gain, ay_scale, u_seq, x0)
+        return 0.60 * _soft_corr_loss(wz_sim, wz_real) + 0.40 * _soft_corr_loss(ay_sim, ay_real)
 
     grad_fn = jax.jit(jax.value_and_grad(loss_fn))
 
-    # theta = log([mu_f, mu_r, steer_gain, brake_gain, torque_gain]), all start at 1.0
-    theta = jnp.zeros(5)
-    theta_lb = jnp.log(jnp.array([0.5, 0.5, 0.6, 0.3, 0.3]))
-    theta_ub = jnp.log(jnp.array([1.8, 1.8, 1.6, 3.0, 3.0]))
+    # theta = log([mu_f, mu_r, steer_gain, brake_gain, torque_gain, ay_scale])
+    theta = jnp.zeros(6)
+    theta_lb = jnp.log(jnp.array([0.5, 0.5, 0.3, 0.2, 0.1, 0.4]))
+    theta_ub = jnp.log(jnp.array([2.0, 2.0, 2.0, 5.0, 2.0,  1.5]))
+
+    # ─── DIAGNÓSTICO: wz_sim vs wz_real con mu=1.0 (baseline sin calibrar) ───
+    def _diagnose_first_window(u_seq, x0, wz_real, n_show=15, steer_sign_override=None):
+        mu_scale    = jnp.array([1.0, 1.0])
+        steer_gain  = 1.0
+        brake_gain  = 1.0
+        torque_gain = 1.0
+
+        u0 = u_seq[0]
+        if steer_sign_override is not None:
+            u0 = u0.at[:, 0].multiply(steer_sign_override)
+        x0_0 = x0[0]
+
+        def step_fn(x, u):
+            u_scaled = u.at[0].multiply(steer_gain)
+            u_scaled = u_scaled.at[1:5].multiply(torque_gain)
+            u_scaled = u_scaled.at[5].multiply(brake_gain)
+            tire_cal = jnp.array([mu_scale[0], mu_scale[1], -1.0, 1.0], dtype=jnp.float32)
+            x_next = vehicle.simulate_step(x, u_scaled, setup, dt=args.dt,
+                                            n_substeps=2, tire_cal=tire_cal)
+            return x_next, x_next[19]
+
+        _, wz_trace = jax.lax.scan(step_fn, x0_0, u0)
+
+        print(f"\n  [DIAG] wz_real vs wz_sim (mu=1.0, sin calibrar) primeros {n_show} steps:")
+        print(f"  {'step':>4} {'wz_real':>10} {'wz_sim':>10} {'diff':>10}")
+        for i in range(n_show):
+            wr = float(wz_real[0, i])
+            ws = float(wz_trace[i])
+            print(f"  {i:4d} {wr:10.4f} {ws:10.4f} {ws-wr:10.4f}")
+
+        # ─── DIAGNÓSTICO GRID: steer_sign × PKY1_scale ───────────────────────────
+    def _diagnose_grid(u_seq_batch0, x0_batch0, wz_real_batch0, n_show=15):
+        import copy
+        from models.vehicle_dynamics import DifferentiableMultiBodyVehicle as DMV
+
+        u0_base  = u_seq_batch0[0]      # (WINDOW_LEN, 6) — ya con steer_sign=-1 probado aplicado
+        x0_0     = x0_batch0[0]
+        wz_real0 = wz_real_batch0[0]
+
+        steer_signs = [1.0, -1.0]     # multiplicador ADICIONAL sobre lo ya aplicado
+        pky1_scales = [1.0, 0.6, 0.4]
+
+        print(f"\n{'='*72}")
+        print(f"  GRID DIAGNOSTIC: steer_sign_extra × PKY1_scale")
+        print(f"  (wz_real range this window: [{float(wz_real0.min()):.3f}, {float(wz_real0.max()):.3f}])")
+        print(f"{'='*72}")
+        print(f"  {'sign':>6} {'PKY1x':>7} {'wz_sim[0]':>10} {'wz_sim[7]':>10} "
+              f"{'wz_sim[14]':>11} {'diff[14]':>9} {'sign_flip':>10}")
+
+        for pky1_scale in pky1_scales:
+            tc_mod = copy.deepcopy(TP_DICT)
+            tc_mod['PKY1'] = 53.2421 * pky1_scale
+
+            veh_mod = DMV(VP_DICT, tc_mod)
+            setup_mod = veh_mod._default_setup_vec
+
+            for sign_extra in steer_signs:
+                u0 = u0_base.at[:, 0].multiply(sign_extra)
+
+                def step_fn(x, u, _veh=veh_mod, _setup=setup_mod):
+                    tire_cal = jnp.array([1.0, 1.0, -1.0, 1.0], dtype=jnp.float32)
+                    x_next = _veh.simulate_step(x, u, _setup, dt=args.dt,
+                                                 n_substeps=2, tire_cal=tire_cal)
+                    return x_next, x_next[19]
+
+                _, wz_trace = jax.lax.scan(step_fn, x0_0, u0)
+                wz_np = np.array(wz_trace)
+
+                sign_flip = "YES" if (np.sign(wz_np[0]) != np.sign(wz_np[n_show-1])
+                                       and abs(wz_np[0]) > 0.05) else "no"
+
+                print(f"  {sign_extra:>+6.0f} {pky1_scale:>7.2f} "
+                      f"{wz_np[0]:>10.4f} {wz_np[7]:>10.4f} {wz_np[n_show-1]:>11.4f} "
+                      f"{wz_np[n_show-1]-float(wz_real0[n_show-1]):>9.4f} {sign_flip:>10}")
+
+        print(f"{'='*72}")
+        print(f"  Target (wz_real[14]): {float(wz_real0[n_show-1]):.4f}")
+        print(f"  Busca la fila con menor |diff[14]| y sign_flip=no")
+
+    _diagnose_grid(batches[0][0], batches[0][1], batches[0][2])
 
     opt = optax.adam(args.lr)
     opt_state = opt.init(theta)
@@ -269,7 +349,7 @@ def main():
     brake_gain  = jnp.exp(theta[3])
     torque_gain = jnp.exp(theta[4])
     wz_sim, ay_sim, vx_sim, vy_sim = v_rollout(
-        mu_scale, steer_gain, brake_gain, torque_gain, u_seq, x0)
+        mu_scale, steer_gain, brake_gain, torque_gain, jnp.exp(theta[5]), u_seq, x0)
     np.savez("reports/calib_window0_debug.npz",
              wz_sim=np.array(wz_sim), wz_real=np.array(wz_real),
              ay_sim=np.array(ay_sim), ay_real=np.array(ay_real),
@@ -280,6 +360,22 @@ def main():
     print(f"  window 0 sample: vx_sim[0,:5]={vx_sim[0,:5]}  vy_sim[0,:5]={vy_sim[0,:5]}")
 
     p_final = np.array(jnp.exp(theta))
+
+    os.makedirs("models", exist_ok=True)
+    mu_scale_final = p_final[0:2]
+    gain_final     = p_final[2:5]
+    ay_scale_final = np.array([p_final[5]])
+
+    np.save("models/mu_scale_calibrated.npy", mu_scale_final)
+    np.save("models/gain_calibrated.npy", gain_final)
+    np.save("models/ay_scale_calibrated.npy", ay_scale_final)
+    np.save("models/steer_sign_calibrated.npy", np.array([args.steer_sign]))
+
+    print(f"[Calibrate] Saved models/mu_scale_calibrated.npy  -> {mu_scale_final}")
+    print(f"[Calibrate] Saved models/gain_calibrated.npy      -> {gain_final}")
+    print(f"[Calibrate] Saved models/ay_scale_calibrated.npy   -> {ay_scale_final[0]:.3f}")
+    print(f"[Calibrate] Saved models/steer_sign_calibrated.npy -> {args.steer_sign:+.0f}")
+
     print(f"\n[Calibrate] DONE.")
 
 
