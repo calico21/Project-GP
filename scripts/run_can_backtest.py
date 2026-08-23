@@ -262,6 +262,11 @@ def run_session_backtest(vehicle, df, dt=0.005, steer_sign=1.0, verbose=True,
 
     u_all = np.stack([steer_rad, t_fl, t_fr, t_rl, t_rr, p_hyd], axis=1)
 
+    # NEW — same CAN-glitch guard as calibrate_mu_from_telemetry.py
+    u_all = np.nan_to_num(u_all, nan=0.0, posinf=0.0, neginf=0.0)
+    u_all[:, 1:5] = np.clip(u_all[:, 1:5], -50.0, 400.0)
+    u_all[:, 5]   = np.clip(u_all[:, 5],   0.0,   2000.0)
+
     real_wz_all = np.deg2rad(_extract_1d(df, 'yaw_rate_deg_s'))
     real_ay_all = _extract_1d(df, 'ay_mps2')
     real_vx_all = _extract_1d(df, 'vx_mps')
@@ -275,7 +280,8 @@ def run_session_backtest(vehicle, df, dt=0.005, steer_sign=1.0, verbose=True,
         u_windows.append(u_all[start:end])
 
         vx0 = float(max(real_vx_all[start], 1.0))
-        vy0 = float(real_vy_all[start])
+        # NEW — same unbounded-leaky-integrator guard as calibrate_mu_from_telemetry.py
+        vy0 = float(np.clip(real_vy_all[start], -15.0, 15.0))
         wz0 = float(real_wz_all[start])
 
         x0 = DifferentiableMultiBodyVehicle.make_initial_state(T_env=25.0, vx0=vx0)

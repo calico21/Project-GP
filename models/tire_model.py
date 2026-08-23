@@ -789,7 +789,7 @@ class PacejkaTire:
 
         Bt      = (QBZ1 + QBZ2 * dfz + QBZ3 * dfz ** 2) * (1.0 + QBZ9 * safe_abs(gam))
         Ct      = QCZ1
-        Dt      = Fz_safe * R0 * (QDZ1 + QDZ2 * dfz) * (1.0 + QDZ3 * gam + QDZ4 * gam ** 2)
+        Dt = (Fz_safe / 1000.0) * R0 * (QDZ1 + QDZ2 * dfz) * (1.0 + QDZ3 * gam + QDZ4 * gam ** 2)
         # MF6.2 full Et: includes sign-dependent asymmetry term (QEZ3)
         sgn_at  = jnp.tanh(a_t / (1e-3 + eps))
         Et      = jnp.clip((QEZ1 + QEZ2 * dfz) * (1.0 - QEZ3 * sgn_at), -10.0, 1.0)

@@ -796,12 +796,11 @@ class DifferentiableMultiBodyVehicle:
     # ─────────────────────────────────────────────────────────────────────────
 
     @partial(jax.jit, static_argnums=(0,))
-    def _glrk4_step(
+    def _compute_derivatives(
         self,
         x: jax.Array,
         u: jax.Array,
         setup_params: jax.Array,
-        dt_step: float,
         tire_cal: jax.Array = jnp.array([1.0, 1.0, -1.0, 1.0], dtype=jnp.float32),
     ) -> jax.Array:
 
@@ -1178,6 +1177,16 @@ class DifferentiableMultiBodyVehicle:
         Mz_total = Mz_fl + Mz_fr + Mz_rl + Mz_rr + Mz_castor_fl + Mz_castor_fr
         M_diff   = 0.0   
 
+        if os.environ.get("GP_DEBUG_YAW"):
+            jax.debug.print(
+                "vwfl={a:+.3f} vwfr={b:+.3f} kfl={c:+.4f} kfr={d:+.4f} krl={cc:+.4f} krr={dd:+.4f} "
+                "afl={e:+.4f} afr={f:+.4f} Fyfl={g:+.2f} Fyfr={h:+.2f} Fxfl={ii:+.2f} Fxfr={jj:+.2f} "
+                "Mzfl={k:+.2f} Mzfr={l:+.2f} Mzcfl={m:+.2f} Mzcfr={n:+.2f} Mz={o:+.2f}",
+                a=v_wheel_fl, b=v_wheel_fr, c=kappa_ref_fl, d=kappa_ref_fr,
+                cc=kappa_ref_rl, dd=kappa_ref_rr,
+                e=alpha_kin_fl, f=alpha_kin_fr, g=Fy_fl, h=Fy_fr, ii=Fx_fl, jj=Fx_fr,
+                k=Mz_fl, l=Mz_fr, m=Mz_castor_fl, n=Mz_castor_fr, o=Mz_total)
+
         # FIX: Explicitly match the incoming state vector precision type
         F_ext = jnp.zeros(28, dtype=x.dtype)
         F_ext = F_ext.at[14].set(Fx_f + Fx_r - self.m_s * self.g * jnp.sin(theta_pitch))
@@ -1349,6 +1358,68 @@ class DifferentiableMultiBodyVehicle:
 
         # Return 46-DOF slice only — sysid loss on [X,Y,ψ,vx,vy,wz]
         return next_108[:46]
+
+    @partial(jax.jit, static_argnums=(0,))
+    def _glrk4_step(
+        self,
+        x: jax.Array,
+        u: jax.Array,
+        setup_params: jax.Array,
+        dt_step: float,
+        tire_cal: jax.Array = jnp.array([1.0, 1.0, -1.0, 1.0], dtype=jnp.float32),
+    ) -> jax.Array:
+        sqrt3    = jnp.sqrt(3.0)
+        a11, a12 = 0.25, 0.25 - sqrt3 / 6.0
+        a21, a22 = 0.25 + sqrt3 / 6.0, 0.25
+        b1, b2   = 0.5, 0.5
+
+        q0 = x[0:14]; v0 = x[14:28]; aux0 = x[28:108]
+        _AUX = 80
+
+        dx0 = self._compute_derivatives(x, u, setup_params, tire_cal)
+        k1_q, k1_v = dx0[0:14], dx0[14:28]
+        k2_q, k2_v = k1_q, k1_v
+
+        def newton_iter(carry, _):
+            k1_q_, k1_v_, k2_q_, k2_v_, _a1, _a2 = carry
+
+            q1 = q0 + dt_step * (a11 * k1_q_ + a12 * k2_q_)
+            v1 = v0 + dt_step * (a11 * k1_v_ + a12 * k2_v_)
+            x1 = x.at[0:14].set(q1).at[14:28].set(v1)
+
+            q2 = q0 + dt_step * (a21 * k1_q_ + a22 * k2_q_)
+            v2 = v0 + dt_step * (a21 * k1_v_ + a22 * k2_v_)
+            x2 = x.at[0:14].set(q2).at[14:28].set(v2)
+
+            dx1 = self._compute_derivatives(x1, u, setup_params, tire_cal)
+            dx2 = self._compute_derivatives(x2, u, setup_params, tire_cal)
+
+            _DC = 500.0
+            return (jnp.clip(dx1[0:14],  -_DC, _DC),
+                    jnp.clip(dx1[14:28], -_DC, _DC),
+                    jnp.clip(dx2[0:14],  -_DC, _DC),
+                    jnp.clip(dx2[14:28], -_DC, _DC),
+                    jnp.clip(dx1[28:108], -_DC, _DC),
+                    jnp.clip(dx2[28:108], -_DC, _DC)), None
+
+        carry_converged, _ = jax.lax.scan(
+            newton_iter,
+            (k1_q, k1_v, k2_q, k2_v, jnp.zeros(_AUX), jnp.zeros(_AUX)),
+            None, length=2,
+        )
+        carry_stopped = jax.tree_util.tree_map(jax.lax.stop_gradient, carry_converged)
+
+        (k1_q_f, k1_v_f, k2_q_f, k2_v_f,
+        dx1_aux_f, dx2_aux_f), _ = newton_iter(carry_stopped, None)
+
+        q_new   = q0   + dt_step * (b1 * k1_q_f + b2 * k2_q_f)
+        v_new   = v0   + dt_step * (b1 * k1_v_f + b2 * k2_v_f)
+        aux_new = aux0 + dt_step * (b1 * dx1_aux_f + b2 * dx2_aux_f)
+        aux_new = jnp.clip(aux_new, -1000.0, 1000.0)
+
+        return (x.at[0:14].set(q_new)
+                .at[14:28].set(v_new)
+                .at[28:108].set(aux_new))
     
     @partial(jax.jit, static_argnums=(0,))
     def _glrk4_step_with_h(
