@@ -81,25 +81,27 @@ def _build_calib_batch(df, dt: float, steer_sign: float, rng: np.random.Generato
     real_ay = _extract_1d(df, 'ay_mps2')
     vy_est  = _estimate_vy_kinematic(real_ay, real_vx, real_wz, dt)
 
-    u_win, x0_win, wz_win, ay_win = [], [], [], []
+    u_win, x0_win, wz_win, ay_win, vx_win = [], [], [], [], []
     for w in idx:
         s, e = w * WINDOW_LEN, w * WINDOW_LEN + WINDOW_LEN
         u_win.append(u_all[s:e])
-        x0 = DifferentiableMultiBodyVehicle.make_initial_state(
-            T_env=25.0, vx0=float(max(real_vx[s], MIN_VX0)))
         vx0_val = float(max(real_vx[s], MIN_VX0))
         wz0_val = float(real_wz[s])
         k_drift = (300.0 * 0.8525) / (1.55 * 45000.0)
         vy0_refined = float(np.clip(-0.6975 * wz0_val + k_drift * vx0_val * wz0_val, -1.2, 1.2))
+        
+        x0 = DifferentiableMultiBodyVehicle.make_initial_state(T_env=25.0, vx0=vx0_val)
         x0 = x0.at[15].set(vy0_refined).at[19].set(wz0_val)
         x0_win.append(x0)
         wz_win.append(real_wz[s:e])
         ay_win.append(real_ay[s:e])
+        vx_win.append(real_vx[s:e])
 
     return (jnp.asarray(np.stack(u_win),  dtype=jnp.float32),
             jnp.asarray(np.stack(x0_win), dtype=jnp.float32),
             jnp.asarray(np.stack(wz_win), dtype=jnp.float32),
-            jnp.asarray(np.stack(ay_win), dtype=jnp.float32))
+            jnp.asarray(np.stack(ay_win), dtype=jnp.float32),
+            jnp.asarray(np.stack(vx_win), dtype=jnp.float32))
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -131,14 +133,12 @@ def _soft_corr_loss(sim: jax.Array, real: jax.Array) -> jax.Array:
     num = jnp.sum(sim_c * real_c, axis=1)
     r   = num / den
 
-    # Per-window validity mask: only windows with enough real-signal variance
-    # contribute to the loss. stop_gradient on the mask itself (it's a boolean
-    # selection, not something we differentiate through).
     valid = jax.lax.stop_gradient((var_real > VAR_FLOOR) & (var_sim > VAR_FLOOR))
-    valid_f = valid.astype(r.dtype)
+    dyn_weight = jax.lax.stop_gradient(jnp.sqrt(jnp.maximum(var_real, VAR_FLOOR)))
+    valid_w = valid.astype(r.dtype) * dyn_weight
 
-    per_window_loss = (1.0 - r) * valid_f
-    n_valid = jnp.maximum(jnp.sum(valid_f), 1.0)
+    per_window_loss = (1.0 - r) * valid_w
+    n_valid = jnp.maximum(jnp.sum(valid_w), 1e-3)
     return jnp.sum(per_window_loss) / n_valid
 
 
@@ -183,7 +183,7 @@ def main():
           f"({n_win_total * WINDOW_LEN * args.dt:.0f}s of telemetry)")
 
     # NEW — diagnostic: how many windows actually carry correlation signal?
-    for i, (u_seq, x0, wz_real, ay_real) in enumerate(batches):
+    for i, (u_seq, x0, wz_real, ay_real, vx_real) in enumerate(batches):
         var_wz = jnp.var(wz_real, axis=1)
         var_ay = jnp.var(ay_real, axis=1)
         n_valid = int(jnp.sum((var_wz > 1e-3) & (var_ay > 1e-3)))
@@ -214,22 +214,31 @@ def main():
 
     v_rollout = jax.vmap(rollout, in_axes=(None, None, None, None, None, 0, 0))
 
-    def loss_fn(theta, u_seq, x0, wz_real, ay_real):
-        mu_scale    = jnp.exp(theta[0:2])   # [mu_f, mu_r]
+    def loss_fn(theta, u_seq, x0, wz_real, ay_real, vx_real):
+        mu_scale    = jnp.exp(theta[0:2])
         steer_gain  = jnp.exp(theta[2])
         brake_gain  = jnp.exp(theta[3])
         torque_gain = jnp.exp(theta[4])
         ay_scale    = jnp.exp(theta[5])
-        wz_sim, ay_sim, _vx_sim, _vy_sim = v_rollout(
+        
+        wz_sim, ay_sim, vx_sim, _ = v_rollout(
             mu_scale, steer_gain, brake_gain, torque_gain, ay_scale, u_seq, x0)
-        return 0.60 * _soft_corr_loss(wz_sim, wz_real) + 0.40 * _soft_corr_loss(ay_sim, ay_real)
+        
+        loss_wz = _soft_corr_loss(wz_sim, wz_real)
+        loss_ay = _soft_corr_loss(ay_sim, ay_real)
+        
+        # Penalización normalizada de error longitudinal (evita distorsión de velocidad)
+        rmse_vx = jnp.mean(jnp.sqrt(jnp.mean((vx_sim - vx_real) ** 2, axis=1)))
+        loss_vx = jnp.clip(rmse_vx / 3.0, 0.0, 1.0)
+        
+        return 0.45 * loss_wz + 0.40 * loss_ay + 0.15 * loss_vx
 
     grad_fn = jax.jit(jax.value_and_grad(loss_fn))
 
-    # theta = log([mu_f, mu_r, steer_gain, brake_gain, torque_gain, ay_scale])
-    theta = jnp.zeros(6)
-    theta_lb = jnp.log(jnp.array([0.5, 0.5, 0.3, 0.2, 0.1, 0.4]))
-    theta_ub = jnp.log(jnp.array([2.0, 2.0, 2.0, 5.0, 2.0,  1.5]))
+    # Cotas físicas ensanchadas: evita saturación en extremos
+    theta = jnp.array([0.0, 0.0, 0.6, -1.0, 0.5, 0.0])
+    theta_lb = jnp.log(jnp.array([0.35, 0.35, 0.50, 0.005, 0.10, 0.40]))
+    theta_ub = jnp.log(jnp.array([2.50, 2.50, 2.50, 10.00, 5.00, 1.80]))
 
     # ─── DIAGNÓSTICO: wz_sim vs wz_real con mu=1.0 (baseline sin calibrar) ───
     def _diagnose_first_window(u_seq, x0, wz_real, n_show=15, steer_sign_override=None):
@@ -318,19 +327,17 @@ def main():
     print("[Calibrate] Fitting [mu_f, mu_r, steer_gain, brake_gain, torque_gain] "
           "via jax.grad + Adam ...")
     for step in range(args.steps):
-        u_seq, x0, wz_real, ay_real = batches[step % len(batches)]
+        u_seq, x0, wz_real, ay_real, vx_real = batches[step % len(batches)]
 
-        # NEW — fail fast with a diagnosable batch index instead of a bare
-        # FloatingPointError from inside lax.scan.
         for name, arr in [("u_seq", u_seq), ("x0", x0),
-                           ("wz_real", wz_real), ("ay_real", ay_real)]:
+                           ("wz_real", wz_real), ("ay_real", ay_real), ("vx_real", vx_real)]:
             if not bool(jnp.all(jnp.isfinite(arr))):
                 raise ValueError(
                     f"[Calibrate] Non-finite values in {name} "
                     f"(batch {step % len(batches)})"
                 )
 
-        loss, g = grad_fn(theta, u_seq, x0, wz_real, ay_real)
+        loss, g = grad_fn(theta, u_seq, x0, wz_real, ay_real, vx_real)
         g_clean = jnp.nan_to_num(g, nan=0.0, posinf=0.0, neginf=0.0)
         if not bool(jnp.all(jnp.isfinite(g))):
             n_bad = int(jnp.sum(~jnp.isfinite(g)))
@@ -346,7 +353,7 @@ def main():
 
     # NEW — dump one window's sim-vs-real trace for visual/manual inspection
     os.makedirs("reports", exist_ok=True)
-    u_seq, x0, wz_real, ay_real = batches[0]
+    u_seq, x0, wz_real, ay_real, vx_real = batches[0]
     mu_scale    = jnp.exp(theta[0:2])
     steer_gain  = jnp.exp(theta[2])
     brake_gain  = jnp.exp(theta[3])
