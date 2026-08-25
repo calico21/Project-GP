@@ -707,7 +707,7 @@ class DifferentiableMultiBodyVehicle:
         self.Ix = self.vp.get('Ix', 45.0)
         self.Iy = self.vp.get('Iy', 85.0)
         self.Iz = self.vp.get('Iz', 150.0)
-        self.Iw = 30.0  # ANTI-EXPLOSION: Artificial inertia for dt=0.01 stability
+        self.Iw = self.vp.get('Iw', 1.2)  # Inercia real del conjunto llanta+neumático+disco
 
         self.lf       = self.vp.get('lf', 0.8525)
         self.lr       = self.vp.get('lr', 0.6975)
@@ -1189,7 +1189,8 @@ class DifferentiableMultiBodyVehicle:
 
         # FIX: Explicitly match the incoming state vector precision type
         F_ext = jnp.zeros(28, dtype=x.dtype)
-        F_ext = F_ext.at[14].set(Fx_f + Fx_r - self.m_s * self.g * jnp.sin(theta_pitch))
+        F_roll_res = 0.015 * self.m * self.g * jnp.tanh(vx / 0.5)
+        F_ext = F_ext.at[14].set(Fx_f + Fx_r + Fx_aero - self.m_s * self.g * jnp.sin(theta_pitch) - F_roll_res)
         F_ext = F_ext.at[15].set(Fy_f + Fy_r - self.m_s * self.g * jnp.sin(phi_roll) * jnp.cos(theta_pitch))
         F_ext = F_ext.at[16].set(F_susp_fl + F_susp_fr + F_susp_rl + F_susp_rr
                                   - self.m_s * self.g * jnp.cos(phi_roll) * jnp.cos(theta_pitch)

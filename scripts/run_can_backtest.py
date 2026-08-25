@@ -249,7 +249,9 @@ def _standardize_and_resample(df: pd.DataFrame, dt: float, lag_samples: int) -> 
         df['t_rr'] = dem_tq * 0.5
 
     bpps = _extract_1d(df, 'bpps_raw')
-    df['brake_press'] = bpps * 10.0
+    # Zona muerta del 3% para anular el offset de reposo y ruidos residuales
+    bpps_clean = np.where(bpps > 3.0, bpps - 3.0, 0.0)
+    df['brake_press'] = bpps_clean * 10.0
 
     return df
 
@@ -264,13 +266,8 @@ def _simulate_all_windows_jit(vehicle: DifferentiableMultiBodyVehicle, x0_batch:
     def sim_one_window(x0, u_seq):
         def step_fn(x, u):
             x_next = vehicle.simulate_step(x, u, setup, dt=dt, n_substeps=4, tire_cal=tire_cal)
-            # Force-balance lateral acceleration:
-            # ay_measured = dvy/dt + vx*wz  (body-frame IMU reading)
-            # dvy/dt ≈ (vy_next - vy_prev) / dt
-            vx_n = x_next[14]; vy_n = x_next[15]; wz_n = x_next[19]
-            vy_prev = x[15]
-            dvy_dt = (vy_n - vy_prev) / dt
-            ay_force = (dvy_dt + vx_n * wz_n) * ay_scale
+            vx_n = x_next[14]; wz_n = x_next[19]
+            ay_force = vx_n * wz_n
             return x_next, jnp.stack([vx_n, wz_n, ay_force])
         _, out = jax.lax.scan(step_fn, x0, u_seq)
         return out

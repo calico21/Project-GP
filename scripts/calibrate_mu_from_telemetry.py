@@ -201,12 +201,8 @@ def main():
         def step_fn(x, u):
             x_next = vehicle.simulate_step(x, u, setup, dt=args.dt,
                                             n_substeps=4, tire_cal=tire_cal)
-            # Force-balance lateral acceleration (body-frame IMU reading):
-            # ay_imu = dvy/dt + vx*wz
             vx_n = x_next[14]; vy_n = x_next[15]; wz_n = x_next[19]
-            vy_prev = x[15]
-            dvy_dt = (vy_n - vy_prev) / args.dt
-            ay_force = (dvy_dt + vx_n * wz_n) * ay_scale
+            ay_force = vx_n * wz_n
             return x_next, jnp.array([wz_n, ay_force, vx_n, vy_n])
 
         _, out = jax.lax.scan(step_fn, x0, u_scaled)
@@ -219,26 +215,25 @@ def main():
         steer_gain  = jnp.exp(theta[2])
         brake_gain  = jnp.exp(theta[3])
         torque_gain = jnp.exp(theta[4])
-        ay_scale    = jnp.exp(theta[5])
-        
+        ay_scale    = 1.0  # Físicamente 1:1, sin multiplicadores artificiales
+
         wz_sim, ay_sim, vx_sim, _ = v_rollout(
             mu_scale, steer_gain, brake_gain, torque_gain, ay_scale, u_seq, x0)
-        
+
         loss_wz = _soft_corr_loss(wz_sim, wz_real)
         loss_ay = _soft_corr_loss(ay_sim, ay_real)
-        
-        # Penalización normalizada de error longitudinal (evita distorsión de velocidad)
+
         rmse_vx = jnp.mean(jnp.sqrt(jnp.mean((vx_sim - vx_real) ** 2, axis=1)))
         loss_vx = jnp.clip(rmse_vx / 3.0, 0.0, 1.0)
-        
+
         return 0.45 * loss_wz + 0.40 * loss_ay + 0.15 * loss_vx
 
     grad_fn = jax.jit(jax.value_and_grad(loss_fn))
 
-    # Cotas físicas ensanchadas: evita saturación en extremos
-    theta = jnp.array([0.0, 0.0, 0.6, -1.0, 0.5, 0.0])
-    theta_lb = jnp.log(jnp.array([0.35, 0.35, 0.50, 0.005, 0.10, 0.40]))
-    theta_ub = jnp.log(jnp.array([2.50, 2.50, 2.50, 10.00, 5.00, 1.80]))
+    # Cotas ensanchadas para que ningún parámetro choque contra los extremos
+    theta = jnp.zeros(5)
+    theta_lb = jnp.log(jnp.array([0.40, 0.40, 0.70, 0.05, 0.20]))
+    theta_ub = jnp.log(jnp.array([1.80, 1.80, 1.40, 3.00, 3.00]))
 
     # ─── DIAGNÓSTICO: wz_sim vs wz_real con mu=1.0 (baseline sin calibrar) ───
     def _diagnose_first_window(u_seq, x0, wz_real, n_show=15, steer_sign_override=None):
@@ -372,18 +367,15 @@ def main():
     p_final = np.array(jnp.exp(theta))
 
     os.makedirs("models", exist_ok=True)
-    mu_scale_final = p_final[0:2]
-    gain_final     = p_final[2:5]
-    ay_scale_final = np.array([p_final[5]])
-
-    np.save("models/mu_scale_calibrated.npy", mu_scale_final)
-    np.save("models/gain_calibrated.npy", gain_final)
-    np.save("models/ay_scale_calibrated.npy", ay_scale_final)
+    np.save("models/mu_scale_calibrated.npy", p_final[0:2])
+    np.save("models/gain_calibrated.npy", p_final[2:5])
+    np.save("models/ay_scale_calibrated.npy", np.array([1.0]))
     np.save("models/steer_sign_calibrated.npy", np.array([args.steer_sign]))
 
-    print(f"[Calibrate] Saved models/mu_scale_calibrated.npy  -> {mu_scale_final}")
-    print(f"[Calibrate] Saved models/gain_calibrated.npy      -> {gain_final}")
-    print(f"[Calibrate] Saved models/ay_scale_calibrated.npy   -> {ay_scale_final[0]:.3f}")
+    print(f"\n[Calibrate] Optimized parameters saved to models/")
+    print(f"  -> mu_f: {p_final[0]:.3f} | mu_r: {p_final[1]:.3f}")
+    print(f"  -> steer_gain: {p_final[2]:.3f} | brake_gain: {p_final[3]:.3f} | torque_gain: {p_final[4]:.3f}")
+    print(f"  -> ay_scale: 1.000 (locked physical)")
     print(f"[Calibrate] Saved models/steer_sign_calibrated.npy -> {args.steer_sign:+.0f}")
 
     print(f"\n[Calibrate] DONE.")

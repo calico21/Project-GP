@@ -205,7 +205,7 @@ vehicle_params = {
     # STEERING
     # ════════════════════════════════════════════════════════════════════════
     'max_steer_angle':  0.35,   # rad  Physical rack limit
-    'steer_ratio':      4.20,   # —    Steering wheel angle / rack angle
+    'steer_ratio':      2.35,   # —    Relación cinemática real efectiva volante/rueda
 
     # ════════════════════════════════════════════════════════════════════════
     # SIMULATION / INTEGRATOR SETTINGS  (not vehicle physics — used by server)
