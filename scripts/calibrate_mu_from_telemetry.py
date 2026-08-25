@@ -87,8 +87,11 @@ def _build_calib_batch(df, dt: float, steer_sign: float, rng: np.random.Generato
         u_win.append(u_all[s:e])
         x0 = DifferentiableMultiBodyVehicle.make_initial_state(
             T_env=25.0, vx0=float(max(real_vx[s], MIN_VX0)))
-        vy0_steady = float(np.clip(-0.73 * real_wz[s], -1.0, 1.0))
-        x0 = x0.at[15].set(vy0_steady).at[19].set(float(real_wz[s]))
+        vx0_val = float(max(real_vx[s], MIN_VX0))
+        wz0_val = float(real_wz[s])
+        k_drift = (300.0 * 0.8525) / (1.55 * 45000.0)
+        vy0_refined = float(np.clip(-0.6975 * wz0_val + k_drift * vx0_val * wz0_val, -1.2, 1.2))
+        x0 = x0.at[15].set(vy0_refined).at[19].set(wz0_val)
         x0_win.append(x0)
         wz_win.append(real_wz[s:e])
         ay_win.append(real_ay[s:e])

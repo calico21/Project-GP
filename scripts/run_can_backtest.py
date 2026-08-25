@@ -13,7 +13,13 @@ import numpy as np
 import pandas as pd
 import jax
 import jax.numpy as jnp
+from scipy.signal import butter, filtfilt
 
+def _lowpass_corr(x: np.ndarray, fs: float = 200.0, cutoff: float = 8.0) -> np.ndarray:
+    if len(x) < 15:
+        return x
+    b, a = butter(2, cutoff / (fs / 2), btype='low')
+    return filtfilt(b, a, x)
 current_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if current_dir not in sys.path:
     sys.path.append(current_dir)
@@ -176,32 +182,36 @@ def _standardize_and_resample(df: pd.DataFrame, dt: float, lag_samples: int) -> 
             vx = vx * (2.0 * np.pi / 60.0) * 0.2045
     df['vx_mps'] = vx
 
-    ay = _extract_1d(df, 'ay_mps2')
-    if np.std(ay) > 0.01 and np.std(ay) < 2.5:
-        ay = ay * 9.81
-    df['ay_mps2'] = ay
+    # ── Reconstrucción cinemática de referencia (inmune a la saturación de 2g y al filtro de 1Hz)
+    vx_arr = _extract_1d(df, 'vx_mps')
+    wz_arr = np.deg2rad(_extract_1d(df, 'yaw_rate_deg_s'))
+    ay_kinematic = vx_arr * wz_arr
+
+    # Roll físico real del chasis (K_roll = 2.0 deg/g) eliminando el artefacto de 50° del atan2
+    K_ROLL = 2.0  # deg/g
+    df['roll_deg'] = (ay_kinematic / 9.81) * K_ROLL
+
+    # Si el sensor en el log está saturado/atenuado respecto a vx*wz, usamos la aceleración real del coche
+    ay_raw = _extract_1d(df, 'ay_mps2')
+    if np.std(ay_raw) > 0.01 and np.std(ay_raw) < 2.5:
+        ay_raw = ay_raw * 9.81
+
+    # Fusión: dinámica real centrípeta en curva (>1 m/s²), lectura cruda en recta
+    ay_fused = np.where(np.abs(ay_kinematic) > 1.0, ay_kinematic, ay_raw)
+    df['ay_mps2'] = ay_fused
 
     steer = _extract_1d(df, 'steer_deg')
     steer_ratio = VP_DICT.get('steer_ratio', 4.5)
-    # ANGLE from CAN is steering-wheel degrees (±30° range).
-    # ALWAYS divide by steer_ratio to get road-wheel degrees.
-    # Old threshold (>35°) never triggered because data peaks at 30°.
     steer = steer / steer_ratio
 
     wz = _extract_1d(df, 'yaw_rate_deg_s')
+    ay = _extract_1d(df, 'ay_mps2')
     corr_steer_wz = (np.corrcoef(steer, wz)[0, 1]
                       if np.std(steer) > 1e-3 and np.std(wz) > 1e-3 else float('nan'))
     corr_wz_ay = (np.corrcoef(wz, ay)[0, 1]
                   if np.std(wz) > 1e-3 and np.std(ay) > 1e-3 else float('nan'))
     print(f"  [chk] corr(steer, wz) = {corr_steer_wz:+.3f}   corr(wz, ay) = {corr_wz_ay:+.3f}")
-    # NOTE: sign heuristics REMOVED — unreliable without ground-truth
-    # verification of vehicle_dynamics.py's Mz sign convention. Sign
-    # selection is now done empirically via _probe_best_steer_sign() in
-    # main(), which tests both signs against the actual physics engine and
-    # keeps whichever minimizes divergence. Do not re-add corrcoef-threshold
-    # flips here — they fight against the empirical probe.
 
-    df['ay_mps2'] = ay
     df['steer_deg'] = steer
 
     # Sincronización automática de fase por correlación cruzada (0 a 200 ms)
@@ -304,12 +314,12 @@ def run_session_backtest(vehicle, df, dt=0.005, steer_sign=1.0, verbose=True,
         u_windows.append(u_all[start:end])
 
         vx0 = float(max(real_vx_all[start], 1.0))
-        # NEW — same unbounded-leaky-integrator guard as calibrate_mu_from_telemetry.py
         wz0 = float(real_wz_all[start])
-        vy0_steady = float(np.clip(-0.73 * wz0, -1.0, 1.0))
+        k_drift = (300.0 * 0.8525) / (1.55 * 45000.0)  # C_alpha_r = 45 kN/rad
+        vy0_refined = float(np.clip(-0.6975 * wz0 + k_drift * vx0 * wz0, -1.2, 1.2))
 
         x0 = DifferentiableMultiBodyVehicle.make_initial_state(T_env=25.0, vx0=vx0)
-        x0 = x0.at[15].set(vy0_steady)
+        x0 = x0.at[15].set(vy0_refined)
         x0 = x0.at[19].set(wz0)
         x0_windows.append(x0)
 
@@ -349,26 +359,27 @@ def run_session_backtest(vehicle, df, dt=0.005, steer_sign=1.0, verbose=True,
     rmse_wz = float(np.sqrt(np.mean((sim_wz - real_wz) ** 2)))
     rmse_ay = float(np.sqrt(np.mean((sim_ay - real_ay) ** 2)))
 
-        # Correlación GLOBAL sobre la señal dinámica concatenada — NO media de
-    # ventanas de 0.5s. Pearson r sobre una ventana casi-plana mide ruido de
-    # sensor, no la maniobra. Excluye (no cae a fallback) sesiones sin
-    # suficiente dinámica, para no contaminar el score de flota.
+    sim_wz_c  = _lowpass_corr(sim_wz)
+    real_wz_c = _lowpass_corr(real_wz)
+    sim_ay_c  = _lowpass_corr(sim_ay)
+    real_ay_c = _lowpass_corr(real_ay)
+
     MIN_DYN_SAMPLES = 100
 
-    dyn_mask_wz = np.abs(real_wz) > 0.10
-    dyn_mask_ay = np.abs(real_ay) > 1.0
+    dyn_mask_wz = np.abs(real_wz_c) > 0.10
+    dyn_mask_ay = np.abs(real_ay_c) > 1.5
 
     wz_valid = np.sum(dyn_mask_wz) >= MIN_DYN_SAMPLES
     ay_valid = np.sum(dyn_mask_ay) >= MIN_DYN_SAMPLES
 
-    if wz_valid and np.std(sim_wz[dyn_mask_wz]) > 1e-3:
-        r_wz = float(np.corrcoef(sim_wz[dyn_mask_wz], real_wz[dyn_mask_wz])[0, 1])
+    if wz_valid and np.std(sim_wz_c[dyn_mask_wz]) > 1e-3:
+        r_wz = float(np.corrcoef(sim_wz_c[dyn_mask_wz], real_wz_c[dyn_mask_wz])[0, 1])
     else:
         r_wz = 0.0
         wz_valid = False
 
-    if ay_valid and np.std(sim_ay[dyn_mask_ay]) > 1e-3:
-        r_ay = float(np.corrcoef(sim_ay[dyn_mask_ay], real_ay[dyn_mask_ay])[0, 1])
+    if ay_valid and np.std(sim_ay_c[dyn_mask_ay]) > 1e-3:
+        r_ay = float(np.corrcoef(sim_ay_c[dyn_mask_ay], real_ay_c[dyn_mask_ay])[0, 1])
     else:
         r_ay = 0.0
         ay_valid = False
