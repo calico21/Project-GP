@@ -85,16 +85,25 @@ def main():
     # ── Stage 2: single physics step, return sum of state ────────────────
     # A single 1ms step should reveal damper and geometry dependencies
     # (forces act in the first dt, affecting all derivative terms).
-    x0 = jnp.zeros(46).at[14].set(15.0)  # rolling at 15 m/s
+    #
+    # GP-vX5 MIGRATION FIX: the 46-DOF bridge state was retired when the
+    # engine moved to the 108-DOF state vector (kinematics[0:28] + thermal
+    # 3D[28:56] + transient slip[56:72] + damper hysteresis[72:84] +
+    # elastokinematics[84:108]). make_initial_state() is now the sole
+    # canonical constructor — it places suspension at the physical
+    # equilibrium _Z_EQ, warms the 3D thermal block correctly (7 nodes/
+    # corner, not 5), and zeroes damper/elastokin state consistently with
+    # what _compute_derivatives expects at x[28:56].reshape((4,7)).
+    # u is now 6-wide: [δ, T_hub_fl, T_hub_fr, T_hub_rl, T_hub_rr, F_brake_hyd]
+    # (4WD hub motors, no mechanical diff — see §5.1 in vehicle_dynamics.py).
+    x0 = DifferentiableMultiBodyVehicle.make_initial_state(T_env=25.0, vx0=15.0)
     z_eq = compute_equilibrium_suspension(default_setup, VP)
     x0 = x0.at[6:10].set(z_eq)
-    x0 = x0.at[28:38].set(jnp.array([85., 85., 85., 85., 80.,
-                                      85., 85., 85., 85., 80.]))
-    u = jnp.array([0.05, 2000.0])  # slight steering + throttle
+    u = jnp.array([0.05, 400.0, 400.0, 400.0, 400.0, 0.0])  # slight steer + equal 4-way torque
 
     def f2(setup):
         x1 = vehicle.simulate_step(x0, u, setup, 0.005)
-        return jnp.sum(x1)  # scalar: sum across all 46 state derivatives
+        return jnp.sum(x1)  # scalar: sum across all 108 state derivatives
     grad2 = jax.grad(f2)(default_setup)
     reports.append(zero_report(grad2, "vehicle.simulate_step(1 step) → Σx"))
 
@@ -122,7 +131,7 @@ def main():
 
     # ── Stage 5: 10-step rollout, return max yaw rate ────────────────────
     # Brake bias, diff lock, ARBs should matter via yaw moment.
-    u_hard = jnp.array([0.15, 3000.0])  # harder cornering input
+    u_hard = jnp.array([0.15, 750.0, 750.0, 750.0, 750.0, 0.0])  # harder cornering, 4-way torque
     def f5(setup):
         def step_fn(x, _):
             return vehicle.simulate_step(x, u_hard, setup, 0.005), x[19]
@@ -130,6 +139,20 @@ def main():
         return jnp.max(jnp.abs(yaw_rate_hist))
     grad5 = jax.grad(f5)(default_setup)
     reports.append(zero_report(grad5, "20-step rollout (hard turn) → max |yaw rate|"))
+
+    # ── Stage 6: 15-step hard-braking rollout → front/rear Fz split ──────
+    # brake_bias_f only enters the graph through F_brake_hyd (u[5]) — with
+    # zero braking demand (all prior stages) its gradient is correctly zero,
+    # not disconnected. This stage exercises it explicitly.
+    u_brake = jnp.array([0.0, 0.0, 0.0, 0.0, 0.0, 1500.0])  # straight-line hard brake
+    def f6(setup):
+        def step_fn(x, _):
+            x_new = vehicle.simulate_step(x, u_brake, setup, 0.005)
+            return x_new, x_new[14]  # emit vx (should decelerate)
+        _, vx_hist = jax.lax.scan(step_fn, x0, None, length=15)
+        return vx_hist[-1]  # final vx — brake_bias_f affects deceleration rate
+    grad6 = jax.grad(f6)(default_setup)
+    reports.append(zero_report(grad6, "15-step hard-brake rollout → final v_x"))
 
     # ── Summary: cross-reference matrix ──────────────────────────────────
     print("\n" + "=" * 72)

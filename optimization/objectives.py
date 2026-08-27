@@ -55,6 +55,7 @@
 
 import jax
 import jax.numpy as jnp
+from models.aero_platform import ground_effect_envelope
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -121,7 +122,13 @@ def compute_step_steer_objective(simulate_step_fn, setup_params, x_init):
         )
 
     dt     = 0.005
-    u_step = jnp.array([0.08, 500.0])   # steering step + mild throttle
+    # u = [δ, T_hub_fl, T_hub_fr, T_hub_rl, T_hub_rr, F_brake_hyd] — 6-wide
+    # since the 4WD hub-motor migration. A 2-element u silently clamps
+    # under jit's static-index OOB semantics: u[2..5] all read back u[1],
+    # meaning every hub torque AND the hydraulic brake force were reading
+    # the same fake 500N constant regardless of setup — brake_bias_f's
+    # apparent gradient was this artifact, not real physics.
+    u_step = jnp.array([0.08, 125.0, 125.0, 125.0, 125.0, 0.0])  # equal 4-way split, no braking
 
     def rollout_step(carry, _):
         x = carry
@@ -130,17 +137,17 @@ def compute_step_steer_objective(simulate_step_fn, setup_params, x_init):
 
     _, wz_history = jax.lax.scan(rollout_step, x_init, None, length=40)
 
-    wz_peak    = jnp.max(jnp.abs(wz_history))
-    wz_final   = jnp.abs(wz_history[-1])
-    wz_initial = jnp.abs(wz_history[5])   # after first ~25ms
+    wz_peak  = jnp.max(jnp.abs(wz_history))
+    wz_final = jnp.maximum(jnp.abs(wz_history[-1]), 0.05)
 
-    # Overshoot ratio: ideal=1.0 (no overshoot), >1.3 = underdamped, <0.6 = overdamped
-    overshoot_ratio = wz_peak / jnp.maximum(wz_initial, 0.01)
-    overshoot_cost  = jnp.abs(overshoot_ratio - 1.0)
+    # Sobreoscilación real respecto al régimen permanente (ideal = 1.0, sin sobrepico)
+    overshoot_ratio = wz_peak / wz_final
+    overshoot_cost  = jnp.maximum(overshoot_ratio - 1.0, 0.0)
 
-    settling_cost   = wz_final / jnp.maximum(wz_initial, 0.01)
+    # Variación residual en los últimos 25 ms (penaliza oscilaciones no amortiguadas)
+    settling_cost   = jnp.abs(wz_history[-1] - wz_history[-5]) / wz_final
 
-    return -(overshoot_cost + 0.5 * settling_cost)
+    return -(overshoot_cost + 2.0 * settling_cost)
 
 
 def compute_skidpad_objective(simulate_step_fn, params, x_init, dt=0.005, T_max=2.0):
@@ -163,174 +170,174 @@ def compute_skidpad_objective(simulate_step_fn, params, x_init, dt=0.005, T_max=
     if params.shape[-1] == 28:
         k_f          = params[0]
         k_r          = params[1]
-        arb_f        = params[2]    # anti-roll bar front [N/m equivalent]
-        arb_r        = params[3]    # anti-roll bar rear  [N/m equivalent]
-        c_f          = params[4]    # c_low_f [N·s/m]
-        c_r          = params[5]    # c_low_r [N·s/m]
-        h_cg         = params[25]   # CG height [m]
-        brake_bias_f = params[24]   # front brake bias [-]
-    else:
-        k_f          = params[0]
-        k_r          = params[1]
         arb_f        = params[2]
         arb_r        = params[3]
-        c_f          = params[4]
-        c_r          = params[5]
+        c_low_f      = params[4]
+        c_low_r      = params[5]
+        c_high_f     = params[6]
+        c_high_r     = params[7]
+        h_ride_f     = params[12]   # Altura de marcha delantera [m]
+        h_ride_r     = params[13]   # Altura de marcha trasera [m]
+        camber_f     = params[14]   # Caída estática delantera [deg]
+        camber_r     = params[15]   # Caída estática trasera [deg]
+        toe_f        = params[16]   # Convergencia delantera [deg]
+        toe_r        = params[17]   # Convergencia trasera [deg]
+        brake_bias_f = params[24]
+
+        # h_cg viene del setup vector (params[25]), no de un VP fijo — si algún
+        # día se descongela para exploración de layout, debe fluir gradiente
+        # real. Se suma la deriva cinemática por altura de marcha como término
+        # correctivo pequeño, no como la fuente principal del valor.
+        h_ride_delta = (h_ride_f + h_ride_r) * 0.5 - VP.get('h_ride_design', 0.028)
+        h_cg         = params[25] + h_ride_delta
+    else:
+        k_f          = params[0]; k_r = params[1]
+        arb_f        = params[2]; arb_r = params[3]
+        c_low_f      = params[4]; c_low_r = params[5]
+        c_high_f     = c_low_f * 0.6; c_high_r = c_low_r * 0.6
+        h_ride_f     = 0.028; h_ride_r = 0.030
+        camber_f     = VP.get('static_camber_f', -1.5)
+        camber_r     = VP.get('static_camber_r', -1.0)
+        toe_f        = 0.0; toe_r = 0.0
         h_cg         = params[6]
         brake_bias_f = params[7]
 
-    # BUGFIX-A: correct Ter26 geometry defaults (was lf=0.680, lr=0.920)
-    # BUGFIX-D: correct roll center defaults (was h_rc_f=0.030, h_rc_r=0.050)
-    # BUGFIX-E: correct aero Cl default (was Cl_ref=3.0)
-    # All fallbacks now consistent with vehicle_dynamics.py.
-    # BUGFIX-A (motion ratio): was [1.20]/[1.15]; vehicle_dynamics uses [1.14]/[1.16]
     mr_f = jnp.array(VP.get('motion_ratio_f_poly', [1.14, 2.5, 0.0]))[0]
     mr_r = jnp.array(VP.get('motion_ratio_r_poly', [1.16, 2.0, 0.0]))[0]
 
     wheel_rate_f = k_f / (mr_f ** 2)
     wheel_rate_r = k_r / (mr_r ** 2)
 
-    h_rc_f = VP.get('h_rc_f', 0.040)    # BUGFIX-D: was 0.030
-    h_rc_r = VP.get('h_rc_r', 0.060)    # BUGFIX-D: was 0.050
+    h_rc_f = VP.get('h_rc_f', 0.040)
+    h_rc_r = VP.get('h_rc_r', 0.060)
 
     t_w = VP.get('track_front', 1.20)
     t_r = VP.get('track_rear',  1.18)
 
-    # ── Roll stiffness (N·m / rad) ─────────────────────────────────────────────
-    # Spring contribution: K_spring_roll = wheel_rate * (t/2)^2 * 2 = wheel_rate * t^2 / 2
-    # ARB contribution: from dynamics F_arb = arb * φ → K_arb_roll = arb * t
-    # BUGFIX-B: ARB goes through track width t, NOT through motion ratio MR.
-    #   Old: arb_rate = arb / MR² → K_arb = arb * t² / (2*MR²) — 54% too low.
-    #   New: K_arb = arb * t  — derived directly from dynamics EOM.
-    Kroll_f_spring = wheel_rate_f * (t_w ** 2) * 0.5
-    Kroll_r_spring = wheel_rate_r * (t_r  ** 2) * 0.5
-    Kroll_f_arb    = arb_f * t_w      # BUGFIX-B: arb * track, not arb/MR² * t²/2
-    Kroll_r_arb    = arb_r * t_r      # BUGFIX-B
-    Kroll_f        = Kroll_f_spring + Kroll_f_arb
-    Kroll_r        = Kroll_r_spring + Kroll_r_arb
-    Kroll_total    = Kroll_f + Kroll_r + 1.0   # +1 for numerical stability
+    # Rigidez al balanceo (N·m / rad)
+    Kroll_f = wheel_rate_f * (t_w ** 2) * 0.5 + arb_f * t_w
+    Kroll_r = wheel_rate_r * (t_r  ** 2) * 0.5 + arb_r * t_r
+    Kroll_total = Kroll_f + Kroll_r + 1.0
 
     lltd_f_elastic = Kroll_f / Kroll_total
     lltd_r_elastic = Kroll_r / Kroll_total
 
     m  = VP.get('total_mass', VP.get('m', 230.0))
-    lf = VP.get('lf', 0.8525)    # BUGFIX-A: was 0.680
-    lr = VP.get('lr', 0.6975)    # BUGFIX-A: was 0.920
+    lf = VP.get('lf', 0.8525)
+    lr = VP.get('lr', 0.6975)
     L  = lf + lr
     g  = 9.81
 
-    # PRIMARY BUG FIX (GP-vX1, retained): PDY1 corrected 2.218×0.6=1.33 → 1.92
-    PDY1 = 1.92
-    PDY2 = -0.25
-    Fz0  = 1000.0
-
-    static_camber = VP.get('static_camber_f', -1.5)
-    camber_gain_f = VP.get('camber_gain_f', -0.8)
-
-    # Static axle loads
+    # Cargas estáticas por eje
     Fz_f_static = m * g * lr / L
     Fz_r_static = m * g * lf / L
 
-    # Aerodynamic downforce at nominal skidpad speed (15 m/s)
+    # Carga aerodinámica con envolvente de efecto suelo y pérdida de flujo (Aero Stall)
     v_corner     = 15.0
     rho          = VP.get('rho_air', 1.225)
     A            = VP.get('A_ref',   1.1)
-    Cl           = VP.get('Cl_ref',  4.14)    # BUGFIX-E: was 3.0
-    Fz_aero      = 0.5 * rho * Cl * A * v_corner ** 2
+    Cl           = VP.get('Cl_ref',  4.14)
     aero_split_f = VP.get('aero_split_f', 0.40)
     aero_split_r = VP.get('aero_split_r', 0.60)
-    Fz_f_static  = Fz_f_static + Fz_aero * aero_split_f
-    Fz_r_static  = Fz_r_static + Fz_aero * aero_split_r
+
+    rh_f_mm = h_ride_f * 1000.0
+    rh_r_mm = h_ride_r * 1000.0
+    Gamma_ge_f = ground_effect_envelope(rh_f_mm, VP.get('rh_peak_mm', 30.0), VP.get('rh_stall_mm', 12.0))
+    Gamma_ge_r = ground_effect_envelope(rh_r_mm, VP.get('rh_peak_mm', 30.0), VP.get('rh_stall_mm', 12.0))
+
+    Fz_aero_f = 0.5 * rho * (Cl * aero_split_f * Gamma_ge_f) * A * v_corner ** 2
+    Fz_aero_r = 0.5 * rho * (Cl * aero_split_r * Gamma_ge_r) * A * v_corner ** 2
+    Fz_f_static = Fz_f_static + Fz_aero_f
+    Fz_r_static = Fz_r_static + Fz_aero_r
+
+    PDY1 = 1.92
+    PDY2 = -0.25
+    Fz0  = 1000.0
+    camber_gain_f = VP.get('camber_gain_f', -0.8)
 
     ay_sweep = jnp.linspace(0.5, 2.5, 1000)
 
     def compute_balance_at_ay(ay_g):
         ay = ay_g * g
 
-        LLT_geo_f     = m * ay * h_rc_f / t_w
-        LLT_geo_r     = m * ay * h_rc_r / t_r
+        LLT_f = m * ay * h_rc_f / t_w + m * ay * (h_cg - h_rc_f) / t_w * lltd_f_elastic
+        LLT_r = m * ay * h_rc_r / t_r + m * ay * (h_cg - h_rc_r) / t_r * lltd_r_elastic
 
-        h_arm_f       = h_cg - h_rc_f
-        h_arm_r       = h_cg - h_rc_r
-        LLT_elastic_f = m * ay * h_arm_f / t_w * lltd_f_elastic
-        LLT_elastic_r = m * ay * h_arm_r / t_r * lltd_r_elastic
-
-        LLT_f = LLT_geo_f + LLT_elastic_f
-        LLT_r = LLT_geo_r + LLT_elastic_r
-
-        # BUGFIX-F: _softplus_floor replaces jnp.maximum — gradient alive at floor.
-        # Inside vmap + MORL Adam gradient, jnp.maximum produces zero subgradient
-        # precisely when corner loads go light — the most setup-sensitive regime.
         Fz_fo = _softplus_floor(Fz_f_static / 2.0 + LLT_f, 10.0)
         Fz_fi = _softplus_floor(Fz_f_static / 2.0 - LLT_f, 10.0)
         Fz_ro = _softplus_floor(Fz_r_static / 2.0 + LLT_r, 10.0)
         Fz_ri = _softplus_floor(Fz_r_static / 2.0 - LLT_r, 10.0)
 
-        # Line 209: The lift_penalty uses raw jax.nn.relu on tire normal loads:
-        inner_lift_f = jax.nn.relu(50.0 - (Fz_f_static / 2.0 - LLT_f))
-        inner_lift_r = jax.nn.relu(50.0 - (Fz_r_static / 2.0 - LLT_r))
-        lift_penalty = (inner_lift_f + inner_lift_r) * 0.0005
+        inner_lift = jax.nn.relu(50.0 - (Fz_f_static / 2.0 - LLT_f)) + jax.nn.relu(50.0 - (Fz_r_static / 2.0 - LLT_r))
+        lift_penalty = inner_lift * 0.0005
 
-        phi_est              = (m * ay * h_cg) / (Kroll_total + 1.0)
-        phi_deg              = jnp.rad2deg(phi_est)
-        effective_camber_out = static_camber + phi_deg * camber_gain_f
-        camber_opt           = -3.5
-        camber_bonus         = 1.0 + 0.03 * jnp.exp(
-            -0.5 * ((effective_camber_out - camber_opt) / 2.0) ** 2
-        )
+        phi_deg = jnp.rad2deg((m * ay * h_cg) / (Kroll_total + 1.0))
+        effective_camber_out = camber_f + phi_deg * camber_gain_f
+        camber_bonus = 1.0 + 0.04 * jnp.exp(-0.5 * ((effective_camber_out - (-2.8)) / 1.5) ** 2)
 
-        # Line 221: The tire friction coefficient calculation is linear-flat:
         def mu(Fz):
-            dfz = (Fz - Fz0) / Fz0
-            return PDY1 * (1.0 + PDY2 * dfz)
+            return PDY1 * (1.0 + PDY2 * ((Fz - Fz0) / Fz0))
 
         Fy_f_max = mu(Fz_fo) * Fz_fo * camber_bonus + mu(Fz_fi) * Fz_fi
         Fy_r_max = mu(Fz_ro) * Fz_ro * camber_bonus + mu(Fz_ri) * Fz_ri
 
-        Fy_required = m * ay
-        Fy_f_req    = Fy_required * lr / L
-        Fy_r_req    = Fy_required * lf / L
-
-        util_f = Fy_f_req / (Fy_f_max + 1e-3)
-        util_r = Fy_r_req / (Fy_r_max + 1e-3)
+        util_f = (m * ay * lr / L) / (Fy_f_max + 1e-3)
+        util_r = (m * ay * lf / L) / (Fy_r_max + 1e-3)
 
         balance = 1.0 - jnp.abs(util_f - util_r)
-
-        # FIX: Colapsamos el producto de sigmoides para evitar el desvanecimiento del gradiente en float32
-        sharpness     = 10.0
-        util_worst    = jnp.maximum(util_f, util_r)
-        feasible_soft = jax.nn.sigmoid((1.0 - util_worst) * sharpness)
+        feasible_soft = jax.nn.sigmoid((1.0 - jnp.maximum(util_f, util_r)) * 10.0)
 
         return ay_g * balance * feasible_soft - lift_penalty
 
     grip_scores = jax.vmap(compute_balance_at_ay)(ay_sweep)
-
     smooth_max = (1.0 / _LSE_BETA) * jax.nn.logsumexp(_LSE_BETA * grip_scores)
 
-    bump_rms        = 0.007
-    fz_variation_f  = wheel_rate_f * bump_rms
-    fz_variation_r  = wheel_rate_r * bump_rms
+    # Penalizaciones estructurales y reparto de frenada
+    fz_variation = (wheel_rate_f + wheel_rate_r) * 0.007
+    stiffness_penalty = (jnp.abs(PDY2) * (fz_variation / Fz0)) * 0.4
 
-    k_ref_centering   = 25000.0
-    w_centering       = 0.01
-    centering_penalty = w_centering * (
-        ((k_f - k_ref_centering) / k_ref_centering) ** 2 +
-        ((k_r - k_ref_centering) / k_ref_centering) ** 2
-    )
+    # ── Penalización física de rigidez: ancla k_f/k_r a la frecuencia natural
+    # objetivo de FS (2.6-3.2 Hz delante, 2.8-3.5 Hz detrás), en vez de dejar
+    # que Adam suba la rigidez sin freno porque el objetivo steady-state no
+    # ve pistas reales con irregularidades (donde muelle duro = pérdida de
+    # contacto). f_n = (1/2π)·√(k_wheel/m_corner). Asimétrica: barato por
+    # debajo del rango, caro por encima — reflejando que sub-amortiguar
+    # cuesta grip mecánico en pista real, pero sobre-endurecer cuesta más
+    # porque además pierdes tracción sobre curbs/piano.
+    m_corner_f = (m * lr / L) / 2.0
+    m_corner_r = (m * lf / L) / 2.0
+    f_n_f = jnp.sqrt(wheel_rate_f / (m_corner_f + 1e-3)) / (2.0 * jnp.pi)
+    f_n_r = jnp.sqrt(wheel_rate_r / (m_corner_r + 1e-3)) / (2.0 * jnp.pi)
 
-    stiffness_penalty = (
-        (jnp.abs(PDY2) * (fz_variation_f / Fz0) +
-         jnp.abs(PDY2) * (fz_variation_r / Fz0)) * 0.4
-        + centering_penalty
-    )
+    freq_penalty = (0.08 * jax.nn.relu(f_n_f - 3.2) ** 2
+                  + 0.08 * jax.nn.relu(f_n_r - 3.5) ** 2
+                  + 0.04 * jax.nn.relu(2.6 - f_n_f) ** 2
+                  + 0.04 * jax.nn.relu(2.8 - f_n_r) ** 2)
 
-    Fz_f_brake          = (m * g * lr / L) + (m * 1.0 * g * h_cg / L)
-    Fz_r_brake          = (m * g * lf / L) - (m * 1.0 * g * h_cg / L)
-    ideal_bias          = Fz_f_brake / (Fz_f_brake + Fz_r_brake)
+    Fz_f_brake = (m * g * lr / L) + (m * 1.0 * g * h_cg / L)
+    Fz_r_brake = (m * g * lf / L) - (m * 1.0 * g * h_cg / L)
+    ideal_bias = Fz_f_brake / (Fz_f_brake + Fz_r_brake)
     brake_balance_penalty = 3.0 * (brake_bias_f - ideal_bias) ** 2
 
-    obj_grip = smooth_max - stiffness_penalty - brake_balance_penalty
+    # Trade-offs físicos calibrados (máximo coste combinado ≤ 0.05 G)
+    modal_penalty = 0.005 * compute_frequency_response_objective(simulate_step_fn, params, x_init)
 
+    delta_T_rib_f = jnp.abs(camber_f + 2.2) * 5.0
+    delta_T_rib_r = jnp.abs(camber_r + 1.4) * 4.0
+    thermal_imbalance_cost = 0.0002 * (delta_T_rib_f ** 2 + delta_T_rib_r ** 2)
+
+    fz_roughness_penalty = 1.5e-8 * (c_low_f ** 2 + c_low_r ** 2 + 0.2 * c_high_f ** 2 + 0.2 * c_high_r ** 2)
+    scrub_drag_cost = 5.0 * (jnp.sin(jnp.deg2rad(toe_f)) ** 2 + jnp.sin(jnp.deg2rad(toe_r)) ** 2)
+
+    # Agarre objetivo neto
+    obj_grip = (smooth_max
+                - stiffness_penalty
+                - freq_penalty
+                - brake_balance_penalty
+                - modal_penalty
+                - thermal_imbalance_cost
+                - fz_roughness_penalty
+                - scrub_drag_cost)
     # ── Safety margin: LLTD front-rear split ──────────────────────────────────
     # Compute at reference lateral acceleration 1.5G
     ay_ref        = 1.5 * g
@@ -368,7 +375,13 @@ def compute_frequency_response_objective(simulate_step_fn, params, x_init,
 
     if params.shape[-1] == 28:
         k_f, k_r = params[0], params[1]
-        c_f, c_r = params[4], params[5]    # c_low_f, c_low_r
+        c_low_f, c_low_r = params[4], params[5]
+        c_high_f, c_high_r = params[6], params[7]
+        reb_ratio_f, reb_ratio_r = params[10], params[11]
+
+        # Amortiguación efectiva promedio ponderada (compresión baja/alta + extensión)
+        c_f = (0.7 * c_low_f + 0.3 * c_high_f) * (1.0 + reb_ratio_f) * 0.5
+        c_r = (0.7 * c_low_r + 0.3 * c_high_r) * (1.0 + reb_ratio_r) * 0.5
     else:
         k_f, k_r = params[0], params[1]
         c_f, c_r = params[4], params[5]

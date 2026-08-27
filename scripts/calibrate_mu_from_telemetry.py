@@ -186,8 +186,9 @@ def main():
 
     # Vector theta = log([mu_f, mu_r, steer_gain, brake_gain, torque_gain])
     theta = jnp.zeros(5)
+    # Subir cota de mu_r a 2.00 para absorber la carga aerodinámica trasera
     theta_lb = jnp.log(jnp.array([0.50, 0.50, 0.70, 0.05, 0.20]))
-    theta_ub = jnp.log(jnp.array([1.60, 1.60, 1.30, 2.50, 2.00]))
+    theta_ub = jnp.log(jnp.array([1.80, 2.00, 1.30, 2.50, 2.00]))
 
     opt = optax.adam(args.lr)
     opt_state = opt.init(theta)

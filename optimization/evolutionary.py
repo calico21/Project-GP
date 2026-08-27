@@ -78,7 +78,7 @@ from powertrain.state_estimator import (
 # are admitted to the Pareto archive.  Previously-archived setups generated with
 # STABILITY_MAX=5.0 remain valid — they just won't be re-accepted on a restart
 # if they fail the corrected safety_margin check.
-STABILITY_MAX    = 0.0     # safety_margin threshold (understeering = positive)
+STABILITY_MAX    = 0.35    # Admite hasta un 35% de sobreoscilación máxima admisible
 SAFETY_THRESHOLD = 0.10    # minimum acceptable grip [G]
 _RNPG_JAC_EVERY  = 10      # Jacobian refresh interval (gradient steps)
 _RNPG_CLIP_NORM  = 5.0     # max natural gradient ℓ₂-norm before clipping
@@ -535,9 +535,10 @@ class MORL_SB_TRPO_Optimizer:
     @partial(jax.jit, static_argnums=(0, 2))
     def evaluate_setup_jax(self, setup_norm, phase='bo'):
         """
-        Hybrid evaluation: fast model for BO screening, full model for Adam.
+        Evaluación multi-fase del setup:
+        - 'bo' / 'adam': Objetivos analíticos puros (Skidpad + Step-Steer + Mini-Lap LTE)
+        - 'telemetry': Correlación directa contra trazas reales del bus CAN
         """
-        # optimization/evolutionary.py, inside evaluate_setup_jax (phase == 'bo' branch)
         from models.vehicle_dynamics import compute_equilibrium_suspension, DifferentiableMultiBodyVehicle
 
         setup_phys = self._norm_to_physical(setup_norm)
@@ -546,20 +547,9 @@ class MORL_SB_TRPO_Optimizer:
         x_init = DifferentiableMultiBodyVehicle.make_initial_state(T_env=25.0, vx0=15.0)
         x_init = x_init.at[6:10].set(z_eq)
 
-        if phase == 'bo':
-            # Phase 1: Fast Simplified Evaluation
-            grip, _ = compute_skidpad_objective(self._vehicle.simulate_step, setup_phys, x_init)
-            stab    = compute_step_steer_objective(self._vehicle.simulate_step, setup_phys, x_init)
-            lte     = compute_endurance_lte_objective(self._vehicle.simulate_step, setup_phys, x_init) 
-            safety  = jax.nn.sigmoid((grip - SAFETY_THRESHOLD) * 10.0)
-            return grip, stab, safety, lte
-
-        elif phase == 'telemetry':
-            # Phase T: Fast objectives + real-data twin fidelity
-            # Requires self.load_telemetry() to have been called first.
+        if phase == 'telemetry':
             if not hasattr(self, '_real_controls') or self._real_controls is None:
-                raise RuntimeError(
-                    "[MORL] phase='telemetry' requires calling load_telemetry() first.")
+                raise RuntimeError("[MORL] phase='telemetry' requiere llamar primero a load_telemetry().")
             grip, _ = compute_skidpad_objective(self._vehicle.simulate_step, setup_phys, x_init)
             stab    = compute_step_steer_objective(self._vehicle.simulate_step, setup_phys, x_init)
             lte     = compute_endurance_lte_objective(self._vehicle.simulate_step, setup_phys, x_init)
@@ -577,28 +567,14 @@ class MORL_SB_TRPO_Optimizer:
             )
             safety  = jax.nn.sigmoid((grip - SAFETY_THRESHOLD) * 10.0)
             return grip, stab, safety, lte, tf
-        
+
         else:
-            # Phase 2: Full Fidelity (Adam Refinement)
-            N_steps = int(5.0 / 0.005)
-            driving_inputs = jnp.zeros((N_steps, 5))
-            driving_inputs = driving_inputs.at[:, 0].set(1.0) # Full throttle
-            driving_inputs = driving_inputs.at[:, 4].set(1.4) # mu_est = 1.4
-            
-            from powertrain.powertrain_manager import PowertrainConfig
-            from powertrain.state_estimator import UKFParams
-            config = PowertrainConfig()
-            ukf_params = UKFParams()
-            key = jax.random.PRNGKey(42)
-            
-            grip_proxy, stab_proxy = evaluate_setup_full_fidelity(
-                setup_phys, self._vehicle, driving_inputs,
-                config, config.geo, config.motor, config.battery,
-                ukf_params, key, dt=0.005
-            )
-            
-            safety  = jax.nn.sigmoid((grip_proxy - SAFETY_THRESHOLD) * 10.0)
-            return grip_proxy, stab_proxy, safety, 0.0
+            # Evaluaciones analíticas diferenciables para BO y descenso por gradiente Adam
+            grip, _ = compute_skidpad_objective(self._vehicle.simulate_step, setup_phys, x_init)
+            stab    = compute_step_steer_objective(self._vehicle.simulate_step, setup_phys, x_init)
+            lte     = compute_endurance_lte_objective(self._vehicle.simulate_step, setup_phys, x_init) 
+            safety  = jax.nn.sigmoid((grip - SAFETY_THRESHOLD) * 10.0)
+            return grip, stab, safety, lte
 
     # ─────────────────────────────────────────────────────────────────────────
     # §3.2  Non-dominated Pareto index selection
@@ -749,7 +725,7 @@ class MORL_SB_TRPO_Optimizer:
             Optional W&B run for experiment tracking.
         """
         print("\n[MORL-SB-TRPO] Initialising 28-dim Pareto Policy Ensemble…")
-        print(f"[SB-TRPO] Compiling 46-DOF physics gradients via XLA…")
+        print(f"[SB-TRPO] Compiling 108-DOF physics gradients via XLA…")
         print(f"[SB-TRPO] dim={self.dim} | KL_threshold={self.KL_THRESHOLD:.5f} "
               f"| Chebyshev N={self.ensemble_size}")
 
@@ -886,11 +862,11 @@ class MORL_SB_TRPO_Optimizer:
             def member_loss(params_k, omega_k):
                 mu_k, ls_k = params_k['mu'], params_k['log_std']
                 setup_norm  = jax.nn.sigmoid(mu_k)
-                grip, stab, safety, lte = self.evaluate_setup_jax(setup_norm, phase='adam')
+                grip, stab, safety, lte = self.evaluate_setup_jax(setup_norm, phase='bo')
 
-                lambda_lte = 0.15  # Tunable weight for endurance
-                # Add "+ lambda_lte * lte" to your existing math:
-                scalarized = omega_k * grip + (1.0 - omega_k) * (-stab) + lambda_lte * lte
+                lambda_lte = 0.15  # Ponderación para resistencia / consumo
+                # stab devuelve valor negativo (mayor = mejor amortiguamiento)
+                scalarized = omega_k * grip + (1.0 - omega_k) * (stab * 0.5) + lambda_lte * lte
                 entropy    = self.H_ENTROPY_COEFF * jnp.sum(ls_k)
                 safety_pen = jax.nn.relu(SAFETY_THRESHOLD - grip) * 10.0
                 return -(scalarized + entropy) + safety_pen

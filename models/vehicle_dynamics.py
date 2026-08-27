@@ -156,11 +156,14 @@ SETUP_LB = jnp.array([
 ], dtype=jnp.float32)
 
 SETUP_UB = jnp.array([
-    120000., 120000., 5000., 5000., 8000., 8000., 4000., 4000.,
+    65000.,  65000.,  5000., 5000., 8000., 8000., 4000., 4000.,
        0.40,   0.40,  3.0,   3.0,  0.060, 0.060,  0.0,   0.0,
        1.0,    1.0,  10.0,   0.9,   0.9,   0.9,   0.9,   1.0,
        0.80,   0.45, 0.05,  0.05,
 ], dtype=jnp.float32)
+# k_f, k_r bajado de 120000→65000 N/m: por encima de eso, el muelle en la
+# mangueta (tras MR²≈1.3) supera 150kN/m — fuera de catálogo real de
+# resortes FS y sin sentido físico salvo como artefacto de optimización.
 
 
 class SuspensionSetup(NamedTuple):
@@ -982,6 +985,28 @@ class DifferentiableMultiBodyVehicle:
         dFz_lat_f  = self.m * ay_clipped * h_cg_val / (self.track_f + 1e-6)
         dFz_lat_r  = self.m * ay_clipped * h_cg_val / (self.track_r + 1e-6)
 
+        # ── Anti-squat / anti-dive / anti-lift geometric coupling ──────────
+        # A fraction `anti ∈ [0,1]` of the longitudinal load-transfer force
+        # is reacted through the wishbone/pushrod geometry directly (jacking
+        # force at the hub) rather than through spring compression. This
+        # produces a direct pitch-resisting moment that does NOT depend on
+        # suspension travel — previously these 4 setup params had zero
+        # physics coupling anywhere in the model.
+        # Gates are smooth sigmoids on ax sign (never a hard conditional):
+        #   squat_gate → 1 under power (ax>0, rear squats)
+        #   dive_gate  → 1 under braking (ax<0, front dives, rear can lift)
+        ax_signed  = ax_coriolis
+        F_lt_mag   = safe_abs(self.m * ax_signed * h_cg_val / self._L)
+        squat_gate = jax.nn.sigmoid(20.0 * ax_signed)
+        dive_gate  = jax.nn.sigmoid(-20.0 * ax_signed)
+
+        M_y_antisquat = -s.anti_squat  * squat_gate * F_lt_mag * self.lr
+        M_y_antidive  =  s.anti_dive_f * dive_gate  * F_lt_mag * self.lf
+        M_y_antilift  = -s.anti_dive_r * dive_gate  * F_lt_mag * self.lr  # rear anti-dive under braking
+        M_y_liftoff   = -s.anti_lift   * dive_gate  * F_lt_mag * self.lr * 0.5  # rear anti-lift under decel
+
+        M_y_jacking = M_y_antisquat + M_y_antidive + M_y_antilift + M_y_liftoff
+
         Fz_fl = _softplus_floor(F_grav_f * 0.5 - dFz_accel * 0.5 - dFz_lat_f * 0.5, 10.0)
         Fz_fr = _softplus_floor(F_grav_f * 0.5 - dFz_accel * 0.5 + dFz_lat_f * 0.5, 10.0)
         Fz_rl = _softplus_floor(F_grav_r * 0.5 + dFz_accel * 0.5 - dFz_lat_r * 0.5, 10.0)
@@ -1011,6 +1036,11 @@ class DifferentiableMultiBodyVehicle:
         delta_cmd   = u[0]
         delta_bs_fl = compute_bump_steer(z_fl, s.bump_steer_f, self._bs2_f)
         delta_bs_fr = compute_bump_steer(z_fr, s.bump_steer_f, self._bs2_f)
+        # Rear bump steer — was completely absent; only the front axle had
+        # a bump_steer routing path. Rear self-steer under bump/roll is a
+        # real, setup-relevant effect (toe-link geometry).
+        delta_bs_rl = compute_bump_steer(z_rl, s.bump_steer_r, self._bs2_r)
+        delta_bs_rr = compute_bump_steer(z_rr, s.bump_steer_r, self._bs2_r)
 
         # Use the centripetal lateral acceleration already computed
         Fy_total_approx = jnp.clip(self.m * ay_centripetal, -5000.0, 5000.0)
@@ -1018,18 +1048,29 @@ class DifferentiableMultiBodyVehicle:
         delta_comply_f = jnp.deg2rad(self._comply_f * Fy_total_approx / 1000.0)
         delta_comply_r = jnp.deg2rad(self._comply_r * Fy_total_approx / 1000.0)
 
+        # Static toe angles — mirrored L/R exactly like camber (gamma_fl/fr)
+        # so that on a straight the toe contributions to yaw moment cancel
+        # by construction (toe-in on both sides scrubs speed symmetrically,
+        # it does not itself generate a net yaw moment at zero slip).
+        toe_fl_rad =  jnp.deg2rad(s.toe_f)
+        toe_fr_rad = -jnp.deg2rad(s.toe_f)
+        toe_rl_rad =  jnp.deg2rad(s.toe_r)
+        toe_rr_rad = -jnp.deg2rad(s.toe_r)
+
         ack      = self._ackermann
         wb       = self._L
-        delta_fl = delta_cmd * (1.0 + ack * tf2 / (2.0 * wb)) + delta_bs_fl + delta_comply_f
-        delta_fr = delta_cmd * (1.0 - ack * tf2 / (2.0 * wb)) + delta_bs_fr + delta_comply_f
+        delta_fl = delta_cmd * (1.0 + ack * tf2 / (2.0 * wb)) + delta_bs_fl + delta_comply_f + toe_fl_rad
+        delta_fr = delta_cmd * (1.0 - ack * tf2 / (2.0 * wb)) + delta_bs_fr + delta_comply_f + toe_fr_rad
+        delta_rl = delta_comply_r + delta_bs_rl + toe_rl_rad
+        delta_rr = delta_comply_r + delta_bs_rr + toe_rr_rad
 
         eps_v        = 0.5
         v_corner_fl  = vx - wz * tf2
         v_corner_fr  = vx + wz * tf2
-        alpha_kin_fl = delta_fl       - jnp.arctan2(vy + wz * self.lf, jnp.maximum(safe_abs(v_corner_fl), eps_v))
-        alpha_kin_fr = delta_fr       - jnp.arctan2(vy + wz * self.lf, jnp.maximum(safe_abs(v_corner_fr), eps_v))
-        alpha_kin_rl = delta_comply_r - jnp.arctan2(vy - wz * self.lr, jnp.maximum(safe_abs(vx - wz * tr2), eps_v))
-        alpha_kin_rr = delta_comply_r - jnp.arctan2(vy - wz * self.lr, jnp.maximum(safe_abs(vx + wz * tr2), eps_v))
+        alpha_kin_fl = delta_fl - jnp.arctan2(vy + wz * self.lf, jnp.maximum(safe_abs(v_corner_fl), eps_v))
+        alpha_kin_fr = delta_fr - jnp.arctan2(vy + wz * self.lf, jnp.maximum(safe_abs(v_corner_fr), eps_v))
+        alpha_kin_rl = delta_rl - jnp.arctan2(vy - wz * self.lr, jnp.maximum(safe_abs(vx - wz * tr2), eps_v))
+        alpha_kin_rr = delta_rr - jnp.arctan2(vy - wz * self.lr, jnp.maximum(safe_abs(vx + wz * tr2), eps_v))
 
         # 2nd-order model: dα_t/dt = α_dot (already in state)
         # The acceleration (dα_dot/dt) is computed in the dx_slip block below
@@ -1200,7 +1241,8 @@ class DifferentiableMultiBodyVehicle:
                                 + (F_susp_rl - F_susp_rr) * tr2 + Mx_aero)
         F_ext = F_ext.at[18].set((Fx_f + Fx_r) * s.h_cg
                                   - (F_susp_fl + F_susp_fr) * self.lf
-                                  + (F_susp_rl + F_susp_rr) * self.lr + My_aero)
+                                  + (F_susp_rl + F_susp_rr) * self.lr + My_aero
+                                  + M_y_jacking)
         F_ext = F_ext.at[19].set(Fy_f * self.lf - Fy_r * self.lr
                                   - (Fx_fl - Fx_fr) * tf2
                                   - (Fx_rl - Fx_rr) * tr2

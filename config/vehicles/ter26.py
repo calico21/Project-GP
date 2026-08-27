@@ -264,3 +264,18 @@ vehicle_params['hardpoints_r'] = {
     'rocker_piv':  [ 0.000, 0.280, 0.320],  
     'spring_in':   [ 0.150, 0.280, 0.150],  
 }
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Design-mode bounds (used by DesignFreeze / install_freeze)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def get_design_bounds():
+    """
+    Returns (SETUP_LB, SETUP_UB) as the starting bounds for design-phase
+    optimization, before any DesignFreeze is applied. Identical to the
+    canonical bounds in models.vehicle_dynamics — this indirection exists
+    so per-car overrides (e.g. Ter27 with different spring catalog limits)
+    can diverge from Ter26 without touching the physics engine module.
+    """
+    from models.vehicle_dynamics import SETUP_LB, SETUP_UB
+    return SETUP_LB, SETUP_UB

@@ -39,8 +39,8 @@ vehicle_params_ter27 = {
     # 4WD adds ~20 kg over RWD: 2 front motors (~3.5 kg each), 2 front
     # halfshafts (~1.5 kg each), front inverter bracket (~2 kg), wiring
     # harness delta (~3 kg), additional cooling loop (~5 kg).
-    'total_mass':          320.0,   # kg  [incl. 75 kg driver]
-    'm':                   320.0,   # kg  [Legacy alias]
+    'total_mass':          280.0,   # kg  [incl. 75 kg driver]
+    'm':                   280.0,   # kg  [Legacy alias]
     'mass_driver':          75.0,   # kg
     # sprung_mass computed below in derived section
 
