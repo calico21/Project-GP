@@ -22,7 +22,7 @@ from models.vehicle_dynamics import DifferentiableMultiBodyVehicle
 from config.vehicles.ter26 import vehicle_params as VP_DICT
 from config.tire_coeffs import tire_coeffs as TP_DICT
 from scripts.run_can_backtest import (
-    decode_can_csv_to_dataframe, _extract_1d, WINDOW_LEN, _estimate_vy_kinematic,
+    _vy0_from_yaw_drift, decode_can_csv_to_dataframe, _extract_1d, WINDOW_LEN, _estimate_vy_kinematic,
 )
 
 N_CAL_WINDOWS = 25   # Submuestreo balanceado por sesión
@@ -70,8 +70,8 @@ def _build_calib_batch(df, dt: float, steer_sign: float, rng: np.random.Generato
         u_win.append(u_all[s:e])
         vx0_val = float(max(real_vx[s], MIN_VX0))
         wz0_val = float(real_wz[s])
-        k_drift = (300.0 * 0.8525) / (1.55 * 45000.0)
-        vy0_refined = float(np.clip(-0.6975 * wz0_val + k_drift * vx0_val * wz0_val, -1.2, 1.2))
+        from scripts.run_can_backtest import _vy0_from_yaw_drift
+        vy0_refined = _vy0_from_yaw_drift(vx0_val, wz0_val)
         
         x0 = DifferentiableMultiBodyVehicle.make_initial_state(T_env=25.0, vx0=vx0_val)
         x0 = x0.at[15].set(vy0_refined).at[19].set(wz0_val)
@@ -184,11 +184,14 @@ def main():
 
     grad_fn = jax.jit(jax.value_and_grad(loss_fn))
 
-    # Vector theta = log([mu_f, mu_r, steer_gain, brake_gain, torque_gain])
+    # mu_r upper bound lowered 2.00 -> 1.80: the sweep showed monotonically
+    # decreasing loss with no interior minimum up to 2.00 — mu_r was masking
+    # a rear-axle structural defect, not converging on physical friction.
+    # Capping tighter forces it to hit the ceiling explicitly rather than
+    # drift arbitrarily, making the defect visible instead of absorbed.
     theta = jnp.zeros(5)
-    # Subir cota de mu_r a 2.00 para absorber la carga aerodinámica trasera
     theta_lb = jnp.log(jnp.array([0.50, 0.50, 0.70, 0.05, 0.20]))
-    theta_ub = jnp.log(jnp.array([1.80, 2.00, 1.30, 2.50, 2.00]))
+    theta_ub = jnp.log(jnp.array([1.80, 1.80, 1.30, 2.50, 2.00]))
 
     opt = optax.adam(args.lr)
     opt_state = opt.init(theta)
@@ -209,11 +212,10 @@ def main():
                   f"steer={p[2]:.3f} brake={p[3]:.3f} trq={p[4]:.3f}")
 
     p_final = np.array(jnp.exp(theta))
-
     os.makedirs("models", exist_ok=True)
     np.save("models/mu_scale_calibrated.npy", p_final[0:2])
     np.save("models/gain_calibrated.npy", p_final[2:5])
-    np.save("models/ay_scale_calibrated.npy", np.array([1.0]))
+    np.save("models/ay_scale_calibrated.npy", np.array([1.0]))  # frozen — degenerate w/ mu
     np.save("models/steer_sign_calibrated.npy", np.array([args.steer_sign]))
 
     print(f"\n[AutoCalib] Calibración finalizada. Parámetros guardados:")

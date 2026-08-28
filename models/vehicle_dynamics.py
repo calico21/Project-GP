@@ -1222,11 +1222,15 @@ class DifferentiableMultiBodyVehicle:
             jax.debug.print(
                 "vwfl={a:+.3f} vwfr={b:+.3f} kfl={c:+.4f} kfr={d:+.4f} krl={cc:+.4f} krr={dd:+.4f} "
                 "afl={e:+.4f} afr={f:+.4f} Fyfl={g:+.2f} Fyfr={h:+.2f} Fxfl={ii:+.2f} Fxfr={jj:+.2f} "
-                "Mzfl={k:+.2f} Mzfr={l:+.2f} Mzcfl={m:+.2f} Mzcfr={n:+.2f} Mz={o:+.2f}",
+                "Mzfl={k:+.2f} Mzfr={l:+.2f} Mzcfl={m:+.2f} Mzcfr={n:+.2f} Mz={o:+.2f} | "
+                "Fyrl={p:+.2f} Fyrr={q:+.2f} Fzrl={r:+.2f} Fzrr={t:+.2f} "
+                "gamrl={u:+.4f} gamrr={vv:+.4f} arl={w:+.4f} arr={xx:+.4f}",
                 a=v_wheel_fl, b=v_wheel_fr, c=kappa_ref_fl, d=kappa_ref_fr,
                 cc=kappa_ref_rl, dd=kappa_ref_rr,
                 e=alpha_kin_fl, f=alpha_kin_fr, g=Fy_fl, h=Fy_fr, ii=Fx_fl, jj=Fx_fr,
-                k=Mz_fl, l=Mz_fr, m=Mz_castor_fl, n=Mz_castor_fr, o=Mz_total)
+                k=Mz_fl, l=Mz_fr, m=Mz_castor_fl, n=Mz_castor_fr, o=Mz_total,
+                p=Fy_rl, q=Fy_rr, r=Fz_rl, t=Fz_rr,
+                u=gamma_rl, vv=gamma_rr, w=alpha_t_rl, xx=alpha_t_rr)
 
         # FIX: Explicitly match the incoming state vector precision type
         F_ext = jnp.zeros(28, dtype=x.dtype)

@@ -52,6 +52,12 @@ def _estimate_vy_kinematic(ay: np.ndarray, vx: np.ndarray, wz: np.ndarray,
         vy[i] = vy[i - 1] + dt * vy_dot - leak * vy[i - 1]
     return vy
 
+def _vy0_from_yaw_drift(vx0: float, wz0: float, lr: float = 0.6975,
+                         mass: float = 300.0, lf: float = 0.8525,
+                         c_alpha_r: float = 45000.0, wheelbase: float = 1.55) -> float:
+    k_drift = (mass * lf) / (wheelbase * c_alpha_r)
+    return float(np.clip(-lr * wz0 + k_drift * vx0 * wz0, -1.2, 1.2))
+
 def decode_can_csv_to_dataframe(file_path: Path, dbc_path: Path, dt: float = 0.005, lag_samples: int = 14) -> pd.DataFrame:
     with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
         header_line = f.readline().strip()
@@ -267,7 +273,7 @@ def _simulate_all_windows_jit(vehicle: DifferentiableMultiBodyVehicle, x0_batch:
         def step_fn(x, u):
             x_next = vehicle.simulate_step(x, u, setup, dt=dt, n_substeps=4, tire_cal=tire_cal)
             vx_n = x_next[14]; wz_n = x_next[19]
-            ay_force = vx_n * wz_n
+            ay_force = vx_n * wz_n * ay_scale
             return x_next, jnp.stack([vx_n, wz_n, ay_force])
         _, out = jax.lax.scan(step_fn, x0, u_seq)
         return out
@@ -312,8 +318,7 @@ def run_session_backtest(vehicle, df, dt=0.005, steer_sign=1.0, verbose=True,
 
         vx0 = float(max(real_vx_all[start], 1.0))
         wz0 = float(real_wz_all[start])
-        k_drift = (300.0 * 0.8525) / (1.55 * 45000.0)  # C_alpha_r = 45 kN/rad
-        vy0_refined = float(np.clip(-0.6975 * wz0 + k_drift * vx0 * wz0, -1.2, 1.2))
+        vy0_refined = _vy0_from_yaw_drift(vx0, wz0)
 
         x0 = DifferentiableMultiBodyVehicle.make_initial_state(T_env=25.0, vx0=vx0)
         x0 = x0.at[15].set(vy0_refined)
