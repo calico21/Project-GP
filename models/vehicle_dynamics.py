@@ -974,16 +974,37 @@ class DifferentiableMultiBodyVehicle:
 
         F_grav_f  = self.m * self.g * self.lr / self._L
         F_grav_r  = self.m * self.g * self.lf / self._L
-        # These are the quasi-static equivalents without ẋ_v/ẏ_v terms
-        # (instantaneous centripetal balance — valid at steady state and low-freq transients)
-        ay_centripetal = vx * wz     # dominant lateral acceleration [m/s²]
-        ax_coriolis    = -vy * wz    # dominant longitudinal perturbation [m/s²]
+        ay_centripetal = vx * wz
+        ax_coriolis    = -vy * wz
 
-        dFz_accel = self.m * jnp.clip(ax_coriolis,    -15.0, 15.0) * self.vp.get('h_cg', 0.330) / self._L
+        dFz_accel = self.m * jnp.clip(ax_coriolis, -15.0, 15.0) * self.vp.get('h_cg', 0.330) / self._L
         h_cg_val   = self.vp.get('h_cg', 0.330)
         ay_clipped = jnp.clip(ay_centripetal, -50.0, 50.0)
-        dFz_lat_f  = self.m * ay_clipped * h_cg_val / (self.track_f + 1e-6)
-        dFz_lat_r  = self.m * ay_clipped * h_cg_val / (self.track_r + 1e-6)
+
+        # ── Reparto elástico de transferencia de carga lateral (Kroll_f/Kroll_r) ──
+        # Antes: dFz_lat_f/r usaban h_cg completo repartido 50/50 por track width,
+        # ignorando la rigidez torsional real (muelle + ARB) de cada eje. Esto
+        # desconectaba arb_f/arb_r/k_f/k_r del comportamiento dinámico en curva
+        # y forzaba a mu_r a compensar la carga trasera mal repartida.
+        mr_f0 = self._mr_f_poly[0]
+        mr_r0 = self._mr_r_poly[0]
+        wheel_rate_f = s.k_f / (mr_f0 ** 2 + 1e-8)
+        wheel_rate_r = s.k_r / (mr_r0 ** 2 + 1e-8)
+
+        Kroll_f = wheel_rate_f * (self.track_f ** 2) * 0.5 + s.arb_f * self.track_f
+        Kroll_r = wheel_rate_r * (self.track_r ** 2) * 0.5 + s.arb_r * self.track_r
+        Kroll_total = Kroll_f + Kroll_r + 1.0
+        lltd_f_elastic = Kroll_f / Kroll_total
+        lltd_r_elastic = Kroll_r / Kroll_total
+
+        # h_rc_f/h_rc_r dependen de z_fl..z_rr, ya calculados arriba en esta función
+        h_rc_f = self._h_rc0_f + self._dh_rc_dz_f * (z_fl + z_fr) * 0.5
+        h_rc_r = self._h_rc0_r + self._dh_rc_dz_r * (z_rl + z_rr) * 0.5
+
+        dFz_lat_f = (self.m * ay_clipped * h_rc_f / (self.track_f + 1e-6)
+                     + self.m * ay_clipped * (h_cg_val - h_rc_f) / (self.track_f + 1e-6) * lltd_f_elastic)
+        dFz_lat_r = (self.m * ay_clipped * h_rc_r / (self.track_r + 1e-6)
+                     + self.m * ay_clipped * (h_cg_val - h_rc_r) / (self.track_r + 1e-6) * lltd_r_elastic)
 
         # ── Anti-squat / anti-dive / anti-lift geometric coupling ──────────
         # A fraction `anti ∈ [0,1]` of the longitudinal load-transfer force

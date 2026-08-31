@@ -14,6 +14,7 @@ import pandas as pd
 import jax
 import jax.numpy as jnp
 from scipy.signal import butter, filtfilt
+from scripts.debug_yaw_instability import MIN_VX0
 
 def _lowpass_corr(x: np.ndarray, fs: float = 200.0, cutoff: float = 8.0) -> np.ndarray:
     if len(x) < 15:
@@ -316,7 +317,8 @@ def run_session_backtest(vehicle, df, dt=0.005, steer_sign=1.0, verbose=True,
         end = start + WINDOW_LEN
         u_windows.append(u_all[start:end])
 
-        vx0 = float(max(real_vx_all[start], 1.0))
+        MIN_VX0 = 3.0
+        vx0 = float(max(real_vx_all[start], MIN_VX0))
         wz0 = float(real_wz_all[start])
         vy0_refined = _vy0_from_yaw_drift(vx0, wz0)
 
@@ -404,7 +406,176 @@ def run_session_backtest(vehicle, df, dt=0.005, steer_sign=1.0, verbose=True,
         'wz_valid': wz_valid,
         'ay_valid': ay_valid,
     }
+def run_session_backtest_debug(
+    vehicle, df, dt=0.005, steer_sign=1.0,
+    tire_cal: jax.Array = jnp.array([1.0, 1.0, -1.0, 1.0], dtype=jnp.float32),
+    steer_gain: float = 1.0, brake_gain: float = 1.0,
+    torque_gain: float = 1.0, ay_scale: float = 1.0,
+    session_name: str = "session",
+) -> dict:
+    """
+    Full per-window diagnostic pass — does NOT collapse into one global score.
+    Shows exactly which windows/regime/axle are dragging fleet correlation down.
 
+    Regime split (by peak |real_ay| in the window):
+      LOW  : < 3.0 m/s²  — transit / light cornering, both axles easy
+      MID  : 3.0-6.0     — moderate cornering, front axle mostly governs
+      HIGH : > 6.0        — near-limit cornering, REAR axle typically governs
+             (this is where the mu_r=1.80 ceiling defect should show up as a
+              disproportionate correlation/RMSE cliff vs LOW/MID)
+
+    Axle tag (heuristic from control inputs, not tire forces):
+      BRAKE(front) : mean brake pressure > 5% of session max → front-loaded
+      DRIVE(rear)  : meaningful rear torque, no braking       → rear-loaded
+      COAST        : neither — lateral-only, still rear-relevant via Fy
+    """
+    N = len(df)
+    n_windows = N // WINDOW_LEN
+    if n_windows == 0:
+        print(f"  [debug] {session_name}: too short for even one window.")
+        return {}
+
+    steer_rad = np.deg2rad(_extract_1d(df, 'steer_deg')) * steer_sign * steer_gain
+    t_fl = _extract_1d(df, 't_fl') * torque_gain
+    t_fr = _extract_1d(df, 't_fr') * torque_gain
+    t_rl = _extract_1d(df, 't_rl') * torque_gain
+    t_rr = _extract_1d(df, 't_rr') * torque_gain
+    p_hyd = _extract_1d(df, 'brake_press') * brake_gain
+
+    u_all = np.stack([steer_rad, t_fl, t_fr, t_rl, t_rr, p_hyd], axis=1)
+    u_all = np.nan_to_num(u_all, nan=0.0, posinf=0.0, neginf=0.0)
+    u_all[:, 1:5] = np.clip(u_all[:, 1:5], -50.0, 400.0)
+    u_all[:, 5]   = np.clip(u_all[:, 5],   0.0,   2000.0)
+
+    real_wz_all = np.deg2rad(_extract_1d(df, 'yaw_rate_deg_s'))
+    real_ay_all = _extract_1d(df, 'ay_mps2')
+    real_vx_all = _extract_1d(df, 'vx_mps')
+
+    u_windows, x0_windows = [], []
+    real_vx_wins, real_wz_wins, real_ay_wins = [], [], []
+    brake_mean_wins, rear_trq_mean_wins = [], []
+
+    for w in range(n_windows):
+        s, e = w * WINDOW_LEN, w * WINDOW_LEN + WINDOW_LEN
+        u_windows.append(u_all[s:e])
+
+        vx0 = float(max(real_vx_all[s], 1.0))
+        wz0 = float(real_wz_all[s])
+        vy0 = _vy0_from_yaw_drift(vx0, wz0)
+
+        x0 = DifferentiableMultiBodyVehicle.make_initial_state(T_env=25.0, vx0=vx0)
+        x0 = x0.at[15].set(vy0).at[19].set(wz0)
+        x0_windows.append(x0)
+
+        real_vx_wins.append(real_vx_all[s:e])
+        real_wz_wins.append(real_wz_all[s:e])
+        real_ay_wins.append(real_ay_all[s:e])
+        brake_mean_wins.append(float(np.mean(p_hyd[s:e])))
+        rear_trq_mean_wins.append(float(np.mean(t_rl[s:e] + t_rr[s:e])))
+
+    u_batch = jnp.asarray(np.stack(u_windows))
+    x0_batch = jnp.asarray(np.stack(x0_windows))
+    sim_out_np = np.array(_simulate_all_windows_jit(vehicle, x0_batch, u_batch, dt, tire_cal, ay_scale))
+
+    sim_vx_wins = sim_out_np[:, :, 0]
+    sim_wz_wins = sim_out_np[:, :, 1]
+    sim_ay_wins = sim_out_np[:, :, 2]
+    real_vx_arr = np.stack(real_vx_wins)
+    real_wz_arr = np.stack(real_wz_wins)
+    real_ay_arr = np.stack(real_ay_wins)
+
+    brake_max = max(np.max(np.abs(np.array(brake_mean_wins))), 1e-6)
+
+    rows = []
+    for w in range(n_windows):
+        sim_wz_c  = _lowpass_corr(sim_wz_wins[w])
+        real_wz_c = _lowpass_corr(real_wz_arr[w])
+        sim_ay_c  = _lowpass_corr(sim_ay_wins[w])
+        real_ay_c = _lowpass_corr(real_ay_arr[w])
+
+        ay_peak = float(np.max(np.abs(real_ay_c)))
+        wz_peak = float(np.max(np.abs(real_wz_c)))
+
+        r_wz_w = (float(np.corrcoef(sim_wz_c, real_wz_c)[0, 1])
+                  if np.std(sim_wz_c) > 1e-4 and np.std(real_wz_c) > 1e-4 else float('nan'))
+        r_ay_w = (float(np.corrcoef(sim_ay_c, real_ay_c)[0, 1])
+                  if np.std(sim_ay_c) > 1e-4 and np.std(real_ay_c) > 1e-4 else float('nan'))
+
+        rmse_ay_w = float(np.sqrt(np.mean((sim_ay_wins[w] - real_ay_arr[w]) ** 2)))
+        rmse_wz_w = float(np.sqrt(np.mean((sim_wz_wins[w] - real_wz_arr[w]) ** 2)))
+
+        if ay_peak < 3.0:
+            regime = "LOW"
+        elif ay_peak < 6.0:
+            regime = "MID"
+        else:
+            regime = "HIGH"
+
+        b_frac = abs(brake_mean_wins[w]) / brake_max
+        if b_frac > 0.05:
+            axle_tag = "BRAKE(front)"
+        elif abs(rear_trq_mean_wins[w]) > 20.0:
+            axle_tag = "DRIVE(rear)"
+        else:
+            axle_tag = "COAST"
+
+        saturated = bool(np.max(np.abs(sim_ay_wins[w])) > 15.0)
+
+        rows.append(dict(
+            window=w, regime=regime, axle=axle_tag,
+            ay_peak=ay_peak, wz_peak=wz_peak,
+            r_ay=r_ay_w, r_wz=r_wz_w,
+            rmse_ay=rmse_ay_w, rmse_wz=rmse_wz_w,
+            vx0=float(real_vx_arr[w, 0]), saturated=saturated,
+        ))
+
+    df_rows = pd.DataFrame(rows)
+
+    print(f"\n{'═'*78}")
+    print(f"  DEBUG BREAKDOWN — {session_name}  ({n_windows} windows)")
+    print(f"{'═'*78}")
+
+    print(f"\n  {'Regime':<8} {'N':>5} {'mean r_ay':>10} {'mean r_wz':>10} "
+          f"{'mean rmse_ay':>13} {'sat%':>6}")
+    for regime in ("LOW", "MID", "HIGH"):
+        sub = df_rows[df_rows.regime == regime]
+        if len(sub) == 0:
+            continue
+        print(f"  {regime:<8} {len(sub):>5} {sub.r_ay.mean():>10.3f} "
+              f"{sub.r_wz.mean():>10.3f} {sub.rmse_ay.mean():>13.3f} "
+              f"{100*sub.saturated.mean():>5.1f}%")
+
+    print(f"\n  {'Axle tag':<14} {'N':>5} {'mean r_ay':>10} {'mean rmse_ay':>13}")
+    for axle in ("BRAKE(front)", "DRIVE(rear)", "COAST"):
+        sub = df_rows[df_rows.axle == axle]
+        if len(sub) == 0:
+            continue
+        print(f"  {axle:<14} {len(sub):>5} {sub.r_ay.mean():>10.3f} {sub.rmse_ay.mean():>13.3f}")
+
+    # KEY diagnostic: HIGH-ay × non-braking isolates rear-axle-governed
+    # cornering — where mu_r pinning at 1.80 should manifest as a cliff.
+    high_rear = df_rows[(df_rows.regime == "HIGH") & (df_rows.axle != "BRAKE(front)")]
+    if len(high_rear) > 0:
+        low_mean = df_rows[df_rows.regime == 'LOW'].r_ay.mean()
+        print(f"\n  [KEY] HIGH-ay, non-braking (rear-governed) windows: "
+              f"n={len(high_rear)}  mean r_ay={high_rear.r_ay.mean():.3f}  "
+              f"mean rmse_ay={high_rear.rmse_ay.mean():.3f}  "
+              f"sat%={100*high_rear.saturated.mean():.1f}%")
+        print(f"         vs LOW regime mean r_ay={low_mean:.3f} — "
+              f"a large gap here confirms the rear-axle defect is the "
+              f"dominant correlation sink, not a global tuning problem.")
+
+    print(f"\n  Worst 10 windows by r_ay (lowest correlation):")
+    print(df_rows.sort_values("r_ay").head(10).to_string(index=False))
+
+    out_dir = Path("reports") / "debug_backtest"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_path = out_dir / f"{session_name}_windows.csv"
+    df_rows.to_csv(out_path, index=False)
+    print(f"\n  [saved] full per-window table → {out_path}")
+
+    return {"df": df_rows,
+            "high_rear_mean_r_ay": float(high_rear.r_ay.mean()) if len(high_rear) else float('nan')}
 
 def _probe_best_steer_sign(vehicle, df, dt, n_probe_windows=20):
     """
@@ -438,6 +609,10 @@ def main():
     parser.add_argument("--lag-samples", type=int, default=14)
     parser.add_argument("--no-calibration", action="store_true",
                         help="Skip loading calibrated tire_cal/gains, use identity defaults")
+    parser.add_argument("--debug", action="store_true",
+                        help="Run full per-window diagnostic breakdown (regime × axle) "
+                             "instead of the collapsed fleet score, and dump CSVs to "
+                             "reports/debug_backtest/")
     args = parser.parse_args()
 
     files = sorted(list(args.data_dir.glob("*.csv")))
@@ -488,8 +663,16 @@ def main():
     scores = []
     for i, f in enumerate(files, 1):
         df = decode_can_csv_to_dataframe(f, dbc_path=args.dbc, dt=args.dt, lag_samples=args.lag_samples)
-
         steer_sign = steer_sign_cal
+
+        if args.debug:
+            run_session_backtest_debug(
+                vehicle, df, dt=args.dt, steer_sign=steer_sign,
+                tire_cal=tire_cal, steer_gain=steer_gain,
+                brake_gain=brake_gain, torque_gain=torque_gain,
+                ay_scale=ay_scale_cal, session_name=f.stem,
+            )
+            continue
 
         res = run_session_backtest(vehicle, df, dt=args.dt, steer_sign=steer_sign, verbose=False,
                                 tire_cal=tire_cal, steer_gain=steer_gain,
@@ -499,8 +682,9 @@ def main():
         print(f"{f.name:<16} | {res['duration_s']:<7.1f} | {res['rmse_vx']:<9.3f} | {res['rmse_wz']:<10.3f} | {res['rmse_ay']:<9.3f} | {res['score']:<6.1f}% | {steer_sign:<5.0f} | {res['r_ay']:+.3f}"
               + ("" if res.get('wz_valid', True) and res.get('ay_valid', True) else "  [LOW-DYN]"))
 
-    print("=" * 89)
-    print(f"\n[*] Overall Mean Fleet Correlation Score: {np.mean(scores):.2f} %\n")
+    if not args.debug:
+        print("=" * 89)
+        print(f"\n[*] Overall Mean Fleet Correlation Score: {np.mean(scores):.2f} %\n")
 
 
 if __name__ == "__main__":
