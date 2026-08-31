@@ -506,12 +506,11 @@ class PacejkaTire:
         # ── Front axle ────────────────────────────────────────────────────────
         T_ribs_f   = T_nodes[0:3]   # surface inner/mid/outer
         T_gas_f    = T_nodes[3]
-        T_core_f   = T_nodes[8]     # BUGFIX-7: was T_nodes[4] (= T_surf0_r, wrong)
+        T_core_f   = T_nodes[8]     # BUGFIX-7: corregido mapeo
 
         Fz_f       = (Fz_corners[0] + Fz_corners[1]) * 0.5
         kap_f      = (kappa[0] + kappa[1]) * 0.5
-        V_slide_f = jnp.sqrt((Vx * kap_f)**2 + 1e-8)
-        V_slide_r = jnp.sqrt((Vx * kap_r)**2 + 1e-8)
+        V_slide_f  = safe_abs(Vx * kap_f)
         T_flash_f  = self.compute_flash_temperature(mu_nom, Fz_f, V_slide_f)
 
         # Frictional heat split evenly across 3 surface nodes
@@ -595,8 +594,10 @@ class PacejkaTire:
         stochastic_key   = None,
         wz:               jax.Array = jnp.array(0.0),
         mu_scale:         jax.Array = jnp.array(1.0),
-        T_opt_override:   jax.Array = jnp.array(-1.0),   # NEW: <0 = "use default T_opt"
-        alpha_scale:      jax.Array = jnp.array(1.0),    # NEW: shifts Fy peak slip angle
+        T_opt_override:   jax.Array = jnp.array(-1.0),
+        alpha_scale:      jax.Array = jnp.array(1.0),
+        rby1_scale:       jax.Array = jnp.array(1.0),   # NEW
+        rby2_scale:       jax.Array = jnp.array(1.0),   # NEW
     ) -> tuple[jax.Array, jax.Array, jax.Array]:
         c   = self.coeffs
         eps = 1e-6
@@ -676,8 +677,8 @@ class PacejkaTire:
         # ════════════════════════════════════════════════════════════════════
         # COMBINED SLIP REDUCTION  (Gyk, Gxa)
         # ════════════════════════════════════════════════════════════════════
-        RBY1 = c.get('RBY1', 7.0)
-        RBY2 = c.get('RBY2', 7.0)
+        RBY1 = c.get('RBY1', 7.0) * rby1_scale
+        RBY2 = c.get('RBY2', 7.0) * rby2_scale
         RBY3 = c.get('RBY3', 0.0)
         RCY1 = c.get('RCY1', 1.0)
         REY1 = c.get('REY1', 0.0)
@@ -694,7 +695,7 @@ class PacejkaTire:
         By_s     = RBY1 * jnp.cos(jnp.arctan(RBY2 * (alpha - RBY3)))
         Ey_s     = REY1 + REY2 * dfz
         x_ys     = By_s * kappa_ys                           
-        Gyk_num  = jnp.cos(RCY1 * jnp.arctan(x_ys  - Ey_s * (x_ys  - jnp.arctan(x_ys))))
+        Gyk_num  = jnp.cos(RCY1 * jnp.arctan(x_ys - Ey_s * (x_ys - jnp.arctan(x_ys))))
         Gyk_den  = jnp.cos(RCY1 * jnp.arctan(By_s * SHyk - Ey_s * (By_s * SHyk - jnp.arctan(By_s * SHyk))))
         Gyk      = Gyk_num / (Gyk_den + 1e-6)
         Gyk      = jnp.clip(Gyk, 0.05, 1.0)

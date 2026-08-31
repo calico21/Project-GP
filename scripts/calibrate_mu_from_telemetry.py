@@ -39,10 +39,9 @@ def _build_calib_batch(df, dt: float, steer_sign: float, rng: np.random.Generato
 
     real_vx = _extract_1d(df, 'vx_mps')
 
-    MIN_VX0 = 3.0
     candidate_windows = np.array([
         w for w in range(n_windows)
-        if real_vx[w * WINDOW_LEN] >= MIN_VX0
+        if real_vx[w * WINDOW_LEN] >= 1.0
     ])
     if len(candidate_windows) == 0:
         candidate_windows = np.arange(n_windows)
@@ -68,7 +67,7 @@ def _build_calib_batch(df, dt: float, steer_sign: float, rng: np.random.Generato
     for w in idx:
         s, e = w * WINDOW_LEN, w * WINDOW_LEN + WINDOW_LEN
         u_win.append(u_all[s:e])
-        vx0_val = float(max(real_vx[s], MIN_VX0))
+        vx0_val = float(max(real_vx[s], 1.0))
         wz0_val = float(real_wz[s])
         from scripts.run_can_backtest import _vy0_from_yaw_drift
         vy0_refined = _vy0_from_yaw_drift(vx0_val, wz0_val)
@@ -143,12 +142,14 @@ def main():
     n_win_total = sum(b[0].shape[0] for b in batches)
     print(f"[AutoCalib] {len(batches)} sesiones, {n_win_total} ventanas ({n_win_total * WINDOW_LEN * args.dt:.0f}s de pista)")
 
-    def rollout(mu_scale, steer_gain, brake_gain, torque_gain, u_seq, x0):
+    def rollout(mu_scale, steer_gain, brake_gain, torque_gain, rby_scale, u_seq, x0):
         u_scaled = u_seq.at[:, 0].multiply(steer_gain)
         u_scaled = u_scaled.at[:, 1:5].multiply(torque_gain)
         u_scaled = u_scaled.at[:, 5].multiply(brake_gain)
 
-        tire_cal = jnp.array([mu_scale[0], mu_scale[1], -1.0, 1.0], dtype=jnp.float32)
+        tire_cal = jnp.array([mu_scale[0], mu_scale[1], -1.0, 1.0,
+                               rby_scale[0], rby_scale[1]], dtype=jnp.float32)
+
 
         def step_fn(x, u):
             x_next = vehicle.simulate_step(x, u, setup, dt=args.dt,
@@ -160,16 +161,18 @@ def main():
         _, out = jax.lax.scan(step_fn, x0, u_scaled)
         return out[:, 0], out[:, 1], out[:, 2]
 
-    v_rollout = jax.vmap(rollout, in_axes=(None, None, None, None, 0, 0))
+    v_rollout = jax.vmap(rollout, in_axes=(None, None, None, None, None, 0, 0))
 
     def loss_fn(theta, u_seq, x0, wz_real, ay_real, vx_real):
         mu_scale    = jnp.exp(theta[0:2])
         steer_gain  = jnp.exp(theta[2])
         brake_gain  = jnp.exp(theta[3])
         torque_gain = jnp.exp(theta[4])
-        
+        rby_scale   = jnp.exp(theta[5:7])
+
         wz_sim, ay_sim, vx_sim = v_rollout(
-            mu_scale, steer_gain, brake_gain, torque_gain, u_seq, x0)
+            mu_scale, steer_gain, brake_gain, torque_gain, rby_scale, u_seq, x0)
+
         
         loss_wz = _soft_corr_loss(wz_sim, wz_real)
         loss_ay = _soft_corr_loss(ay_sim, ay_real)
@@ -189,9 +192,10 @@ def main():
     # a rear-axle structural defect, not converging on physical friction.
     # Capping tighter forces it to hit the ceiling explicitly rather than
     # drift arbitrarily, making the defect visible instead of absorbed.
-    theta = jnp.zeros(5)
-    theta_lb = jnp.log(jnp.array([0.50, 0.50, 0.70, 0.05, 0.20]))
-    theta_ub = jnp.log(jnp.array([1.80, 1.80, 1.30, 2.50, 2.00]))
+    # theta now: [mu_f, mu_r, steer_gain, brake_gain, torque_gain, rby1_scale, rby2_scale]
+    theta = jnp.zeros(7)
+    theta_lb = jnp.log(jnp.array([0.70, 0.70, 0.70, 0.20, 0.50, 0.3, 0.3]))
+    theta_ub = jnp.log(jnp.array([2.00, 2.20, 1.30, 2.50, 2.00, 3.0, 3.0]))
 
     opt = optax.adam(args.lr)
     opt_state = opt.init(theta)
@@ -217,6 +221,7 @@ def main():
     np.save("models/gain_calibrated.npy", p_final[2:5])
     np.save("models/ay_scale_calibrated.npy", np.array([1.0]))  # frozen — degenerate w/ mu
     np.save("models/steer_sign_calibrated.npy", np.array([args.steer_sign]))
+    np.save("models/rby_scale_calibrated.npy", p_final[5:7])
 
     print(f"\n[AutoCalib] Calibración finalizada. Parámetros guardados:")
     print(f"  -> mu_f:       {p_final[0]:.3f}")

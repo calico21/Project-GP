@@ -14,7 +14,6 @@ import pandas as pd
 import jax
 import jax.numpy as jnp
 from scipy.signal import butter, filtfilt
-from scripts.debug_yaw_instability import MIN_VX0
 
 def _lowpass_corr(x: np.ndarray, fs: float = 200.0, cutoff: float = 8.0) -> np.ndarray:
     if len(x) < 15:
@@ -29,8 +28,8 @@ from models.vehicle_dynamics import DifferentiableMultiBodyVehicle
 from config.vehicles.ter26 import vehicle_params as VP_DICT
 from config.tire_coeffs import tire_coeffs as TP_DICT
 
-WINDOW_LEN = 100  # 0.5s rolling validation window (200 Hz) — shorter windows reduce open-loop divergence
-
+WINDOW_LEN = 100  # 0.5s rolling validation window (200 Hz)
+MIN_VX0 = 1.0     # Umbral de velocidad mínima restaurado a 1.0 m/s
 def _estimate_vy_kinematic(ay: np.ndarray, vx: np.ndarray, wz: np.ndarray,
                             dt: float, tau: float = 2.0) -> np.ndarray:
     """
@@ -221,28 +220,21 @@ def _standardize_and_resample(df: pd.DataFrame, dt: float, lag_samples: int) -> 
 
     df['steer_deg'] = steer
 
-    # Sincronización automática de fase por correlación cruzada (0 a 200 ms)
-    if len(steer) > 200 and np.std(steer) > 0.05 and np.std(wz) > 0.05:
-        max_shift = min(40, len(steer) // 10)
-        lags = range(0, max_shift)
-        corrs = [
-            np.corrcoef(np.roll(steer, -s)[:len(steer) - max_shift], 
-                        wz[:len(steer) - max_shift])[0, 1] 
-            for s in lags
-        ]
-        best_lag = int(np.nanargmax(corrs))
-        if np.isfinite(corrs[best_lag]) and corrs[best_lag] > 0.7:
-            lag_samples = best_lag
-            print(f"  [sync] Auto-aligned steer lag: {lag_samples} samples ({lag_samples * dt * 1000:.1f} ms) | r_peak={corrs[best_lag]:.3f}")
-
-    if lag_samples > 0 and len(steer) > lag_samples:
-        steer = np.roll(steer, -lag_samples)
-        steer[-lag_samples:] = steer[-lag_samples - 1]
+    # El modelo 108-DOF ya resuelve el transitorio físico (lag_samples = 0)
     df['steer_deg'] = steer
 
+    t_rl_actual = _extract_1d(df, 't_rl')
+    t_rr_actual = _extract_1d(df, 't_rr')
     t_dem_l = _extract_1d(df, 't_dem_l')
     t_dem_r = _extract_1d(df, 't_dem_r')
-    if np.max(np.abs(t_dem_l)) > 0.1:
+
+    # Usar telemetría real de par medida por el inversor (inmune a cortes de TC)
+    if np.max(np.abs(t_rl_actual)) > 0.1 or np.max(np.abs(t_rr_actual)) > 0.1:
+        df['t_fl'] = 0.0
+        df['t_fr'] = 0.0
+        df['t_rl'] = t_rl_actual
+        df['t_rr'] = t_rr_actual
+    elif np.max(np.abs(t_dem_l)) > 0.1:
         df['t_fl'] = 0.0
         df['t_fr'] = 0.0
         df['t_rl'] = t_dem_l
@@ -256,9 +248,8 @@ def _standardize_and_resample(df: pd.DataFrame, dt: float, lag_samples: int) -> 
         df['t_rr'] = dem_tq * 0.5
 
     bpps = _extract_1d(df, 'bpps_raw')
-    # Zona muerta del 3% para anular el offset de reposo y ruidos residuales
     bpps_clean = np.where(bpps > 3.0, bpps - 3.0, 0.0)
-    df['brake_press'] = bpps_clean * 10.0
+    df['brake_press'] = bpps_clean * 35.0
 
     return df
 
@@ -317,8 +308,7 @@ def run_session_backtest(vehicle, df, dt=0.005, steer_sign=1.0, verbose=True,
         end = start + WINDOW_LEN
         u_windows.append(u_all[start:end])
 
-        MIN_VX0 = 3.0
-        vx0 = float(max(real_vx_all[start], MIN_VX0))
+        vx0 = float(max(real_vx_all[start], 1.0))
         wz0 = float(real_wz_all[start])
         vy0_refined = _vy0_from_yaw_drift(vx0, wz0)
 
@@ -368,10 +358,10 @@ def run_session_backtest(vehicle, df, dt=0.005, steer_sign=1.0, verbose=True,
     sim_ay_c  = _lowpass_corr(sim_ay)
     real_ay_c = _lowpass_corr(real_ay)
 
-    MIN_DYN_SAMPLES = 100
+    MIN_DYN_SAMPLES = 60
 
-    dyn_mask_wz = np.abs(real_wz_c) > 0.10
-    dyn_mask_ay = np.abs(real_ay_c) > 1.5
+    dyn_mask_wz = np.abs(real_wz_c) > 0.15
+    dyn_mask_ay = np.abs(real_ay_c) > 2.0
 
     wz_valid = np.sum(dyn_mask_wz) >= MIN_DYN_SAMPLES
     ay_valid = np.sum(dyn_mask_ay) >= MIN_DYN_SAMPLES
@@ -496,10 +486,16 @@ def run_session_backtest_debug(
         ay_peak = float(np.max(np.abs(real_ay_c)))
         wz_peak = float(np.max(np.abs(real_wz_c)))
 
+        # Same dynamic-content gate as run_session_backtest — without this,
+        # near-constant LOW windows produce spurious r as low as -0.93 on
+        # sensor noise, burying the real rear-axle signal in the sort.
+        dyn_ok_wz = np.sum(np.abs(real_wz_c) > 0.10) >= 30
+        dyn_ok_ay = np.sum(np.abs(real_ay_c) > 1.5) >= 30
+
         r_wz_w = (float(np.corrcoef(sim_wz_c, real_wz_c)[0, 1])
-                  if np.std(sim_wz_c) > 1e-4 and np.std(real_wz_c) > 1e-4 else float('nan'))
+                  if dyn_ok_wz and np.std(sim_wz_c) > 1e-4 and np.std(real_wz_c) > 1e-4 else float('nan'))
         r_ay_w = (float(np.corrcoef(sim_ay_c, real_ay_c)[0, 1])
-                  if np.std(sim_ay_c) > 1e-4 and np.std(real_ay_c) > 1e-4 else float('nan'))
+                  if dyn_ok_ay and np.std(sim_ay_c) > 1e-4 and np.std(real_ay_c) > 1e-4 else float('nan'))
 
         rmse_ay_w = float(np.sqrt(np.mean((sim_ay_wins[w] - real_ay_arr[w]) ** 2)))
         rmse_wz_w = float(np.sqrt(np.mean((sim_wz_wins[w] - real_wz_arr[w]) ** 2)))
@@ -541,8 +537,8 @@ def run_session_backtest_debug(
         sub = df_rows[df_rows.regime == regime]
         if len(sub) == 0:
             continue
-        print(f"  {regime:<8} {len(sub):>5} {sub.r_ay.mean():>10.3f} "
-              f"{sub.r_wz.mean():>10.3f} {sub.rmse_ay.mean():>13.3f} "
+        print(f"  {regime:<8} {len(sub):>5} {sub.r_ay.mean(skipna=True):>10.3f} "
+              f"{sub.r_wz.mean(skipna=True):>10.3f} {sub.rmse_ay.mean():>13.3f} "
               f"{100*sub.saturated.mean():>5.1f}%")
 
     print(f"\n  {'Axle tag':<14} {'N':>5} {'mean r_ay':>10} {'mean rmse_ay':>13}")
@@ -565,8 +561,8 @@ def run_session_backtest_debug(
               f"a large gap here confirms the rear-axle defect is the "
               f"dominant correlation sink, not a global tuning problem.")
 
-    print(f"\n  Worst 10 windows by r_ay (lowest correlation):")
-    print(df_rows.sort_values("r_ay").head(10).to_string(index=False))
+    print(f"\n  Worst 10 windows by r_ay (lowest correlation, dynamic-content only):")
+    print(df_rows.dropna(subset=["r_ay"]).sort_values("r_ay").head(10).to_string(index=False))
 
     out_dir = Path("reports") / "debug_backtest"
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -639,9 +635,15 @@ def main():
             ay_scale_cal = float(np.load(ay_path)[0])
             print(f"[*] Loaded calibrated ay_scale: {ay_scale_cal:.3f}")
 
+        rby_path = os.path.join("models", "rby_scale_calibrated.npy")
+        rby_cal = np.array([1.0, 1.0], dtype=np.float32)
+        if os.path.exists(rby_path):
+            rby_cal = np.load(rby_path)
+            print(f"[*] Loaded calibrated rby_scale: rby1={rby_cal[0]:.3f} rby2={rby_cal[1]:.3f}")
+
         if os.path.exists(mu_path):
             mu = np.load(mu_path)
-            tire_cal = jnp.array([mu[0], mu[1], -1.0, 1.0], dtype=jnp.float32)
+            tire_cal = jnp.array([mu[0], mu[1], -1.0, 1.0, rby_cal[0], rby_cal[1]], dtype=jnp.float32)
             print(f"[*] Loaded calibrated tire_cal: mu_f={mu[0]:.3f} mu_r={mu[1]:.3f}")
         else:
             print(f"[*] No calibration found at {mu_path} — using identity tire_cal.")
@@ -672,7 +674,6 @@ def main():
                 brake_gain=brake_gain, torque_gain=torque_gain,
                 ay_scale=ay_scale_cal, session_name=f.stem,
             )
-            continue
 
         res = run_session_backtest(vehicle, df, dt=args.dt, steer_sign=steer_sign, verbose=False,
                                 tire_cal=tire_cal, steer_gain=steer_gain,
@@ -682,7 +683,7 @@ def main():
         print(f"{f.name:<16} | {res['duration_s']:<7.1f} | {res['rmse_vx']:<9.3f} | {res['rmse_wz']:<10.3f} | {res['rmse_ay']:<9.3f} | {res['score']:<6.1f}% | {steer_sign:<5.0f} | {res['r_ay']:+.3f}"
               + ("" if res.get('wz_valid', True) and res.get('ay_valid', True) else "  [LOW-DYN]"))
 
-    if not args.debug:
+    if scores:
         print("=" * 89)
         print(f"\n[*] Overall Mean Fleet Correlation Score: {np.mean(scores):.2f} %\n")
 

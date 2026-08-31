@@ -14,8 +14,12 @@ from models.vehicle_dynamics import DifferentiableMultiBodyVehicle
 from config.vehicles.ter26 import vehicle_params as VP_DICT
 from config.tire_coeffs import tire_coeffs as TP_DICT
 from scripts.run_can_backtest import (
-    decode_can_csv_to_dataframe, _extract_1d, WINDOW_LEN, _estimate_vy_kinematic,
+    decode_can_csv_to_dataframe, 
+    _extract_1d, 
+    WINDOW_LEN, 
+    _estimate_vy_kinematic,
     _probe_best_steer_sign,
+    MIN_VX0,  # <-- Añadido aquí
 )
 
 vehicle = DifferentiableMultiBodyVehicle(VP_DICT, TP_DICT)

@@ -977,56 +977,11 @@ class DifferentiableMultiBodyVehicle:
         ay_centripetal = vx * wz
         ax_coriolis    = -vy * wz
 
-        dFz_accel = self.m * jnp.clip(ax_coriolis, -15.0, 15.0) * self.vp.get('h_cg', 0.330) / self._L
+        dFz_accel  = self.m * jnp.clip(ax_coriolis, -15.0, 15.0) * self.vp.get('h_cg', 0.330) / self._L
         h_cg_val   = self.vp.get('h_cg', 0.330)
         ay_clipped = jnp.clip(ay_centripetal, -50.0, 50.0)
-
-        # ── Reparto elástico de transferencia de carga lateral (Kroll_f/Kroll_r) ──
-        # Antes: dFz_lat_f/r usaban h_cg completo repartido 50/50 por track width,
-        # ignorando la rigidez torsional real (muelle + ARB) de cada eje. Esto
-        # desconectaba arb_f/arb_r/k_f/k_r del comportamiento dinámico en curva
-        # y forzaba a mu_r a compensar la carga trasera mal repartida.
-        mr_f0 = self._mr_f_poly[0]
-        mr_r0 = self._mr_r_poly[0]
-        wheel_rate_f = s.k_f / (mr_f0 ** 2 + 1e-8)
-        wheel_rate_r = s.k_r / (mr_r0 ** 2 + 1e-8)
-
-        Kroll_f = wheel_rate_f * (self.track_f ** 2) * 0.5 + s.arb_f * self.track_f
-        Kroll_r = wheel_rate_r * (self.track_r ** 2) * 0.5 + s.arb_r * self.track_r
-        Kroll_total = Kroll_f + Kroll_r + 1.0
-        lltd_f_elastic = Kroll_f / Kroll_total
-        lltd_r_elastic = Kroll_r / Kroll_total
-
-        # h_rc_f/h_rc_r dependen de z_fl..z_rr, ya calculados arriba en esta función
-        h_rc_f = self._h_rc0_f + self._dh_rc_dz_f * (z_fl + z_fr) * 0.5
-        h_rc_r = self._h_rc0_r + self._dh_rc_dz_r * (z_rl + z_rr) * 0.5
-
-        dFz_lat_f = (self.m * ay_clipped * h_rc_f / (self.track_f + 1e-6)
-                     + self.m * ay_clipped * (h_cg_val - h_rc_f) / (self.track_f + 1e-6) * lltd_f_elastic)
-        dFz_lat_r = (self.m * ay_clipped * h_rc_r / (self.track_r + 1e-6)
-                     + self.m * ay_clipped * (h_cg_val - h_rc_r) / (self.track_r + 1e-6) * lltd_r_elastic)
-
-        # ── Anti-squat / anti-dive / anti-lift geometric coupling ──────────
-        # A fraction `anti ∈ [0,1]` of the longitudinal load-transfer force
-        # is reacted through the wishbone/pushrod geometry directly (jacking
-        # force at the hub) rather than through spring compression. This
-        # produces a direct pitch-resisting moment that does NOT depend on
-        # suspension travel — previously these 4 setup params had zero
-        # physics coupling anywhere in the model.
-        # Gates are smooth sigmoids on ax sign (never a hard conditional):
-        #   squat_gate → 1 under power (ax>0, rear squats)
-        #   dive_gate  → 1 under braking (ax<0, front dives, rear can lift)
-        ax_signed  = ax_coriolis
-        F_lt_mag   = safe_abs(self.m * ax_signed * h_cg_val / self._L)
-        squat_gate = jax.nn.sigmoid(20.0 * ax_signed)
-        dive_gate  = jax.nn.sigmoid(-20.0 * ax_signed)
-
-        M_y_antisquat = -s.anti_squat  * squat_gate * F_lt_mag * self.lr
-        M_y_antidive  =  s.anti_dive_f * dive_gate  * F_lt_mag * self.lf
-        M_y_antilift  = -s.anti_dive_r * dive_gate  * F_lt_mag * self.lr  # rear anti-dive under braking
-        M_y_liftoff   = -s.anti_lift   * dive_gate  * F_lt_mag * self.lr * 0.5  # rear anti-lift under decel
-
-        M_y_jacking = M_y_antisquat + M_y_antidive + M_y_antilift + M_y_liftoff
+        dFz_lat_f  = self.m * ay_clipped * h_cg_val / (self.track_f + 1e-6)
+        dFz_lat_r  = self.m * ay_clipped * h_cg_val / (self.track_r + 1e-6)
 
         Fz_fl = _softplus_floor(F_grav_f * 0.5 - dFz_accel * 0.5 - dFz_lat_f * 0.5, 10.0)
         Fz_fr = _softplus_floor(F_grav_f * 0.5 - dFz_accel * 0.5 + dFz_lat_f * 0.5, 10.0)
@@ -1057,41 +1012,23 @@ class DifferentiableMultiBodyVehicle:
         delta_cmd   = u[0]
         delta_bs_fl = compute_bump_steer(z_fl, s.bump_steer_f, self._bs2_f)
         delta_bs_fr = compute_bump_steer(z_fr, s.bump_steer_f, self._bs2_f)
-        # Rear bump steer — was completely absent; only the front axle had
-        # a bump_steer routing path. Rear self-steer under bump/roll is a
-        # real, setup-relevant effect (toe-link geometry).
-        delta_bs_rl = compute_bump_steer(z_rl, s.bump_steer_r, self._bs2_r)
-        delta_bs_rr = compute_bump_steer(z_rr, s.bump_steer_r, self._bs2_r)
 
-        # Use the centripetal lateral acceleration already computed
         Fy_total_approx = jnp.clip(self.m * ay_centripetal, -5000.0, 5000.0)
-
-        delta_comply_f = jnp.deg2rad(self._comply_f * Fy_total_approx / 1000.0)
-        delta_comply_r = jnp.deg2rad(self._comply_r * Fy_total_approx / 1000.0)
-
-        # Static toe angles — mirrored L/R exactly like camber (gamma_fl/fr)
-        # so that on a straight the toe contributions to yaw moment cancel
-        # by construction (toe-in on both sides scrubs speed symmetrically,
-        # it does not itself generate a net yaw moment at zero slip).
-        toe_fl_rad =  jnp.deg2rad(s.toe_f)
-        toe_fr_rad = -jnp.deg2rad(s.toe_f)
-        toe_rl_rad =  jnp.deg2rad(s.toe_r)
-        toe_rr_rad = -jnp.deg2rad(s.toe_r)
+        delta_comply_f  = jnp.deg2rad(self._comply_f * Fy_total_approx / 1000.0)
+        delta_comply_r  = jnp.deg2rad(self._comply_r * Fy_total_approx / 1000.0)
 
         ack      = self._ackermann
         wb       = self._L
-        delta_fl = delta_cmd * (1.0 + ack * tf2 / (2.0 * wb)) + delta_bs_fl + delta_comply_f + toe_fl_rad
-        delta_fr = delta_cmd * (1.0 - ack * tf2 / (2.0 * wb)) + delta_bs_fr + delta_comply_f + toe_fr_rad
-        delta_rl = delta_comply_r + delta_bs_rl + toe_rl_rad
-        delta_rr = delta_comply_r + delta_bs_rr + toe_rr_rad
+        delta_fl = delta_cmd * (1.0 + ack * tf2 / (2.0 * wb)) + delta_bs_fl + delta_comply_f
+        delta_fr = delta_cmd * (1.0 - ack * tf2 / (2.0 * wb)) + delta_bs_fr + delta_comply_f
 
         eps_v        = 0.5
         v_corner_fl  = vx - wz * tf2
         v_corner_fr  = vx + wz * tf2
-        alpha_kin_fl = delta_fl - jnp.arctan2(vy + wz * self.lf, jnp.maximum(safe_abs(v_corner_fl), eps_v))
-        alpha_kin_fr = delta_fr - jnp.arctan2(vy + wz * self.lf, jnp.maximum(safe_abs(v_corner_fr), eps_v))
-        alpha_kin_rl = delta_rl - jnp.arctan2(vy - wz * self.lr, jnp.maximum(safe_abs(vx - wz * tr2), eps_v))
-        alpha_kin_rr = delta_rr - jnp.arctan2(vy - wz * self.lr, jnp.maximum(safe_abs(vx + wz * tr2), eps_v))
+        alpha_kin_fl = delta_fl       - jnp.arctan2(vy + wz * self.lf, jnp.maximum(safe_abs(v_corner_fl), eps_v))
+        alpha_kin_fr = delta_fr       - jnp.arctan2(vy + wz * self.lf, jnp.maximum(safe_abs(v_corner_fr), eps_v))
+        alpha_kin_rl = delta_comply_r - jnp.arctan2(vy - wz * self.lr, jnp.maximum(safe_abs(vx - wz * tr2), eps_v))
+        alpha_kin_rr = delta_comply_r - jnp.arctan2(vy - wz * self.lr, jnp.maximum(safe_abs(vx + wz * tr2), eps_v))
 
         # 2nd-order model: dα_t/dt = α_dot (already in state)
         # The acceleration (dα_dot/dt) is computed in the dx_slip block below
@@ -1204,6 +1141,8 @@ class DifferentiableMultiBodyVehicle:
         d_kappa_rr = kappa_dot_rr
  
         mu_f, mu_r, T_opt_ovr, alpha_scl = tire_cal[0], tire_cal[1], tire_cal[2], tire_cal[3]
+        rby1_scl = tire_cal[4]
+        rby2_scl = tire_cal[5]
 
         Fx_fl, Fy_fl, sigma_fl = self.tire.compute_force_and_sigma(
             alpha_t_fl, kappa_t_fl, Fz_fl, gamma_fl, T_ribs_fl, T_gas_fl, v_fl_g,
@@ -1216,12 +1155,14 @@ class DifferentiableMultiBodyVehicle:
 
         Fx_rl, Fy_rl, sigma_rl = self.tire.compute_force_and_sigma(
             alpha_t_rl, kappa_t_rl, Fz_rl, gamma_rl, T_ribs_rl, T_gas_rl, v_rl_g,
-            wz=wz, mu_scale=mu_r, T_opt_override=T_opt_ovr, alpha_scale=alpha_scl)
+            wz=wz, mu_scale=mu_r, T_opt_override=T_opt_ovr, alpha_scale=alpha_scl,
+            rby1_scale=rby1_scl, rby2_scale=rby2_scl)
 
         Fx_rr, Fy_rr_tire, sigma_rr = self.tire.compute_force_and_sigma(
             alpha_t_rr, kappa_t_rr, Fz_rr, -gamma_rr, T_ribs_rr, T_gas_rr, v_rr_g,
-            wz=-wz, mu_scale=mu_r, T_opt_override=T_opt_ovr, alpha_scale=alpha_scl)
-        Fy_rr = -Fy_rr_tire
+            wz=-wz, mu_scale=mu_r, T_opt_override=T_opt_ovr, alpha_scale=alpha_scl,
+            rby1_scale=rby1_scl, rby2_scale=rby2_scl)
+        Fy_rr = -Fy_rr_tire   # <-- ADD THIS
         
         # Captured for future diagnostics, gradients, or internal logging
         tire_sigma_4 = jnp.array([sigma_fl, sigma_fr, sigma_rl, sigma_rr])
@@ -1266,8 +1207,7 @@ class DifferentiableMultiBodyVehicle:
                                 + (F_susp_rl - F_susp_rr) * tr2 + Mx_aero)
         F_ext = F_ext.at[18].set((Fx_f + Fx_r) * s.h_cg
                                   - (F_susp_fl + F_susp_fr) * self.lf
-                                  + (F_susp_rl + F_susp_rr) * self.lr + My_aero
-                                  + M_y_jacking)
+                                  + (F_susp_rl + F_susp_rr) * self.lr + My_aero)
         F_ext = F_ext.at[19].set(Fy_f * self.lf - Fy_r * self.lr
                                   - (Fx_fl - Fx_fr) * tf2
                                   - (Fx_rl - Fx_rr) * tr2
