@@ -763,7 +763,16 @@ class DifferentiableMultiBodyVehicle:
                   "run train_neural_residuals() first.")
 
         # h_scale=1.0 ALWAYS — weights were trained with h_scale=1.0 default.
-        self.H_net    = PassiveHNet(q_dim=14, p_dim=14, setup_dim=28)
+        # Batch 1.3A: normalize generalized momentum by a physical velocity scale.
+        # Since p = M_diag * v in _compute_derivatives, using M_diag * 20 m/s
+        # makes the H_net input O(1) over the nominal FS operating envelope without
+        # changing the trained parameter shapes. p_scale is static module metadata.
+        self._h_p_scale = tuple(float(x) for x in (self.M_diag * 20.0).tolist())
+        self.H_net    = PassiveHNet(
+            q_dim=14, p_dim=14, setup_dim=28,
+            p_scale=self._h_p_scale,
+            output_mode="capped",
+        )
         self.R_net    = NeuralDissipationMatrix(dim=14)
         self.aero_map = create_aero_platform(self.vp)
 
