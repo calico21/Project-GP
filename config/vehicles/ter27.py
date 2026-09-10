@@ -4,15 +4,14 @@
 # MASTER VEHICLE PARAMETER FILE — TER27 FOUR-WHEEL DRIVE
 #
 # PURPOSE: Initial design-space definition for the Ter27 4WD platform.
-# All geometry/suspension values are STARTING ESTIMATES — the MORL optimizer
-# will explore the full bounded space to recommend optimal targets.
+# Calibrated against validated OptimumKinematics & Alex.xlsx CAD geometry.
 #
 # KEY DIFFERENCES VS TER26 (RWD):
 # ─────────────────────────────────
 # · 4 × individual hub motors (~20 kW each, 80 kW total per FSG rules)
 # · Front unsprung mass +4.5 kg/corner (motor + halfshaft + inverter bracket)
-# · More centred weight distribution: ~48/52 F/R (was 45/55)
-# · Higher total mass: ~320 kg (additional drivetrain components)
+# · Weight distribution: ~45/55 F/R (calibrated to actual CAD CG at x = -847 mm)
+# · Total mass: 280 kg (including 75 kg driver)
 # · Lower yaw inertia: distributed motor mass closer to CG
 # · Front anti-squat now physically meaningful (front wheels drive)
 # · Torque vectoring fundamentally changes stability landscape
@@ -45,64 +44,59 @@ vehicle_params_ter27 = {
     # sprung_mass computed below in derived section
 
     # Inertias — estimated from CAD mass redistribution study.
-    # Roll inertia increases (wider mass at front axle).
-    # Yaw inertia DECREASES — distributed motors move mass inward vs
-    # single rear motor + chain drive + diff assembly.
     'Ix':   52.0,    # kg·m²  Roll  (+15% vs Ter26: front drivetrain adds roll mass)
     'Iy':   92.0,    # kg·m²  Pitch (+8%: more total mass, similar distribution)
     'Iz':  140.0,    # kg·m²  Yaw   (-7%: distributed motors, no heavy rear diff)
     'Iw':    1.4,    # kg·m²  Wheel rot. inertia (heavier front hubs w/ motor)
 
-    # CG — more centred due to front drivetrain mass pulling CG forward.
-    # Target: 48% front / 52% rear (vs Ter26's 45/55).
-    'lf':   0.806,   # m  CG → front axle  [48% front: lf = 0.52 × wb]
-    'lr':   0.744,   # m  CG → rear axle   [52% rear:  lr = 0.48 × wb]
-    'h_cg': 0.310,   # m  Total CG height  (lower: front motors below CG plane)
-    'h_cg_sprung': 0.330,  # m  Sprung mass CG height
+    # CG — Calibrated with Alex.xlsx / OptimumKinematics:
+    # Batalla = 1.540 m (contact_patch_l.x = -1540 mm)
+    # CG real: x = -847 mm -> lf = 0.847 m, lr = 0.693 m (45% F / 55% R)
+    'wheelbase':    1.540,  # m   [Calibrado con Alex.xlsx: antes 1.550]
+    'lf':           0.847,  # m   [CG -> eje delantero: CG.x = -847 mm en OK]
+    'lr':           0.693,  # m   [CG -> eje trasero: 1.540 - 0.847 m]
+    'h_cg':         0.290,  # m   [Altura total CG: CG.z = 290 mm en OK]
+    'h_cg_sprung':  0.310,  # m   [Altura masa suspendida CG]
 
-    'track_front':  1.220,  # m  [Slightly wider for front motor packaging]
-    'track_rear':   1.200,  # m  [Wider than Ter26 for symmetry]
-    'wheelbase':    1.550,  # m  [Unchanged — chassis platform continuity]
+    'track_front':  1.230,  # m   [Calibrado con OK: 2 * 0.615 m half track]
+    'track_rear':   1.230,  # m   [Calibrado con OK: 2 * 0.615 m half track]
 
-    # Front unsprung mass jumps significantly: hub motor (~3.5 kg) +
-    # halfshaft (~1.5 kg) + upright reinforcement (~0.5 kg) = +5.5 kg/corner.
-    'unsprung_mass_f': 12.50,  # kg per front corner  (was 7.74 on Ter26)
-    'unsprung_mass_r':  8.00,  # kg per rear corner   (slight increase: wider hub)
+    # Masa no suspendida por esquina
+    'unsprung_mass_f': 12.50,  # kg por esquina delantera (motor de cubo + mangueta)
+    'unsprung_mass_r':  8.00,  # kg por esquina trasera
 
     # ════════════════════════════════════════════════════════════════════════
     # SUSPENSION GEOMETRY  (fixed kinematic — NOT in SuspensionSetup)
-    # These are the INITIAL ESTIMATES. The optimizer will recommend the
-    # optimal values for the optimizable subset (anti-geometry, alignment).
     # ════════════════════════════════════════════════════════════════════════
 
-    # Roll centre heights — starting slightly higher front for load transfer
-    # management with increased front unsprung mass.
-    'h_rc_f':     0.045,    # m   (Ter26: 0.040)
-    'h_rc_r':     0.055,    # m   (Ter26: 0.060)
-    'dh_rc_dz_f': 0.22,    # m/m  RC migration rate
+    # Alturas de centros de balanceo (Roll centre heights) calibradas con OK
+    'h_rc_f':     0.020,    # m   [front.roll_center.z = 19.847 mm en OK]
+    'h_rc_r':     0.040,    # m   [rear.roll_center.z = 40.029 mm en OK]
+    'dh_rc_dz_f': 0.22,    # m/m  Tasa de migración RC
     'dh_rc_dz_r': 0.28,    # m/m
 
-    # Motion ratio — preliminary, bellcrank geometry TBD
-    'motion_ratio_f_poly': [1.12,  2.8, 0.0],   # Slightly lower MR: more wheel travel
-    'motion_ratio_r_poly': [1.14,  2.2, 0.0],
+    # Motion ratios:
+    # Delantero: 1.135 progresivo (+14.9% rising rate en compresión para aero)
+    # Trasero: 1.150 lineal (desacoplando radios a 78/48 mm o 60/37 mm para tracción)
+    'motion_ratio_f_poly': [1.135,  2.8, 0.0],
+    'motion_ratio_r_poly': [1.150,  0.2, 0.0],
 
     # ── Static alignment at design ride height ─────────────────────────────
-    # THESE ARE OPTIMIZER STARTING POINTS — will be overridden by MORL output.
-    'static_camber_f':  -2.5,   # deg  (more negative: compensate heavier front)
-    'static_camber_r':  -1.8,   # deg
-    'static_toe_f':     -0.08,  # deg  (slight toe-in for stability)
-    'static_toe_r':      0.00,  # deg  (neutral — optimizer will explore)
-    'castor_f':          5.5,   # deg  (slightly more caster for self-centering)
+    'static_camber_f':  -1.50,  # deg  [Calibrado con OK: front.camber_angle_l = -1.50°]
+    'static_camber_r':  -1.20,  # deg  [Calibrado con OK: rear.camber_angle_l = -1.20°]
+    'static_toe_f':      0.00,  # deg  [front.toe_angle_l = 0.00°]
+    'static_toe_r':      0.00,  # deg  [rear.toe_angle_l = 0.00°]
+    'castor_f':          5.00,  # deg  [front.caster_angle_l = 5.00°]
 
     # ── Camber sensitivity ─────────────────────────────────────────────────
-    'camber_gain_f': -0.75,   # deg/deg roll  (slightly less: stiffer front)
-    'camber_gain_r': -0.60,   # deg/deg roll
+    'camber_gain_f': -0.805,  # deg/deg roll  [front.camber_angle_gain_roll_l = 0.805]
+    'camber_gain_r': -0.692,  # deg/deg roll  [rear.camber_angle_gain_roll_l = 0.692]
 
-    'camber_per_m_travel_f': -22.0,  # deg/m wheel travel
-    'camber_per_m_travel_r': -18.0,  # deg/m
+    'camber_per_m_travel_f': -18.0,  # deg/m  [front gain heave: -0.018 deg/mm = -18 deg/m]
+    'camber_per_m_travel_r': -29.0,  # deg/m  [rear gain heave: -0.029 deg/mm = -29 deg/m]
 
     # ── Bump steer ─────────────────────────────────────────────────────────
-    'bump_steer_f':       0.000,  # rad/m   (target: zero)
+    'bump_steer_f':       0.000,  # rad/m   (target: zero / 0.001 deg/mm en OK)
     'bump_steer_r':       0.000,  # rad/m
     'bump_steer_quad_f':  0.000,  # rad/m²
     'bump_steer_quad_r':  0.000,  # rad/m²
@@ -112,24 +106,22 @@ vehicle_params_ter27 = {
     'compliance_steer_r': -0.10,  # deg/kN
 
     # ── Ackermann ──────────────────────────────────────────────────────────
-    'ackermann_factor': 0.0,   # OPTIMIZER TARGET — will explore [-0.5, 1.0]
+    'ackermann_factor': 0.0,   # Paralelo en diseño base
 
     # ── Anti-pitch geometry ────────────────────────────────────────────────
-    # CRITICAL FOR 4WD: front anti-squat now matters under acceleration.
-    # Starting values are conservative — optimizer will find optimal.
-    'anti_squat':   0.35,   # fraction — rear anti-squat under acceleration
-    'anti_squat_f': 0.15,   # fraction — FRONT anti-squat (NEW for 4WD)
-    'anti_lift':    0.20,   # fraction — rear anti-lift under deceleration
-    'anti_dive_f':  0.35,   # fraction — front anti-dive under braking
-    'anti_dive_r':  0.15,   # fraction — rear anti-dive under braking
+    'anti_squat':   0.398,  # fraction — rear anti-squat under acceleration
+    'anti_squat_f': 0.150,  # fraction — FRONT anti-squat (NEW for 4WD)
+    'anti_lift':    0.143,  # fraction — rear anti-lift under deceleration (14.35% en OK)
+    'anti_dive_f':  0.565,  # fraction — front anti-dive under braking (56.45% en OK)
+    'anti_dive_r':  0.150,  # fraction — rear anti-dive under braking
 
     # ════════════════════════════════════════════════════════════════════════
     # SPRING AND DAMPER RATES  (baseline — optimizer overrides)
     # ════════════════════════════════════════════════════════════════════════
 
-    # Springs — stiffer front to manage increased unsprung mass & motor torque.
-    'spring_rate_f': 40000.0,   # N/m  (Ter26: 35030)
-    'spring_rate_r': 48000.0,   # N/m  (Ter26: 52540 — lighter rear now)
+    # Springs — calibrados según Alex.xlsx
+    'spring_rate_f': 44000.0,   # N/m  [44.0 N/mm en Alex.xlsx]
+    'spring_rate_r': 53000.0,   # N/m  [53.0 N/mm en Alex.xlsx; nota: bajar a ~22 kN/m con MR=1.15]
 
     'arb_rate_f':     400.0,    # N/m at wheel  (stiffer: manage front roll)
     'arb_rate_r':     300.0,    # N/m at wheel
@@ -150,12 +142,12 @@ vehicle_params_ter27 = {
     'damper_gas_force_r':  120.0,  # N
 
     # ── Ride heights ───────────────────────────────────────────────────────
-    'h_ride_f':      0.028,   # m  (slightly lower: more aero ground effect)
+    'h_ride_f':      0.028,   # m  (ground clearance bajo morro)
     'h_ride_r':      0.028,   # m
     'h_ride_design': 0.035,   # m  [Legacy alias]
 
     # ── Bump stops ─────────────────────────────────────────────────────────
-    'bump_stop_rate':   55000.0,  # N/m  (slightly stiffer: heavier car)
+    'bump_stop_rate':   55000.0,  # N/m
     'bump_stop_engage':   0.025,  # m
 
     'lambda_stiffness': 2.0e-9,
@@ -163,7 +155,6 @@ vehicle_params_ter27 = {
     # ════════════════════════════════════════════════════════════════════════
     # AERODYNAMICS
     # ════════════════════════════════════════════════════════════════════════
-    # Aero package evolution: slightly more downforce, better balance.
     'Cl_ref':     4.50,   # Target: 8% more than Ter26 (4.14)
     'Cl':         4.50,
     'Cd_ref':     2.40,   # Slightly cleaner (improved diffuser design)
@@ -175,9 +166,9 @@ vehicle_params_ter27 = {
     'k_ground_f': 0.32,
     'k_ground_r': 0.48,
 
-    # More forward aero balance to complement 4WD traction advantage.
-    'aero_split_f': 0.48,   # (Ter26: 0.45) — more front downforce
-    'aero_split_r': 0.52,
+    # Aero balance
+    'aero_split_f': 0.48,   # 48% carga frontal
+    'aero_split_r': 0.52,   # 52% carga trasera
     'dCl_f_dtheta': 0.38,
 
     'rho_air': 1.225,
@@ -185,38 +176,37 @@ vehicle_params_ter27 = {
     # ════════════════════════════════════════════════════════════════════════
     # DRIVETRAIN — 4WD CONFIGURATION
     # ════════════════════════════════════════════════════════════════════════
-    # 4 × AMK DD5-14 (or equivalent) hub motors.
-    # Each motor: ~20 kW peak, ~22 Nm peak torque at motor shaft.
-    # Planetary reduction ratio ~10:1 per wheel → ~220 Nm at wheel each.
-    # Total at wheels: 4 × 220 = 880 Nm (vs Ter26's 450 Nm single motor).
-    'motor_peak_torque':    880.0,    # N·m  total at all 4 wheels
-    'motor_peak_torque_per_wheel': 220.0,  # N·m per wheel
-    'motor_peak_power':   80000.0,    # W  (FSG limit: 80 kW total)
-    'motor_peak_power_per_wheel': 20000.0,  # W per motor
-    'motor_max_rpm':      20000.0,    # rpm  (hub motor, higher RPM than chain drive)
-    'drivetrain_ratio':      10.0,    # Planetary reduction per wheel
-    'final_drive_ratio':     10.0,    # [Legacy alias]
-    'wheel_radius':         0.2032,   # m  (same tire: Hoosier 43075 R20)
-    'drivetrain_efficiency':  0.95,   # Higher: no chain losses, direct drive
-    'm_drivetrain_eff':       8.0,    # kg  Lower effective inertia (no chain/sprocket)
+    # 4 × AMK DD5-14 (o equivalente) motores de cubo.
+    # Cada motor: ~20 kW peak, ~22 Nm peak en eje motor. Reducción ~10:1 -> ~220 Nm en rueda.
+    'motor_peak_torque':            880.0,    # N·m  total en las 4 ruedas
+    'motor_peak_torque_per_wheel':  220.0,    # N·m por rueda
+    'motor_peak_power':           80000.0,    # W    (Límite de reglas FS: 80 kW total)
+    'motor_peak_power_per_wheel': 20000.0,    # W por motor
+    'motor_max_rpm':              20000.0,    # rpm
+    'drivetrain_ratio':              10.0,    # Reducción planetaria integrada en mangueta
+    'final_drive_ratio':             10.0,    # [Legacy alias]
+    'wheel_radius':                 0.2032,   # m  (Hoosier 43075 R20, D = 406.4 mm en Alex.xlsx)
+    'drivetrain_efficiency':          0.95,   # Direct drive en mangueta
+    'm_drivetrain_eff':               8.0,    # kg  Inercia efectiva reducida
 
-    # No mechanical differential — torque vectoring is purely electronic.
-    'diff_lock_ratio': 0.0,   # 0.0 = open (each wheel independently controlled)
+    # Diferencial electrónico (Torque Vectoring)
+    'diff_lock_ratio': 0.0,   # 0.0 = cada rueda controlada independientemente
 
     # ════════════════════════════════════════════════════════════════════════
     # TORQUE VECTORING PARAMETERS (4WD-specific)
     # ════════════════════════════════════════════════════════════════════════
-    'tv_yaw_gain':         0.8,    # —   Yaw moment gain (0=off, 1=full authority)
-    'tv_slip_limit':       0.12,   # —   Max traction slip ratio per wheel
-    'tv_regen_max_frac':   0.30,   # —   Max regen fraction of peak torque
-    'tv_power_limit':    80000.0,  # W   Total instantaneous power cap
+    'tv_yaw_gain':         0.8,    # —   Ganancia de momento de guiñada (0=off, 1=full)
+    'tv_slip_limit':       0.12,   # —   Límite de slip ratio por rueda
+    'tv_regen_max_frac':   0.30,   # —   Fracción máxima de par motor en regenerativa
+    'tv_power_limit':    80000.0,  # W   Límite estricto de potencia eléctrica instantánea
 
     # ════════════════════════════════════════════════════════════════════════
     # BRAKES
     # ════════════════════════════════════════════════════════════════════════
-    'brake_bias_f':        0.55,    # More balanced: 4WD regen on all wheels
+    # Reparto de frenada hidráulico mecánico de Alex.xlsx (76.59% delantero)
+    'brake_bias_f':        0.766,   # [front.brake_bias = 76.59% en Alex.xlsx]
     'ideal_brake_balance': False,
-    'max_brake_torque':   900.0,    # N·m  (slightly more: heavier car)
+    'max_brake_torque':   900.0,    # N·m
     'brake_mu':            0.40,
 
     # ════════════════════════════════════════════════════════════════════════
@@ -230,7 +220,7 @@ vehicle_params_ter27 = {
     # STEERING
     # ════════════════════════════════════════════════════════════════════════
     'max_steer_angle':  0.35,   # rad
-    'steer_ratio':      4.00,   # Slightly quicker ratio for 4WD agility
+    'steer_ratio':      4.37,   # [front.steering_ratio = 4.370 en Alex.xlsx]
 
     # ════════════════════════════════════════════════════════════════════════
     # SIMULATION / INTEGRATOR
@@ -253,32 +243,38 @@ vehicle_params_ter27['sprung_mass'] = (
     vehicle_params_ter27['total_mass']
     - vehicle_params_ter27['m_us_total']
 )
+
 # ── Validated 3D hardpoints (Ter27 4WD Layout) ───────────────────────────
-# Formatted in meters. Designed for a 1.220m front / 1.200m rear track width.
-# Outer assemblies are situated to packet hub motor configurations safely inside rims.
+# Coordenadas 3D exactas extraídas de Alex.xlsx / OptimumKinematics (en metros).
+# Origen [0, 0, 0] situado en el parche de contacto delantero en posición estática.
 vehicle_params_ter27['hardpoints_f'] = {
-    'lca_in_f':    [ 0.165, 0.175, 0.160],   # Lower wishbone chassis front pivot
-    'lca_in_r':    [-0.165, 0.175, 0.160],   # Lower wishbone chassis rear pivot
-    'lbj':         [ 0.000, 0.565, 0.135],   # Lower Ball Joint (outboard)
-    'uca_in_f':    [ 0.130, 0.195, 0.315],   # Upper wishbone chassis front pivot
-    'uca_in_r':    [-0.130, 0.195, 0.315],   # Upper wishbone chassis rear pivot
-    'ubj':         [ 0.000, 0.540, 0.295],   # Upper Ball Joint (outboard, Z > lbj)
-    'pushrod_out': [ 0.000, 0.510, 0.145],   # Attaches to lower control arm
-    'rocker_piv':  [ 0.000, 0.240, 0.390],   # Bellcrank chassis pivot
-    'spring_in':   [ 0.090, 0.240, 0.210],   # Coilover chassis mount
+    'lca_in_f':    [ 0.1618, 0.1551, 0.1099],   # Lower wishbone chassis front pivot (CHAS_LowFor)
+    'lca_in_r':    [-0.1600, 0.1600, 0.1300],   # Lower wishbone chassis rear pivot (CHAS_LowAft)
+    'lbj':         [ 0.0023, 0.5834, 0.1227],   # Lower Ball Joint (outboard) (UPRI_LowPnt)
+    'uca_in_f':    [ 0.1200, 0.2451, 0.2670],   # Upper wishbone chassis front pivot (CHAS_UppFor)
+    'uca_in_r':    [-0.1202, 0.2443, 0.2580],   # Upper wishbone chassis rear pivot (CHAS_UppAft)
+    'ubj':         [-0.0115, 0.5556, 0.2800],   # Upper Ball Joint (outboard) (UPRI_UppPnt)
+    'pushrod_out': [-0.0051, 0.5135, 0.2930],   # Pushrod anclado a trapecio superior (NSMA_PPAttPnt_L)
+    'rocker_piv':  [-0.0257, 0.1937, 0.5438],   # Eje de giro balancín chasis (CHAS_RocPiv_L)
+    'spring_in':   [-0.1814, 0.1442, 0.5827],   # Anclaje amortiguador a chasis (CHAS_AttPnt_L)
+    'tie_in':      [ 0.0500, 0.1448, 0.1445],   # Barra dirección chasis / cremallera (CHAS_TiePnt)
+    'tie_out':     [ 0.0700, 0.5646, 0.1500],   # Barra dirección mangueta (UPRI_TiePnt)
 }
 
 vehicle_params_ter27['hardpoints_r'] = {
-    'lca_in_f':    [ 0.170, 0.180, 0.165],
-    'lca_in_r':    [-0.170, 0.180, 0.165],
-    'lbj':         [ 0.000, 0.555, 0.140],
-    'uca_in_f':    [ 0.135, 0.200, 0.320],
-    'uca_in_r':    [-0.135, 0.200, 0.320],
-    'ubj':         [ 0.000, 0.530, 0.300],
-    'pushrod_out': [ 0.000, 0.500, 0.150],  # Pullrod layout configuration marker
-    'rocker_piv':  [ 0.000, 0.245, 0.380],
-    'spring_in':   [ 0.090, 0.245, 0.205],
+    'lca_in_f':    [ 0.1500, 0.2400, 0.1182],   # Lower wishbone chassis front pivot (CHAS_LowFor)
+    'lca_in_r':    [-0.1500, 0.2400, 0.1130],   # Lower wishbone chassis rear pivot (CHAS_LowAft)
+    'lbj':         [ 0.0000, 0.5768, 0.1127],   # Lower Ball Joint (outboard) (UPRI_LowPnt)
+    'uca_in_f':    [ 0.1500, 0.2400, 0.2375],   # Upper wishbone chassis front pivot (CHAS_UppFor)
+    'uca_in_r':    [-0.1500, 0.2400, 0.2782],   # Upper wishbone chassis rear pivot (CHAS_UppAft)
+    'ubj':         [ 0.0000, 0.5200, 0.2800],   # Upper Ball Joint (outboard) (UPRI_UppPnt)
+    'pushrod_out': [ 0.0060, 0.4940, 0.2938],   # Pushrod anclado a trapecio superior (NSMA_PPAttPnt_L)
+    'rocker_piv':  [ 0.0397, 0.1072, 0.4629],   # Eje de giro balancín chasis (CHAS_RocPiv_L)
+    'spring_in':   [-0.1000, 0.0500, 0.3917],   # Anclaje amortiguador a chasis (CHAS_AttPnt_L)
+    'tie_in':      [-0.0950, 0.2400, 0.1594],   # Tirante de convergencia chasis (CHAS_TiePnt)
+    'tie_out':     [-0.0800, 0.5900, 0.1658],   # Tirante convergencia mangueta (UPRI_TiePnt)
 }
+
 def get_design_bounds():
     """Returns the lower and upper bounds for the Ter27 setup space."""
     import jax.numpy as jnp
