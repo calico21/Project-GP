@@ -63,7 +63,10 @@ vy_est  = _estimate_vy_kinematic(real_ay, real_vx, real_wz, 0.005)
 x0 = DifferentiableMultiBodyVehicle.make_initial_state(T_env=25.0, vx0=float(max(real_vx[s], MIN_VX0)))
 x0 = x0.at[15].set(float(np.clip(vy_est[s], -15.0, 15.0))).at[19].set(float(real_wz[s]))
 
-tire_cal_nominal = jnp.array([1.0, 1.0, -1.0, 1.0], dtype=jnp.float32)
+tire_cal_nominal = jnp.array(
+    [1.0, 1.0, -1.0, 1.0, 1.0, 1.0],
+    dtype=jnp.float32,
+)
 with jax.disable_jit():
     x = x0
     print(f"{'step':>4} {'wz_sim':>10} {'wz_real':>10} {'ay_sim':>10} {'ay_real':>10} {'vx':>8} {'vy':>8}")

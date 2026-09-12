@@ -99,6 +99,11 @@ _Z_EQ: jnp.ndarray = jnp.array([0.0128, 0.0128, 0.0142, 0.0142], dtype=jnp.float
 # NeuralEnergyLandscape.__call__ and _V_STRUCT_PRIOR_K in residual_fitting.py.
 _V_STRUCT_PRIOR_K: float = 30_000.0   # N/m
 
+# A fixed count preserves a static XLA loop while providing a tightly converged
+# stage solution in the validation operating regime.  It is deliberately named
+# Picard: the code below is fixed-point iteration, not Newton's method.
+_GLRK_PICARD_ITERS: int = 32
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # §1  SuspensionSetup  — 28-element typed pytree
@@ -523,11 +528,13 @@ class NeuralDissipationMatrix(nn.Module):
     """
     Port-Hamiltonian dissipation matrix R(q,p) = L·Lᵀ + diag(softplus(d)).
 
-    · Learnable log-diagonal bias d ensures R ≥ diag(softplus(d)) > 0
-      (strictly positive definite — STRONGER than PSD).
-    · Diagonal floor prevents near-conservative blow-up from arbitrarily small
-      damping predictions.
-    · Physical mask restricts dissipation to heave, roll, pitch, unsprung-z DOFs.
+    · The UNMASKED core R_dense = L·Lᵀ + diag(softplus(d)) is strictly positive
+      definite (SPD).
+    · After applying the physical mask (outer product), the full 14×14 matrix is
+      POSITIVE SEMIDEFINITE (R ⪰ 0): the {heave, roll, pitch, z_FL..RR} block
+      retains SPD, but the masked DOFs (X, Y, yaw, ψ, ω_wheels) have zero
+      dissipation by design.
+    · Diagonal floor prevents near-conservative blow-up on active DOFs.
     · _TRIL_14 is a MODULE-LEVEL constant (defined at top of file after imports).
       Do NOT move it inside this class or inside __call__ — Flax traces __call__
       in a scope where module-level names are still visible, but any attempt to
@@ -813,7 +820,10 @@ class DifferentiableMultiBodyVehicle:
         x: jax.Array,
         u: jax.Array,
         setup_params: jax.Array,
-        tire_cal: jax.Array = jnp.array([1.0, 1.0, -1.0, 1.0], dtype=jnp.float32),
+        tire_cal: jax.Array = jnp.array(
+            [1.0, 1.0, -1.0, 1.0, 1.0, 1.0],
+            dtype=jnp.float32,
+        ),
     ) -> jax.Array:
 
         # ── 74-DOF STATE UNPACKING ──────────────────────────────
@@ -843,7 +853,11 @@ class DifferentiableMultiBodyVehicle:
         dH_dq_phys = jnp.zeros(14).at[6:10].set(q[6:10] * _V_STRUCT_PRIOR_K)
         dH_dp_phys = p / (self.M_diag + 1e-8)
         
-        # 2. Neural residual (Stop gradient ONLY on this to prevent Hessian explosion)
+        # 2. Neural residual.  Its force is setup-conditioned, so detaching its
+        # gradient makes autodiff differentiate a different forward vector
+        # field than finite differences.  Keep the dependency for the vehicle
+        # setup derivative; higher-order optimisation must handle the resulting
+        # Hessian cost explicitly rather than silently changing the derivative.
         def _nn_H(q_, p_):
             v_raw = p_ / (self.M_diag + 1e-8)
             v_safe = jnp.clip(v_raw, -35.0, 35.0)
@@ -870,10 +884,6 @@ class DifferentiableMultiBodyVehicle:
             return 0.5 * (H_val + H_val_mirrored) * susp_sq
             
         dH_dq_nn, dH_dp_nn = jax.grad(_nn_H, argnums=(0, 1))(q, p)
-        
-        # Block the Neural Network's Hessian, but preserve physical kinematics
-        dH_dq_nn = jax.lax.stop_gradient(dH_dq_nn)
-        dH_dp_nn = jax.lax.stop_gradient(dH_dp_nn)
         
         dH_dq = dH_dq_phys + dH_dq_nn
         dH_dp = dH_dp_phys + dH_dp_nn
@@ -1148,8 +1158,26 @@ class DifferentiableMultiBodyVehicle:
         d_kappa_fr = kappa_dot_fr
         d_kappa_rl = kappa_dot_rl
         d_kappa_rr = kappa_dot_rr
- 
-        mu_f, mu_r, T_opt_ovr, alpha_scl = tire_cal[0], tire_cal[1], tire_cal[2], tire_cal[3]
+
+        tire_cal = jnp.asarray(tire_cal)
+
+        if tire_cal.shape[0] == 4:
+            tire_cal = jnp.concatenate([
+                tire_cal,
+                jnp.ones(2, dtype=tire_cal.dtype),
+            ])
+        elif tire_cal.shape[0] != 6:
+            raise ValueError(
+                "tire_cal must have 4 legacy elements or 6 canonical elements: "
+                "[mu_f, mu_r, T_opt_override, alpha_scale, rby1_scale, rby2_scale]"
+            )
+
+        mu_f, mu_r, T_opt_ovr, alpha_scl = (
+            tire_cal[0],
+            tire_cal[1],
+            tire_cal[2],
+            tire_cal[3],
+        )
         rby1_scl = tire_cal[4]
         rby2_scl = tire_cal[5]
 
@@ -1323,10 +1351,10 @@ class DifferentiableMultiBodyVehicle:
         # ── Module 4: Bouc-Wen elastokinematic hysteresis → 24 states ────────
         v_bcast  = jnp.broadcast_to(dz_corners[:, None], (4, 6))
         
-        # NUCLEAR OPTION RESTORED: The Bouc-Wen ODE is too stiff for unrolled AD.
-        # By stopping the gradient here, we kill the float32 overflow, but the 
-        # optimizer still sees the steering wheel through the tires (transient_4x4).
-        z_hyst = jax.lax.stop_gradient(elastokin_4x6)
+        # This state is part of the forward ODE, hence it remains live for the
+        # tangent/adjoint calculation.  Detaching it would again make AD and
+        # finite differences refer to different discrete maps.
+        z_hyst = elastokin_4x6
 
         v_abs_bw = safe_abs(v_bcast)
         z_abs_bw = jnp.sqrt(z_hyst ** 2 + 1e-12)
@@ -1383,60 +1411,40 @@ class DifferentiableMultiBodyVehicle:
         u: jax.Array,
         setup_params: jax.Array,
         dt_step: float,
-        tire_cal: jax.Array = jnp.array([1.0, 1.0, -1.0, 1.0], dtype=jnp.float32),
+        tire_cal: jax.Array = jnp.array(
+            [1.0, 1.0, -1.0, 1.0, 1.0, 1.0],
+            dtype=jnp.float32,
+        ),
     ) -> jax.Array:
         sqrt3    = jnp.sqrt(3.0)
         a11, a12 = 0.25, 0.25 - sqrt3 / 6.0
         a21, a22 = 0.25 + sqrt3 / 6.0, 0.25
         b1, b2   = 0.5, 0.5
 
-        q0 = x[0:14]; v0 = x[14:28]; aux0 = x[28:108]
-        _AUX = 80
-
         dx0 = self._compute_derivatives(x, u, setup_params, tire_cal)
-        k1_q, k1_v = dx0[0:14], dx0[14:28]
-        k2_q, k2_v = k1_q, k1_v
+        k1 = dx0
+        k2 = dx0
 
         def newton_iter(carry, _):
-            k1_q_, k1_v_, k2_q_, k2_v_, _a1, _a2 = carry
-
-            q1 = q0 + dt_step * (a11 * k1_q_ + a12 * k2_q_)
-            v1 = v0 + dt_step * (a11 * k1_v_ + a12 * k2_v_)
-            x1 = x.at[0:14].set(q1).at[14:28].set(v1)
-
-            q2 = q0 + dt_step * (a21 * k1_q_ + a22 * k2_q_)
-            v2 = v0 + dt_step * (a21 * k1_v_ + a22 * k2_v_)
-            x2 = x.at[0:14].set(q2).at[14:28].set(v2)
+            k1_, k2_ = carry
+            # All 108 states are stage variables.  Freezing the 80 auxiliary
+            # states here turns the coupled method into a mixed-order scheme.
+            x1 = x + dt_step * (a11 * k1_ + a12 * k2_)
+            x2 = x + dt_step * (a21 * k1_ + a22 * k2_)
 
             dx1 = self._compute_derivatives(x1, u, setup_params, tire_cal)
             dx2 = self._compute_derivatives(x2, u, setup_params, tire_cal)
 
             _DC = 500.0
-            return (jnp.clip(dx1[0:14],  -_DC, _DC),
-                    jnp.clip(dx1[14:28], -_DC, _DC),
-                    jnp.clip(dx2[0:14],  -_DC, _DC),
-                    jnp.clip(dx2[14:28], -_DC, _DC),
-                    jnp.clip(dx1[28:108], -_DC, _DC),
-                    jnp.clip(dx2[28:108], -_DC, _DC)), None
+            return (jnp.clip(dx1, -_DC, _DC), jnp.clip(dx2, -_DC, _DC)), None
 
-        carry_converged, _ = jax.lax.scan(
-            newton_iter,
-            (k1_q, k1_v, k2_q, k2_v, jnp.zeros(_AUX), jnp.zeros(_AUX)),
-            None, length=2,
-        )
-        carry_stopped = jax.tree_util.tree_map(jax.lax.stop_gradient, carry_converged)
-
-        (k1_q_f, k1_v_f, k2_q_f, k2_v_f,
-        dx1_aux_f, dx2_aux_f), _ = newton_iter(carry_stopped, None)
-
-        q_new   = q0   + dt_step * (b1 * k1_q_f + b2 * k2_q_f)
-        v_new   = v0   + dt_step * (b1 * k1_v_f + b2 * k2_v_f)
-        aux_new = aux0 + dt_step * (b1 * dx1_aux_f + b2 * dx2_aux_f)
-        aux_new = jnp.clip(aux_new, -1000.0, 1000.0)
-
-        return (x.at[0:14].set(q_new)
-                .at[14:28].set(v_new)
-                .at[28:108].set(aux_new))
+        # Picard solves the implicit stage equations.  Keep this dependency in
+        # the production derivative: stop_gradient here differentiates a
+        # different numerical map than the one used by finite differences.
+        (k1, k2), _ = jax.lax.scan(
+            newton_iter, (k1, k2), None, length=_GLRK_PICARD_ITERS)
+        x_new = x + dt_step * (b1 * k1 + b2 * k2)
+        return x_new.at[28:108].set(jnp.clip(x_new[28:108], -1000.0, 1000.0))
     
     @partial(jax.jit, static_argnums=(0,))
     def _glrk4_step_with_h(
@@ -1452,60 +1460,25 @@ class DifferentiableMultiBodyVehicle:
         a21, a22 = 0.25 + sqrt3 / 6.0, 0.25
         b1, b2   = 0.5, 0.5
 
-        q0 = x[0:14];  v0 = x[14:28];  aux0 = x[28:108]
-        _AUX = 80
-
         dx0 = self._compute_derivatives(x, u, setup_params)
-
-        k1_q, k1_v = dx0[0:14], dx0[14:28]
-        k2_q, k2_v = k1_q, k1_v
+        k1 = dx0
+        k2 = dx0
 
         def newton_iter(carry, _):
-            k1_q_, k1_v_, k2_q_, k2_v_, _a1, _a2 = carry
-
-            q1 = q0 + dt_step * (a11 * k1_q_ + a12 * k2_q_)
-            v1 = v0 + dt_step * (a11 * k1_v_ + a12 * k2_v_)
-            x1 = x.at[0:14].set(q1).at[14:28].set(v1)
-
-            q2 = q0 + dt_step * (a21 * k1_q_ + a22 * k2_q_)
-            v2 = v0 + dt_step * (a21 * k1_v_ + a22 * k2_v_)
-            x2 = x.at[0:14].set(q2).at[14:28].set(v2)
+            k1_, k2_ = carry
+            x1 = x + dt_step * (a11 * k1_ + a12 * k2_)
+            x2 = x + dt_step * (a21 * k1_ + a22 * k2_)
 
             dx1 = self._compute_derivatives(x1, u, setup_params)
             dx2 = self._compute_derivatives(x2, u, setup_params)
 
             _DC = 500.0
-            return (jnp.clip(dx1[0:14],  -_DC, _DC),
-                    jnp.clip(dx1[14:28], -_DC, _DC),
-                    jnp.clip(dx2[0:14],  -_DC, _DC),
-                    jnp.clip(dx2[14:28], -_DC, _DC),
-                    jnp.clip(dx1[28:108], -_DC, _DC),
-                    jnp.clip(dx2[28:108], -_DC, _DC)), None
+            return (jnp.clip(dx1, -_DC, _DC), jnp.clip(dx2, -_DC, _DC)), None
 
-        # 1. Run 2 iterations and discard the backward tape
-        carry_converged, _ = jax.lax.scan(
-            newton_iter,
-            (k1_q, k1_v, k2_q, k2_v, jnp.zeros(_AUX), jnp.zeros(_AUX)),
-            None, length=2
-        )
-        
-        # 2. Sever the Jacobian chain (kills the 10^15 explosion)
-        carry_stopped = jax.tree_util.tree_map(jax.lax.stop_gradient, carry_converged)
-
-        # 3. Take ONE final Newton step WITH gradients enabled. 
-        (k1_q_final, k1_v_final, k2_q_final, k2_v_final,
-         dx1_aux_final, dx2_aux_final), _ = newton_iter(carry_stopped, None)
-
-        # 4. Integrate
-        q_new   = q0   + dt_step * (b1 * k1_q_final + b2 * k2_q_final)
-        v_new   = v0   + dt_step * (b1 * k1_v_final + b2 * k2_v_final)
-        aux_new = aux0 + dt_step * (b1 * dx1_aux_final + b2 * dx2_aux_final)
-
-        aux_new = jnp.clip(aux_new, -1000.0, 1000.0)
-
-        return (x.at[0:14].set(q_new)
-                  .at[14:28].set(v_new)
-                  .at[28:108].set(aux_new))
+        (k1, k2), _ = jax.lax.scan(
+            newton_iter, (k1, k2), None, length=_GLRK_PICARD_ITERS)
+        x_new = x + dt_step * (b1 * k1 + b2 * k2)
+        return x_new.at[28:108].set(jnp.clip(x_new[28:108], -1000.0, 1000.0))
 
     @partial(jax.jit, static_argnums=(0,))
     def estimate_corner_sigma(self, x: jax.Array, setup_params: jax.Array) -> jax.Array:
@@ -1549,7 +1522,10 @@ class DifferentiableMultiBodyVehicle:
     @partial(jax.jit, static_argnums=(0, 5))
     def simulate_step(
         self, state, controls, setup, dt=0.005, n_substeps=5,
-        tire_cal: jax.Array = jnp.array([1.0, 1.0, -1.0, 1.0], dtype=jnp.float32),
+        tire_cal: jax.Array = jnp.array(
+            [1.0, 1.0, -1.0, 1.0, 1.0, 1.0],
+            dtype=jnp.float32,
+        ),
     ) -> jax.Array:
 
         """

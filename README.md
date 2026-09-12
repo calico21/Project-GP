@@ -2,10 +2,11 @@
 
 > **Ter27 Formula Student | FSG 2026 — Siemens Digital Twin Award Entry**
 >
-> A 100% native JAX/Flax, fully end-to-end differentiable digital twin of the Ter27 FS vehicle.
+> A native JAX/Flax differentiable research digital twin of the Ter27 FS vehicle.
 > Designed for safety-biased setup optimisation, stochastic optimal control, real-time powertrain
-> management, and driver coaching. Every equation in the physics engine is differentiable.
-> `jax.grad()` traces directly from lap time back to spring rates, damper curves, roll-centre
+> management, and driver coaching. Differentiable paths are provided for setup optimisation;
+> their numerical accuracy is validated separately from the model's structural properties.
+> `jax.grad()` can trace from lap time back to spring rates, damper curves, roll-centre
 > heights, brake bias, and powertrain torque allocation. The entire stack runs as a single XLA
 > graph at 200 Hz on an embedded SBC.
 >

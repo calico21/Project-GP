@@ -56,7 +56,7 @@ for i in range(WINDOW_LEN):
     try:
         x = vehicle.simulate_step(
             x, u, setup, dt=0.005, n_substeps=2,
-            tire_cal=jnp.array([1.0, 1.0, -1.0, 1.0]),
+            tire_cal=jnp.array([1.0, 1.0, -1.0, 1.0, 1.0, 1.0])
         )
     except Exception as ex:
         print(f"[diag] BROKE at step {i}  u={u}")

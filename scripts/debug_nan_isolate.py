@@ -17,7 +17,7 @@ from config.tire_coeffs import tire_coeffs as TP_DICT
 vehicle = DifferentiableMultiBodyVehicle(VP_DICT, TP_DICT)
 setup = vehicle._default_setup_vec
 u_zero = jnp.array([-0.007, 0., 0., 0., 0., 0.])
-tire_cal = jnp.array([1.0, 1.0, -1.0, 1.0])
+tire_cal = jnp.array([1.0, 1.0, -1.0, 1.0, 1.0, 1.0])
 
 _BLOCKS = [
     ("q(kinematic pos)",   0,  14),

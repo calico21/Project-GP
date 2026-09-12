@@ -23,7 +23,10 @@ batches = [_build_calib_batch(decode_can_csv_to_dataframe(f, dbc_path=Path("TER.
                                0.005, 1.0, rng) for f in files]
 
 def eval_mu_r(mu_r_val, u_seq, x0, wz_real, ay_real):
-    tire_cal = jnp.array([MU_F_FIXED, mu_r_val, -1.0, 1.0], dtype=jnp.float32)
+    tire_cal = jnp.array(
+        [MU_F_FIXED, mu_r_val, -1.0, 1.0, 1.0, 1.0],
+        dtype=jnp.float32,
+    )
     def step_fn(x, u):
         x_next = vehicle.simulate_step(x, u, setup, dt=0.005, n_substeps=4, tire_cal=tire_cal)
         return x_next, jnp.array([x_next[19], x_next[14]*x_next[19]])

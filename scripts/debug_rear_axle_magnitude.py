@@ -79,8 +79,10 @@ vy0 = _vy0_from_yaw_drift(vx0, wz0)
 x = DifferentiableMultiBodyVehicle.make_initial_state(T_env=25.0, vx0=vx0)
 x = x.at[15].set(vy0).at[19].set(wz0)
 
-tire_cal = jnp.array([args.mu_f, args.mu_r, -1.0, 1.0], dtype=jnp.float32)
-
+tire_cal = jnp.array(
+    [args.mu_f, args.mu_r, -1.0, 1.0, 1.0, 1.0],
+    dtype=jnp.float32,
+)
 print(f"\n[*] tire_cal: mu_f={args.mu_f}  mu_r={args.mu_r}")
 print(f"[*] Rear-axle quantities stream from vehicle_dynamics.py's GP_DEBUG_YAW "
       f"jax.debug.print block below. jax.debug.print works under jit, so this "

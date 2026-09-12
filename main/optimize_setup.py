@@ -51,7 +51,10 @@ def main():
     if os.path.exists(mu_path):
         mu_cal = np.load(mu_path)
         print(f"[*] Calibración cargada: mu_f={mu_cal[0]:.3f}, mu_r={mu_cal[1]:.3f}")
-        opt._vehicle.tire_cal = jnp.array([mu_cal[0], mu_cal[1], -1.0, 1.0], dtype=jnp.float32)
+        opt._vehicle.tire_cal = jnp.array(
+            [mu_cal[0], mu_cal[1], -1.0, 1.0, 1.0, 1.0],
+            dtype=jnp.float32,
+        )
 
     # Ejecutar búsqueda de la frontera de Pareto
     p_setups, p_grips, p_stabs, p_gen = opt.run(iterations=args.iterations)

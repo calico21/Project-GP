@@ -8,7 +8,8 @@ Obs:   y = [ay_measured, wz_measured] — 2 channels.
 FIX (this revision): _simulate_with_params previously called simulate_step()
 with lambda_mu_f/lambda_mu_r/T_opt_override/alpha_scale kwargs that do not
 exist anywhere in DifferentiableMultiBodyVehicle.simulate_step — the EKF has
-never actually executed. Now routes through the real `tire_cal` (4,) argument
+never actually executed. Now routes through the real `tire_cal` (6,) 
+[mu_f, mu_r, T_opt_override, alpha_scale, rby1_scale, rby2_scale] argument
 added to simulate_step, and expands the 2-channel [steer, force] control into
 the 6-channel [δ, T_fl..T_rr, F_brake] vector the 108-DOF physics expects
 (equal 4-way torque split, matching step_with_params' convention).
@@ -59,7 +60,10 @@ class DifferentiableEKF:
         alpha_peak_nominal = 0.13
         b_scale = alpha_peak_nominal / jnp.clip(alpha_peak, 0.05, 0.30)
 
-        tire_cal = jnp.array([lambda_mu_f, lambda_mu_r, t_opt, b_scale], dtype=jnp.float32)
+        tire_cal = jnp.array(
+            [lambda_mu_f, lambda_mu_r, t_opt, b_scale, 1.0, 1.0],
+            dtype=jnp.float32,
+        )
         setup_patched = setup.at[25].set(h_cg_theta)
 
         # Expand [steer, force] → 6-channel [δ, T_fl,T_fr,T_rl,T_rr,F_brake].

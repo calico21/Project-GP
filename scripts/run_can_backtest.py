@@ -257,7 +257,10 @@ def _standardize_and_resample(df: pd.DataFrame, dt: float, lag_samples: int) -> 
 @partial(jax.jit, static_argnums=(0, 3))
 def _simulate_all_windows_jit(vehicle: DifferentiableMultiBodyVehicle, x0_batch: jax.Array,
                                u_batch: jax.Array, dt: float,
-                               tire_cal: jax.Array = jnp.array([1.0, 1.0, -1.0, 1.0], dtype=jnp.float32),
+                               tire_cal: jax.Array = jnp.array(
+                                    [1.0, 1.0, -1.0, 1.0, 1.0, 1.0],
+                                    dtype=jnp.float32,
+                                ),
                                ay_scale: float = 1.0):
     setup = vehicle._default_setup_vec
 
@@ -274,7 +277,10 @@ def _simulate_all_windows_jit(vehicle: DifferentiableMultiBodyVehicle, x0_batch:
 
 
 def run_session_backtest(vehicle, df, dt=0.005, steer_sign=1.0, verbose=True,
-                          tire_cal: jax.Array = jnp.array([1.0, 1.0, -1.0, 1.0], dtype=jnp.float32),
+                          tire_cal: jax.Array = jnp.array(
+                                [1.0, 1.0, -1.0, 1.0, 1.0, 1.0],
+                                dtype=jnp.float32,
+                            ),
                           steer_gain: float = 1.0, brake_gain: float = 1.0,
                           torque_gain: float = 1.0, ay_scale: float = 1.0):
     N = len(df)
@@ -398,7 +404,10 @@ def run_session_backtest(vehicle, df, dt=0.005, steer_sign=1.0, verbose=True,
     }
 def run_session_backtest_debug(
     vehicle, df, dt=0.005, steer_sign=1.0,
-    tire_cal: jax.Array = jnp.array([1.0, 1.0, -1.0, 1.0], dtype=jnp.float32),
+    tire_cal: jax.Array = jnp.array(
+        [1.0, 1.0, -1.0, 1.0, 1.0, 1.0],
+        dtype=jnp.float32,
+    ),
     steer_gain: float = 1.0, brake_gain: float = 1.0,
     torque_gain: float = 1.0, ay_scale: float = 1.0,
     session_name: str = "session",
@@ -620,7 +629,10 @@ def main():
     vehicle = DifferentiableMultiBodyVehicle(VP_DICT, TP_DICT)
 
     # ── Load calibrated tire_cal + gains, if present ─────────────────────────
-    tire_cal = jnp.array([1.0, 1.0, -1.0, 1.0], dtype=jnp.float32)
+    tire_cal = jnp.array(
+        [mu[0], mu[1], -1.0, 1.0, rby_cal[0], rby_cal[1]],
+        dtype=jnp.float32
+    )
     steer_gain, brake_gain, torque_gain = 1.0, 1.0, 1.0
     steer_sign_cal = 1.0
 

@@ -69,7 +69,7 @@ for f in files:
                 u = jnp.array(u_all[s + i])
                 x = vehicle.simulate_step(
                     x, u, setup, dt=0.005, n_substeps=2,
-                    tire_cal=jnp.array([1.0, 1.0, -1.0, 1.0]),
+                    tire_cal=jnp.array([1.0, 1.0, -1.0, 1.0, 1.0, 1.0]),
                 )
                 if not bool(jnp.all(jnp.isfinite(x))):
                     print(f"    -> non-finite at step {i} (no exception raised — check debug_nans)")

@@ -101,7 +101,9 @@ $$
 
 where $L$ is a lower-triangular matrix predicted by a neural network, and $d$ is a
 diagonal vector. The $LL^\top$ construction is PSD by construction, and the `softplus`
-diagonal adds strictly positive definiteness when needed.
+diagonal makes the unmasked learned matrix strictly positive definite. The
+physical DOF mask subsequently introduces zero rows/columns, so the final
+vehicle dissipation matrix is PSD, not necessarily positive definite.
 
 **Why Cholesky and not eigendecomposition?** Cholesky factorisation is numerically
 stable in float32, has $O(n^2)$ parameters (vs $O(n^2)$ for eigendecomposition but

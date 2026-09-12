@@ -189,12 +189,18 @@ def main():
     # ── Seed theta_hat from the offline-calibrated mu_scale, if present ─────
     mu_path = os.path.join("models", "mu_scale_calibrated.npy")
     ekf = DifferentiableEKF(vehicle)
-    static_tire_cal = jnp.array([1.0, 1.0, -1.0, 1.0], dtype=jnp.float32)
+    static_tire_cal = jnp.array(
+        [1.0, 1.0, -1.0, 1.0, 1.0, 1.0],
+        dtype=jnp.float32,
+    )
     if os.path.exists(mu_path):
         mu_static = np.load(mu_path)
         ekf.theta_hat = ekf.theta_hat.at[IDX_LAMBDA_MU_F].set(float(mu_static[0]))
         ekf.theta_hat = ekf.theta_hat.at[IDX_LAMBDA_MU_R].set(float(mu_static[1]))
-        static_tire_cal = jnp.array([mu_static[0], mu_static[1], -1.0, 1.0], dtype=jnp.float32)
+        static_tire_cal = jnp.array(
+            [mu_static[0], mu_static[1], -1.0, 1.0, 1.0, 1.0],
+            dtype=jnp.float32,
+        )
         print(f"[*] Seeded EKF prior from offline calibration: "
               f"mu_f={mu_static[0]:.3f}  mu_r={mu_static[1]:.3f}")
     else:
@@ -218,8 +224,10 @@ def main():
 
         # Build tire_cal from the converged theta for a direct correlation compare
         b_scale = 0.13 / np.clip(theta_f[4], 0.05, 0.30)
-        ekf_tire_cal = jnp.array([theta_f[0], theta_f[1], theta_f[2], b_scale],
-                                  dtype=jnp.float32)
+        ekf_tire_cal = jnp.array(
+            [theta_f[0], theta_f[1], theta_f[2], b_scale, 1.0, 1.0],
+            dtype=jnp.float32,
+        )
 
         compare_static_vs_ekf(vehicle, df, args.dt, steer_sign,
                                static_tire_cal, ekf_tire_cal)

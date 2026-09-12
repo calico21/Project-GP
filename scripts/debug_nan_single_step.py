@@ -41,6 +41,6 @@ x0 = DifferentiableMultiBodyVehicle.make_initial_state(T_env=25.0, vx0=vx0)
 
 x1 = vehicle.simulate_step(
     x0, u0, setup, dt=0.005, n_substeps=1,
-    tire_cal=jnp.array([1.0, 1.0, -1.0, 1.0]),
+    tire_cal=jnp.array([1.0, 1.0, -1.0, 1.0, 1.0, 1.0]),
 )
 print("[diag] step OK:", x1)
