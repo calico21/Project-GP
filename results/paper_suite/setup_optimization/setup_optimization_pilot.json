@@ -1,0 +1,429 @@
+{
+  "all_steps_finite": true,
+  "any_bound_active": false,
+  "bounds": {
+    "fraction": [
+      0.85,
+      1.15
+    ],
+    "physical": [
+      [
+        19125.0,
+        20400.0
+      ],
+      [
+        25874.999999999996,
+        27599.999999999996
+      ]
+    ]
+  },
+  "dtype": "_default",
+  "elapsed_wall_s": null,
+  "experiment": "setup_optimization_pilot",
+  "experiment_config": {
+    "dt": 0.005,
+    "mode": "smoke",
+    "output": "results/paper_suite",
+    "seed": 0
+  },
+  "final_objective": 3.8812197610610086,
+  "final_parameters": [
+    20847.66892899444,
+    22371.71459173693
+  ],
+  "git_commit": "3063ece227a6a1e3b707f25ca28a7ee8c6192f6f",
+  "gradient_validation": [
+    {
+      "absolute_l2": 4.3305107821011814e-07,
+      "ad": [
+        0.9029219451494267,
+        0.8498836386784475
+      ],
+      "cosine": 0.9999999999999974,
+      "fd": [
+        0.9029216967322284,
+        0.8498832839642922
+      ],
+      "fractions": [
+        1.0,
+        1.0
+      ],
+      "point": "initial",
+      "relative_error": 3.4923823984314e-07
+    },
+    {
+      "absolute_l2": 2.013891595575711e-05,
+      "ad": [
+        0.8747678498234353,
+        0.8277634550125271
+      ],
+      "cosine": 0.9999999999263853,
+      "fd": [
+        0.8747678280389692,
+        0.8277433161083536
+      ],
+      "fractions": [
+        0.9636894384568706,
+        0.9656265297459823
+      ],
+      "point": "midpoint_after_step_5",
+      "relative_error": 1.6722281311422965e-05
+    },
+    {
+      "absolute_l2": 2.0814582568231578e-05,
+      "ad": [
+        0.846957657570966,
+        0.6664653527261499
+      ],
+      "cosine": 0.9999999998828549,
+      "fd": [
+        0.8469574311138484,
+        0.6664861660767851
+      ],
+      "fractions": [
+        0.926563063510864,
+        0.9321547746557055
+      ],
+      "point": "final_after_step_10",
+      "relative_error": 1.931303331806106e-05
+    }
+  ],
+  "horizon_steps": 10,
+  "ift_comparison": "unavailable in this pilot",
+  "initial_objective": 3.9999999999999982,
+  "initial_parameters": [
+    22500.0,
+    24000.0
+  ],
+  "iterations": [
+    {
+      "ad_grad_fraction_k_f": 0.9029219451494267,
+      "ad_grad_fraction_k_r": 0.8498836386784475,
+      "ad_gradient_norm": 1.2399879992668243,
+      "bounds_active": false,
+      "fraction_k_f_before": 1.0,
+      "fraction_k_r_before": 1.0,
+      "iteration": 1,
+      "k_f_after": 22336.1617710988,
+      "k_f_before": 22500.0,
+      "k_r_after": 23835.50480052756,
+      "k_r_before": 24000.0,
+      "objective_after": 3.9876275589995815,
+      "objective_before": 3.9999999999999982,
+      "simulation_finite": true,
+      "solver_status": "finite_production_glrk"
+    },
+    {
+      "ad_grad_fraction_k_f": 0.8973916719122,
+      "ad_grad_fraction_k_r": 0.847697469131384,
+      "ad_gradient_norm": 1.2344645851498242,
+      "bounds_active": false,
+      "fraction_k_f_before": 0.9927183009377244,
+      "fraction_k_r_before": 0.993146033355315,
+      "iteration": 2,
+      "k_f_after": 22172.598450928104,
+      "k_f_before": 22336.1617710988,
+      "k_r_after": 23670.69862055372,
+      "k_r_before": 23835.50480052756,
+      "objective_after": 3.975311744199259,
+      "objective_before": 3.9876275589995855,
+      "simulation_finite": true,
+      "solver_status": "finite_production_glrk"
+    },
+    {
+      "ad_grad_fraction_k_f": 0.8917986259383718,
+      "ad_grad_fraction_k_r": 0.8451148085139922,
+      "ad_gradient_norm": 1.2286268061519778,
+      "bounds_active": false,
+      "fraction_k_f_before": 0.985448820041249,
+      "fraction_k_r_before": 0.9862791091897384,
+      "iteration": 3,
+      "k_f_after": 22009.28222680584,
+      "k_f_before": 22172.598450928104,
+      "k_r_after": 23505.61386656027,
+      "k_r_before": 23670.69862055372,
+      "objective_after": 3.9630571035083837,
+      "objective_before": 3.9753117441992587,
+      "simulation_finite": true,
+      "solver_status": "finite_production_glrk"
+    },
+    {
+      "ad_grad_fraction_k_f": 0.8861561461840657,
+      "ad_grad_fraction_k_r": 0.8416607479278917,
+      "ad_gradient_norm": 1.222156098877035,
+      "bounds_active": false,
+      "fraction_k_f_before": 0.9781903211913707,
+      "fraction_k_r_before": 0.9794005777733445,
+      "iteration": 4,
+      "k_f_after": 21846.14011011991,
+      "k_f_before": 22009.28222680584,
+      "k_r_after": 23340.33335968533,
+      "k_r_before": 23505.61386656027,
+      "objective_after": 3.950872758929963,
+      "objective_before": 3.9630571035083846,
+      "simulation_finite": true,
+      "solver_status": "finite_production_glrk"
+    },
+    {
+      "ad_grad_fraction_k_f": 0.8804753701188162,
+      "ad_grad_fraction_k_r": 0.8364205544664793,
+      "ad_gradient_norm": 1.2144283516617516,
+      "bounds_active": false,
+      "fraction_k_f_before": 0.9709395604497739,
+      "fraction_k_r_before": 0.9725138899868888,
+      "iteration": 5,
+      "k_f_after": 21683.01236527959,
+      "k_f_before": 21846.14011011991,
+      "k_r_after": 23175.036713903573,
+      "k_r_before": 23340.33335968533,
+      "objective_after": 3.9387763705040513,
+      "objective_before": 3.9508727589299584,
+      "simulation_finite": true,
+      "solver_status": "finite_production_glrk"
+    },
+    {
+      "ad_grad_fraction_k_f": 0.8747678498234353,
+      "ad_grad_fraction_k_r": 0.8277634550125271,
+      "ad_gradient_norm": 1.2043301576141785,
+      "bounds_active": false,
+      "fraction_k_f_before": 0.9636894384568706,
+      "fraction_k_r_before": 0.9656265297459823,
+      "iteration": 6,
+      "k_f_after": 21519.583122089178,
+      "k_f_before": 21683.01236527959,
+      "k_r_after": 23010.07926602519,
+      "k_r_before": 23175.036713903573,
+      "objective_after": 3.9267997433145734,
+      "objective_before": 3.9387763705040513,
+      "simulation_finite": true,
+      "solver_status": "finite_production_glrk"
+    },
+    {
+      "ad_grad_fraction_k_f": 0.8690517239211428,
+      "ad_grad_fraction_k_r": 0.8131513762949713,
+      "ad_gradient_norm": 1.190153796624922,
+      "bounds_active": false,
+      "fraction_k_f_before": 0.9564259165372968,
+      "fraction_k_r_before": 0.9587533027510496,
+      "iteration": 7,
+      "k_f_after": 21355.28785332915,
+      "k_f_before": 21519.583122089178,
+      "k_r_after": 22846.103542161414,
+      "k_r_before": 23010.07926602519,
+      "objective_after": 3.914993678177405,
+      "objective_before": 3.926799743314573,
+      "simulation_finite": true,
+      "solver_status": "finite_production_glrk"
+    },
+    {
+      "ad_grad_fraction_k_f": 0.8633595760982182,
+      "ad_grad_fraction_k_r": 0.7895381454196227,
+      "ad_gradient_norm": 1.1699402722845096,
+      "bounds_active": false,
+      "fraction_k_f_before": 0.9491239045924067,
+      "fraction_k_r_before": 0.9519209809233923,
+      "iteration": 8,
+      "k_f_after": 21189.248689429973,
+      "k_f_before": 21355.28785332915,
+      "k_r_after": 22684.138731316245,
+      "k_r_before": 22846.103542161414,
+      "objective_after": 3.9034250345942083,
+      "objective_before": 3.914993678177404,
+      "simulation_finite": true,
+      "solver_status": "finite_production_glrk"
+    },
+    {
+      "ad_grad_fraction_k_f": 0.8577416448324096,
+      "ad_grad_fraction_k_r": 0.7550715636745239,
+      "ad_gradient_norm": 1.1427396009370192,
+      "bounds_active": false,
+      "fraction_k_f_before": 0.9417443861968876,
+      "fraction_k_r_before": 0.9451724471381768,
+      "iteration": 9,
+      "k_f_after": 21020.363433393475,
+      "k_f_before": 21189.248689429973,
+      "k_r_after": 22525.557392983967,
+      "k_r_before": 22684.138731316245,
+      "objective_after": 3.892157430143708,
+      "objective_before": 3.9034250345942128,
+      "simulation_finite": true,
+      "solver_status": "finite_production_glrk"
+    },
+    {
+      "ad_grad_fraction_k_f": 0.8522572334401195,
+      "ad_grad_fraction_k_r": 0.7117715650087351,
+      "ad_gradient_norm": 1.1103878388680193,
+      "bounds_active": false,
+      "fraction_k_f_before": 0.9342383748174877,
+      "fraction_k_r_before": 0.938564891374332,
+      "iteration": 10,
+      "k_f_after": 20847.66892899444,
+      "k_f_before": 21020.363433393475,
+      "k_r_after": 22371.71459173693,
+      "k_r_before": 22525.557392983967,
+      "objective_after": 3.8812197610610095,
+      "objective_before": 3.8921574301437114,
+      "simulation_finite": true,
+      "solver_status": "finite_production_glrk"
+    }
+  ],
+  "jax_version": "0.9.0.1",
+  "limitations": [
+    "Single deterministic initial condition and 10-step manoeuvre.",
+    "AD is compared only with central FD at initial, midpoint, and final points.",
+    "No IFT comparison, competing optimizer, random restarts, or global-optimality claim."
+  ],
+  "nominal": [
+    22500.0,
+    24000.0
+  ],
+  "objective_definition": "sum of roll, front/rear equilibrium-centred heave, and suspension-velocity mean-square terms, each divided by its nominal 10-step value",
+  "objective_reduction_percent": 2.969505973474741,
+  "optimizer": {
+    "name": "projected normalized gradient descent",
+    "step_size_fraction": 0.01,
+    "steps": 10
+  },
+  "parameters": [
+    "k_f",
+    "k_r"
+  ],
+  "platform": "Linux-6.6.87.2-microsoft-standard-WSL2-x86_64-with-glibc2.39",
+  "preflight": [
+    {
+      "k_f": 22500.0,
+      "k_f_fraction_offset": 0.0,
+      "k_r": 24000.0,
+      "k_r_fraction_offset": 0.0,
+      "objective": 4.0
+    },
+    {
+      "k_f": 25874.999999999996,
+      "k_f_fraction_offset": 0.15,
+      "k_r": 24000.0,
+      "k_r_fraction_offset": 0.0,
+      "objective": 4.141993288785878
+    },
+    {
+      "k_f": 19125.0,
+      "k_f_fraction_offset": -0.15,
+      "k_r": 24000.0,
+      "k_r_fraction_offset": 0.0,
+      "objective": 3.873209443604042
+    },
+    {
+      "k_f": 22500.0,
+      "k_f_fraction_offset": 0.0,
+      "k_r": 27599.999999999996,
+      "k_r_fraction_offset": 0.15,
+      "objective": 4.1305495071658305
+    },
+    {
+      "k_f": 22500.0,
+      "k_f_fraction_offset": 0.0,
+      "k_r": 20400.0,
+      "k_r_fraction_offset": -0.15,
+      "objective": 3.889303676852213
+    },
+    {
+      "k_f": 19125.0,
+      "k_f_fraction_offset": -0.15,
+      "k_r": 20400.0,
+      "k_r_fraction_offset": -0.15,
+      "objective": 3.762740752580051
+    },
+    {
+      "k_f": 19125.0,
+      "k_f_fraction_offset": -0.15,
+      "k_r": 27599.999999999996,
+      "k_r_fraction_offset": 0.15,
+      "objective": 4.0035268851527945
+    },
+    {
+      "k_f": 25874.999999999996,
+      "k_f_fraction_offset": 0.15,
+      "k_r": 20400.0,
+      "k_r_fraction_offset": -0.15,
+      "objective": 4.026230655574528
+    },
+    {
+      "k_f": 25874.999999999996,
+      "k_f_fraction_offset": 0.15,
+      "k_r": 27599.999999999996,
+      "k_r_fraction_offset": 0.15,
+      "objective": 4.273105266635051
+    }
+  ],
+  "python_version": "3.12.3 (main, Aug 31 2026, 10:18:26) [GCC 13.3.0]",
+  "seed": 0,
+  "status": "completed",
+  "timestamp": "2026-09-12T21:51:10.328675+00:00",
+  "trajectory": [
+    {
+      "iteration": 0,
+      "k_f": 22500.0,
+      "k_r": 24000.0,
+      "objective": 3.9999999999999982
+    },
+    {
+      "iteration": 1,
+      "k_f": 22336.1617710988,
+      "k_r": 23835.50480052756,
+      "objective": 3.9876275589995855
+    },
+    {
+      "iteration": 2,
+      "k_f": 22172.598450928104,
+      "k_r": 23670.69862055372,
+      "objective": 3.9753117441992587
+    },
+    {
+      "iteration": 3,
+      "k_f": 22009.28222680584,
+      "k_r": 23505.61386656027,
+      "objective": 3.9630571035083846
+    },
+    {
+      "iteration": 4,
+      "k_f": 21846.14011011991,
+      "k_r": 23340.33335968533,
+      "objective": 3.9508727589299584
+    },
+    {
+      "iteration": 5,
+      "k_f": 21683.01236527959,
+      "k_r": 23175.036713903573,
+      "objective": 3.9387763705040513
+    },
+    {
+      "iteration": 6,
+      "k_f": 21519.583122089178,
+      "k_r": 23010.07926602519,
+      "objective": 3.926799743314573
+    },
+    {
+      "iteration": 7,
+      "k_f": 21355.28785332915,
+      "k_r": 22846.103542161414,
+      "objective": 3.914993678177404
+    },
+    {
+      "iteration": 8,
+      "k_f": 21189.248689429973,
+      "k_r": 22684.138731316245,
+      "objective": 3.9034250345942128
+    },
+    {
+      "iteration": 9,
+      "k_f": 21020.363433393475,
+      "k_r": 22525.557392983967,
+      "objective": 3.8921574301437114
+    },
+    {
+      "iteration": 10,
+      "k_f": 20847.66892899444,
+      "k_r": 22371.71459173693,
+      "objective": 3.8812197610610086
+    }
+  ]
+}

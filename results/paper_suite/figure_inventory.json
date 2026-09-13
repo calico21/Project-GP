@@ -1,0 +1,44 @@
+{
+  "fig07_baseline_rollout": {
+    "data_source": "baseline.csv",
+    "placement": "supplementary",
+    "scientific_question": "rollout error",
+    "status": "weak: deterministic four-trajectory test only"
+  },
+  "fig09_energy_balance_toy": {
+    "data_source": "energy.csv",
+    "placement": "supplementary",
+    "scientific_question": "controlled pH energy bookkeeping",
+    "status": "valid supporting evidence"
+  },
+  "fig23_compute_cost": {
+    "data_source": "compute.csv",
+    "placement": "supplementary",
+    "scientific_question": "warm runtime",
+    "status": "weak: two repetitions"
+  },
+  "fig_objective_sensitivity": {
+    "data_source": "setup_conditioning/objective_surface.json",
+    "placement": "supplementary",
+    "scientific_question": "whether setup objective is locally conditioned",
+    "status": "valid diagnostic, not an optimization result"
+  },
+  "fig_setup_optimization_gradients": {
+    "data_source": "setup_optimization/setup_optimization_pilot.json",
+    "placement": "supplementary",
+    "scientific_question": "AD-versus-FD agreement at three pilot points",
+    "status": "Tier C local numerical validation; IFT unavailable"
+  },
+  "fig_setup_optimization_objective": {
+    "data_source": "setup_optimization/setup_optimization_pilot.json",
+    "placement": "supplementary",
+    "scientific_question": "whether the bounded pilot has a decreasing objective trajectory",
+    "status": "Tier C local feasibility evidence; not global optimality"
+  },
+  "fig_setup_optimization_parameters": {
+    "data_source": "setup_optimization/setup_optimization_pilot.json",
+    "placement": "supplementary",
+    "scientific_question": "whether stiffnesses remain inside the local box",
+    "status": "Tier C local feasibility evidence; no physical validation"
+  }
+}

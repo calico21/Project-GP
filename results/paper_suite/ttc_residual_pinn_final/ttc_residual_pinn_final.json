@@ -1,0 +1,116 @@
+{
+  "coverage": {
+    "definition": "Speed interpolation iff Run-4 min(Vx_ms) <= Vx_ms <= Run-4 max(Vx_ms); all thresholds are frozen before validation/test evaluation.",
+    "per_channel": {
+      "Fz_N": {
+        "outside_train_count": 78,
+        "outside_train_fraction": 0.0014915954334232115
+      },
+      "P_kPa": {
+        "outside_train_count": 2137,
+        "outside_train_fraction": 0.04086589027212055
+      },
+      "Vx_ms": {
+        "outside_train_count": 12446,
+        "outside_train_fraction": 0.23800508672288834
+      },
+      "alpha_rad": {
+        "outside_train_count": 135,
+        "outside_train_fraction": 0.0025816074809247892
+      },
+      "gamma_rad": {
+        "outside_train_count": 4,
+        "outside_train_fraction": 7.649207350888264e-05
+      }
+    },
+    "speed_extrapolation_count": 12446,
+    "speed_interpolation_count": 39847
+  },
+  "dtype": "_default",
+  "elapsed_wall_s": null,
+  "experiment": "ttc_residual_pinn_final",
+  "experiment_config": {
+    "dt": 0.005,
+    "mode": "smoke",
+    "output": "results/paper_suite",
+    "seed": 0
+  },
+  "git_commit": "3063ece227a6a1e3b707f25ca28a7ee8c6192f6f",
+  "global": {
+    "analytical": {
+      "bias_N": -32.7048391502749,
+      "count": 52293,
+      "finite": true,
+      "mae_N": 691.3451738826998,
+      "mu_mae": 1.0551623952744797,
+      "mu_rmse": 1.188892473437614,
+      "r2": 0.6688934125717091,
+      "rmse_N": 857.5068175738352
+    },
+    "corrected": {
+      "bias_N": -7.768058856290035,
+      "count": 52293,
+      "finite": true,
+      "mae_N": 568.2632800106029,
+      "mu_mae": 0.8166260725714554,
+      "mu_rmse": 1.0110555924640527,
+      "r2": 0.75045571430401,
+      "rmse_N": 744.4362035860139
+    }
+  },
+  "guarantee": "This evaluator restored a locked Run-4/Run-5 selection artifact and performed no fitting, sign selection, scaling fit, or hyperparameter selection.",
+  "jax_version": "0.9.0.1",
+  "pilot_path": "results/paper_suite/ttc_residual_pinn_pilot/ttc_residual_pinn_pilot.json",
+  "platform": "Linux-6.6.87.2-microsoft-standard-WSL2-x86_64-with-glibc2.39",
+  "python_version": "3.12.3 (main, Aug 31 2026, 10:18:26) [GCC 13.3.0]",
+  "seed": 0,
+  "selected_candidate": "spectral_32x32",
+  "source_sha256": "20cc32695df7015ca85a7be83b72b8c318f1506032366af0f30c07c2f7e615cc",
+  "speed_extrapolation": {
+    "analytical": {
+      "bias_N": -91.00490375449482,
+      "count": 12446,
+      "finite": true,
+      "mae_N": 655.3747418371032,
+      "mu_mae": 1.0417896096891364,
+      "mu_rmse": 1.2030152443294502,
+      "r2": 0.66598748893818,
+      "rmse_N": 840.6145834292691
+    },
+    "corrected": {
+      "bias_N": -43.52742331334253,
+      "count": 12446,
+      "finite": true,
+      "mae_N": 698.8888528805768,
+      "mu_mae": 1.1437828257802938,
+      "mu_rmse": 1.4423259146426513,
+      "r2": 0.6129270432673296,
+      "rmse_N": 904.92371104376
+    }
+  },
+  "speed_interpolation": {
+    "analytical": {
+      "bias_N": -14.495121880113508,
+      "count": 39847,
+      "finite": true,
+      "mae_N": 702.5803483560477,
+      "mu_mae": 1.0593393142243424,
+      "mu_rmse": 1.184446788544882,
+      "r2": 0.6696576949940424,
+      "rmse_N": 862.7152314202937
+    },
+    "corrected": {
+      "bias_N": 3.4011897705193967,
+      "count": 39847,
+      "finite": true,
+      "mae_N": 527.463072217301,
+      "mu_mae": 0.7144403885692168,
+      "mu_rmse": 0.8317154783849068,
+      "r2": 0.7907249300134528,
+      "rmse_N": 686.6637424663595
+    }
+  },
+  "status": "completed_locked_run6_evaluation",
+  "test_run": 6,
+  "timestamp": "2026-09-13T11:17:50.370450+00:00"
+}

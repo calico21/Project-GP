@@ -1,0 +1,28 @@
+{
+  "dtype": "_default",
+  "elapsed_wall_s": 2.487500023562461e-05,
+  "experiment": "setup_conditioning",
+  "experiment_config": {
+    "dt": 0.005,
+    "mode": "smoke",
+    "output": "results/paper_suite",
+    "seed": 0
+  },
+  "git_commit": "3063ece227a6a1e3b707f25ca28a7ee8c6192f6f",
+  "jax_version": "0.9.0.1",
+  "metrics": {
+    "horizon_steps": 10,
+    "objective_surface_relative_range": 0.12759112851374999,
+    "parameters": [
+      "k_f",
+      "k_r"
+    ],
+    "selection_rule": "Choose a candidate only if both AD and FD give a finite non-negligible gradient and the grid shows material variation.",
+    "surface": "setup_conditioning/objective_surface.json"
+  },
+  "platform": "Linux-6.6.87.2-microsoft-standard-WSL2-x86_64-with-glibc2.39",
+  "python_version": "3.12.3 (main, Aug 31 2026, 10:18:26) [GCC 13.3.0]",
+  "seed": 0,
+  "status": "completed",
+  "timestamp": "2026-09-12T21:42:38.518405+00:00"
+}

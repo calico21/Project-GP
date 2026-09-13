@@ -1,0 +1,28 @@
+{
+  "dtype": "_default",
+  "elapsed_wall_s": 4.785800001627649e-05,
+  "experiment": "figures",
+  "experiment_config": {
+    "dt": 0.005,
+    "mode": "paper",
+    "output": "results/paper_suite",
+    "seed": 0
+  },
+  "git_commit": "3063ece227a6a1e3b707f25ca28a7ee8c6192f6f",
+  "jax_version": "0.9.0.1",
+  "metrics": {
+    "generated": [
+      "fig07_baseline_rollout.png",
+      "fig07_baseline_rollout.pdf",
+      "fig09_energy_balance_toy.png",
+      "fig09_energy_balance_toy.pdf",
+      "fig23_compute_cost.png",
+      "fig23_compute_cost.pdf"
+    ]
+  },
+  "platform": "Linux-6.6.87.2-microsoft-standard-WSL2-x86_64-with-glibc2.39",
+  "python_version": "3.12.3 (main, Aug 31 2026, 10:18:26) [GCC 13.3.0]",
+  "seed": 0,
+  "status": "completed",
+  "timestamp": "2026-09-12T21:12:39.603138+00:00"
+}

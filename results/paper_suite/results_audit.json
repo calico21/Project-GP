@@ -1,0 +1,1003 @@
+{
+  "baseline_summary": [
+    {
+      "coefficient_of_variation": 0.036640846966085626,
+      "horizon_steps": 1,
+      "manoeuvre": "brake_steer",
+      "model": "HNN",
+      "rmse_mean": 0.20229280641459044,
+      "rmse_std": 0.007412179762176993,
+      "seed_count": 3
+    },
+    {
+      "coefficient_of_variation": 0.09065534814317674,
+      "horizon_steps": 10,
+      "manoeuvre": "brake_steer",
+      "model": "HNN",
+      "rmse_mean": 0.6125512370926542,
+      "rmse_std": 0.05553104565416817,
+      "seed_count": 3
+    },
+    {
+      "coefficient_of_variation": 0.08010202028305738,
+      "horizon_steps": 50,
+      "manoeuvre": "brake_steer",
+      "model": "HNN",
+      "rmse_mean": 2.7082722209886634,
+      "rmse_std": 0.21693807637767476,
+      "seed_count": 3
+    },
+    {
+      "coefficient_of_variation": 0.07263125510473895,
+      "horizon_steps": 100,
+      "manoeuvre": "brake_steer",
+      "model": "HNN",
+      "rmse_mean": 5.459003343126323,
+      "rmse_std": 0.39649426443223074,
+      "seed_count": 3
+    },
+    {
+      "coefficient_of_variation": 0.06610171087881545,
+      "horizon_steps": 200,
+      "manoeuvre": "brake_steer",
+      "model": "HNN",
+      "rmse_mean": 10.969609789932042,
+      "rmse_std": 0.7251099747875113,
+      "seed_count": 3
+    },
+    {
+      "coefficient_of_variation": 0.8414016239133061,
+      "horizon_steps": 1,
+      "manoeuvre": "steering_transient",
+      "model": "HNN",
+      "rmse_mean": 0.02423228359425079,
+      "rmse_std": 0.020389082767330383,
+      "seed_count": 3
+    },
+    {
+      "coefficient_of_variation": 0.0906774480651006,
+      "horizon_steps": 10,
+      "manoeuvre": "steering_transient",
+      "model": "HNN",
+      "rmse_mean": 0.5484250530442304,
+      "rmse_std": 0.04972978426501824,
+      "seed_count": 3
+    },
+    {
+      "coefficient_of_variation": 0.06472463013258685,
+      "horizon_steps": 50,
+      "manoeuvre": "steering_transient",
+      "model": "HNN",
+      "rmse_mean": 2.8417305306299894,
+      "rmse_std": 0.18392995753150584,
+      "seed_count": 3
+    },
+    {
+      "coefficient_of_variation": 0.059201910540539616,
+      "horizon_steps": 100,
+      "manoeuvre": "steering_transient",
+      "model": "HNN",
+      "rmse_mean": 5.718871009110593,
+      "rmse_std": 0.33856808987425085,
+      "seed_count": 3
+    },
+    {
+      "coefficient_of_variation": 0.05216428119767074,
+      "horizon_steps": 200,
+      "manoeuvre": "steering_transient",
+      "model": "HNN",
+      "rmse_mean": 11.48806786697943,
+      "rmse_std": 0.5992668026310405,
+      "seed_count": 3
+    },
+    {
+      "coefficient_of_variation": 0.8414016239133061,
+      "horizon_steps": 1,
+      "manoeuvre": "straight",
+      "model": "HNN",
+      "rmse_mean": 0.02423228359425079,
+      "rmse_std": 0.020389082767330383,
+      "seed_count": 3
+    },
+    {
+      "coefficient_of_variation": 0.08359666054618585,
+      "horizon_steps": 10,
+      "manoeuvre": "straight",
+      "model": "HNN",
+      "rmse_mean": 0.565287065669743,
+      "rmse_std": 0.047256110939942975,
+      "seed_count": 3
+    },
+    {
+      "coefficient_of_variation": 0.06402588766950486,
+      "horizon_steps": 50,
+      "manoeuvre": "straight",
+      "model": "HNN",
+      "rmse_mean": 2.851401780368853,
+      "rmse_std": 0.18256353009052234,
+      "seed_count": 3
+    },
+    {
+      "coefficient_of_variation": 0.05888609891574021,
+      "horizon_steps": 100,
+      "manoeuvre": "straight",
+      "model": "HNN",
+      "rmse_mean": 5.731501516032021,
+      "rmse_std": 0.33750576520877656,
+      "seed_count": 3
+    },
+    {
+      "coefficient_of_variation": 0.05218371209938545,
+      "horizon_steps": 200,
+      "manoeuvre": "straight",
+      "model": "HNN",
+      "rmse_mean": 11.496994107310426,
+      "rmse_std": 0.5999558305042183,
+      "seed_count": 3
+    },
+    {
+      "coefficient_of_variation": 0.8413325094631904,
+      "horizon_steps": 1,
+      "manoeuvre": "sustained_lateral",
+      "model": "HNN",
+      "rmse_mean": 0.02423409714660804,
+      "rmse_std": 0.020388933766930486,
+      "seed_count": 3
+    },
+    {
+      "coefficient_of_variation": 0.09438582939508124,
+      "horizon_steps": 10,
+      "manoeuvre": "sustained_lateral",
+      "model": "HNN",
+      "rmse_mean": 0.541517123898925,
+      "rmse_std": 0.05111154287083901,
+      "seed_count": 3
+    },
+    {
+      "coefficient_of_variation": 0.10004239734004398,
+      "horizon_steps": 50,
+      "manoeuvre": "sustained_lateral",
+      "model": "HNN",
+      "rmse_mean": 2.592773268819448,
+      "rmse_std": 0.25938725357187986,
+      "seed_count": 3
+    },
+    {
+      "coefficient_of_variation": 0.09308306607377942,
+      "horizon_steps": 100,
+      "manoeuvre": "sustained_lateral",
+      "model": "HNN",
+      "rmse_mean": 5.698945426219922,
+      "rmse_std": 0.530475313659692,
+      "seed_count": 3
+    },
+    {
+      "coefficient_of_variation": 0.07860529777180401,
+      "horizon_steps": 200,
+      "manoeuvre": "sustained_lateral",
+      "model": "HNN",
+      "rmse_mean": 12.393499075584165,
+      "rmse_std": 0.974194685270871,
+      "seed_count": 3
+    },
+    {
+      "coefficient_of_variation": 0.05999127819756653,
+      "horizon_steps": 1,
+      "manoeuvre": "brake_steer",
+      "model": "NeuralODE",
+      "rmse_mean": 0.22118155468996167,
+      "rmse_std": 0.013268964179575767,
+      "seed_count": 3
+    },
+    {
+      "coefficient_of_variation": 0.0676762630661142,
+      "horizon_steps": 10,
+      "manoeuvre": "brake_steer",
+      "model": "NeuralODE",
+      "rmse_mean": 0.7312947570907181,
+      "rmse_std": 0.04949129635974152,
+      "seed_count": 3
+    },
+    {
+      "coefficient_of_variation": 0.2550334472210695,
+      "horizon_steps": 50,
+      "manoeuvre": "brake_steer",
+      "model": "NeuralODE",
+      "rmse_mean": 3.565428023040422,
+      "rmse_std": 0.9093033995346017,
+      "seed_count": 3
+    },
+    {
+      "coefficient_of_variation": 0.2785946891585289,
+      "horizon_steps": 100,
+      "manoeuvre": "brake_steer",
+      "model": "NeuralODE",
+      "rmse_mean": 9.171781034829039,
+      "rmse_std": 2.5552094864282866,
+      "seed_count": 3
+    },
+    {
+      "coefficient_of_variation": 0.2653548977534588,
+      "horizon_steps": 200,
+      "manoeuvre": "brake_steer",
+      "model": "NeuralODE",
+      "rmse_mean": 29.632188327619428,
+      "rmse_std": 7.863046303886688,
+      "seed_count": 3
+    },
+    {
+      "coefficient_of_variation": 0.21087289732587647,
+      "horizon_steps": 1,
+      "manoeuvre": "steering_transient",
+      "model": "NeuralODE",
+      "rmse_mean": 0.058861412548888166,
+      "rmse_std": 0.01241227660487775,
+      "seed_count": 3
+    },
+    {
+      "coefficient_of_variation": 0.08687399364578237,
+      "horizon_steps": 10,
+      "manoeuvre": "steering_transient",
+      "model": "NeuralODE",
+      "rmse_mean": 0.6606982785193538,
+      "rmse_std": 0.05739749804986969,
+      "seed_count": 3
+    },
+    {
+      "coefficient_of_variation": 0.29265442326397406,
+      "horizon_steps": 50,
+      "manoeuvre": "steering_transient",
+      "model": "NeuralODE",
+      "rmse_mean": 3.6363019918188866,
+      "rmse_std": 1.0641798622293963,
+      "seed_count": 3
+    },
+    {
+      "coefficient_of_variation": 0.30475537189810353,
+      "horizon_steps": 100,
+      "manoeuvre": "steering_transient",
+      "model": "NeuralODE",
+      "rmse_mean": 9.294423312289078,
+      "rmse_std": 2.832525433115061,
+      "seed_count": 3
+    },
+    {
+      "coefficient_of_variation": 0.2645213121768116,
+      "horizon_steps": 200,
+      "manoeuvre": "steering_transient",
+      "model": "NeuralODE",
+      "rmse_mean": 29.872830616355404,
+      "rmse_std": 7.902000353073963,
+      "seed_count": 3
+    },
+    {
+      "coefficient_of_variation": 0.21087289732587647,
+      "horizon_steps": 1,
+      "manoeuvre": "straight",
+      "model": "NeuralODE",
+      "rmse_mean": 0.058861412548888166,
+      "rmse_std": 0.01241227660487775,
+      "seed_count": 3
+    },
+    {
+      "coefficient_of_variation": 0.08209463366315102,
+      "horizon_steps": 10,
+      "manoeuvre": "straight",
+      "model": "NeuralODE",
+      "rmse_mean": 0.6767561506713461,
+      "rmse_std": 0.055558048268648394,
+      "seed_count": 3
+    },
+    {
+      "coefficient_of_variation": 0.290579204044251,
+      "horizon_steps": 50,
+      "manoeuvre": "straight",
+      "model": "NeuralODE",
+      "rmse_mean": 3.6575353236826964,
+      "rmse_std": 1.06280370311945,
+      "seed_count": 3
+    },
+    {
+      "coefficient_of_variation": 0.3057536389529578,
+      "horizon_steps": 100,
+      "manoeuvre": "straight",
+      "model": "NeuralODE",
+      "rmse_mean": 9.31041274771538,
+      "rmse_std": 2.8466925777679846,
+      "seed_count": 3
+    },
+    {
+      "coefficient_of_variation": 0.264371116543383,
+      "horizon_steps": 200,
+      "manoeuvre": "straight",
+      "model": "NeuralODE",
+      "rmse_mean": 29.87603807133786,
+      "rmse_std": 7.89836154281221,
+      "seed_count": 3
+    },
+    {
+      "coefficient_of_variation": 0.21101973571520727,
+      "horizon_steps": 1,
+      "manoeuvre": "sustained_lateral",
+      "model": "NeuralODE",
+      "rmse_mean": 0.05885705704939522,
+      "rmse_std": 0.012420000623538256,
+      "seed_count": 3
+    },
+    {
+      "coefficient_of_variation": 0.09556738735773755,
+      "horizon_steps": 10,
+      "manoeuvre": "sustained_lateral",
+      "model": "NeuralODE",
+      "rmse_mean": 0.6499742457404463,
+      "rmse_std": 0.062116340515230524,
+      "seed_count": 3
+    },
+    {
+      "coefficient_of_variation": 0.1368518311570382,
+      "horizon_steps": 50,
+      "manoeuvre": "sustained_lateral",
+      "model": "NeuralODE",
+      "rmse_mean": 3.9707866685231745,
+      "rmse_std": 0.5434094267213516,
+      "seed_count": 3
+    },
+    {
+      "coefficient_of_variation": 0.16761533177879354,
+      "horizon_steps": 100,
+      "manoeuvre": "sustained_lateral",
+      "model": "NeuralODE",
+      "rmse_mean": 10.896571228311403,
+      "rmse_std": 1.8264324016846716,
+      "seed_count": 3
+    },
+    {
+      "coefficient_of_variation": 0.1695930320814658,
+      "horizon_steps": 200,
+      "manoeuvre": "sustained_lateral",
+      "model": "NeuralODE",
+      "rmse_mean": 33.63029115813102,
+      "rmse_std": 5.703463047289951,
+      "seed_count": 3
+    },
+    {
+      "coefficient_of_variation": 0.25381165476353856,
+      "horizon_steps": 1,
+      "manoeuvre": "brake_steer",
+      "model": "PHNN",
+      "rmse_mean": 1782.3557844397312,
+      "rmse_std": 452.382671026013,
+      "seed_count": 3
+    },
+    {
+      "coefficient_of_variation": 0.2999360091481496,
+      "horizon_steps": 10,
+      "manoeuvre": "brake_steer",
+      "model": "PHNN",
+      "rmse_mean": 11337.786713923308,
+      "rmse_std": 3400.61049954707,
+      "seed_count": 3
+    },
+    {
+      "coefficient_of_variation": 0.30590973109071656,
+      "horizon_steps": 50,
+      "manoeuvre": "brake_steer",
+      "model": "PHNN",
+      "rmse_mean": 53241.97838228859,
+      "rmse_std": 16287.239289663647,
+      "seed_count": 3
+    },
+    {
+      "coefficient_of_variation": 0.2631387174790077,
+      "horizon_steps": 100,
+      "manoeuvre": "brake_steer",
+      "model": "PHNN",
+      "rmse_mean": 101948.79033807294,
+      "rmse_std": 26826.673938096767,
+      "seed_count": 3
+    },
+    {
+      "coefficient_of_variation": 0.14285638560184424,
+      "horizon_steps": 200,
+      "manoeuvre": "brake_steer",
+      "model": "PHNN",
+      "rmse_mean": 213332.9010577534,
+      "rmse_std": 30475.967175066504,
+      "seed_count": 3
+    },
+    {
+      "coefficient_of_variation": 0.5487624484832908,
+      "horizon_steps": 1,
+      "manoeuvre": "steering_transient",
+      "model": "PHNN",
+      "rmse_mean": 0.5149884263732277,
+      "rmse_std": 0.28260630979712936,
+      "seed_count": 3
+    },
+    {
+      "coefficient_of_variation": 0.3226302118831118,
+      "horizon_steps": 10,
+      "manoeuvre": "steering_transient",
+      "model": "PHNN",
+      "rmse_mean": 11.216570359803073,
+      "rmse_std": 3.618804471785097,
+      "seed_count": 3
+    },
+    {
+      "coefficient_of_variation": 0.20027631964175832,
+      "horizon_steps": 50,
+      "manoeuvre": "steering_transient",
+      "model": "PHNN",
+      "rmse_mean": 24.237944957471953,
+      "rmse_std": 4.854286411761997,
+      "seed_count": 3
+    },
+    {
+      "coefficient_of_variation": 0.39892316386141946,
+      "horizon_steps": 100,
+      "manoeuvre": "steering_transient",
+      "model": "PHNN",
+      "rmse_mean": 85.96535920431889,
+      "rmse_std": 34.293573076270285,
+      "seed_count": 3
+    },
+    {
+      "coefficient_of_variation": 0.414830235791921,
+      "horizon_steps": 200,
+      "manoeuvre": "steering_transient",
+      "model": "PHNN",
+      "rmse_mean": 346.8587121598496,
+      "rmse_std": 143.88748135175246,
+      "seed_count": 3
+    },
+    {
+      "coefficient_of_variation": 0.5487624484832908,
+      "horizon_steps": 1,
+      "manoeuvre": "straight",
+      "model": "PHNN",
+      "rmse_mean": 0.5149884263732277,
+      "rmse_std": 0.28260630979712936,
+      "seed_count": 3
+    },
+    {
+      "coefficient_of_variation": 0.46938920117229715,
+      "horizon_steps": 10,
+      "manoeuvre": "straight",
+      "model": "PHNN",
+      "rmse_mean": 2.96584721004843,
+      "rmse_std": 1.3921366527237187,
+      "seed_count": 3
+    },
+    {
+      "coefficient_of_variation": 0.14605876466485296,
+      "horizon_steps": 50,
+      "manoeuvre": "straight",
+      "model": "PHNN",
+      "rmse_mean": 18.680297938753025,
+      "rmse_std": 2.728421240505666,
+      "seed_count": 3
+    },
+    {
+      "coefficient_of_variation": 0.3721644301797657,
+      "horizon_steps": 100,
+      "manoeuvre": "straight",
+      "model": "PHNN",
+      "rmse_mean": 78.47588002570195,
+      "rmse_std": 29.205931172621025,
+      "seed_count": 3
+    },
+    {
+      "coefficient_of_variation": 0.39193632023580055,
+      "horizon_steps": 200,
+      "manoeuvre": "straight",
+      "model": "PHNN",
+      "rmse_mean": 334.20244369387643,
+      "rmse_std": 130.98607599519025,
+      "seed_count": 3
+    },
+    {
+      "coefficient_of_variation": 0.3458287579577344,
+      "horizon_steps": 1,
+      "manoeuvre": "sustained_lateral",
+      "model": "PHNN",
+      "rmse_mean": 2.4446149460332127,
+      "rmse_std": 0.8454181504715799,
+      "seed_count": 3
+    },
+    {
+      "coefficient_of_variation": 0.3265949570825185,
+      "horizon_steps": 10,
+      "manoeuvre": "sustained_lateral",
+      "model": "PHNN",
+      "rmse_mean": 15.30176679170159,
+      "rmse_std": 4.997479868622488,
+      "seed_count": 3
+    },
+    {
+      "coefficient_of_variation": 0.14226729385956638,
+      "horizon_steps": 50,
+      "manoeuvre": "sustained_lateral",
+      "model": "PHNN",
+      "rmse_mean": 86.28549150457559,
+      "rmse_std": 12.275603375698575,
+      "seed_count": 3
+    },
+    {
+      "coefficient_of_variation": 0.21303960891278942,
+      "horizon_steps": 100,
+      "manoeuvre": "sustained_lateral",
+      "model": "PHNN",
+      "rmse_mean": 200.96186034435132,
+      "rmse_std": 42.81283613414721,
+      "seed_count": 3
+    },
+    {
+      "coefficient_of_variation": 0.3715974061259113,
+      "horizon_steps": 200,
+      "manoeuvre": "sustained_lateral",
+      "model": "PHNN",
+      "rmse_mean": 616.5973150360192,
+      "rmse_std": 229.12596289158608,
+      "seed_count": 3
+    },
+    {
+      "coefficient_of_variation": 0.008457557927106172,
+      "horizon_steps": 1,
+      "manoeuvre": "brake_steer",
+      "model": "PINN",
+      "rmse_mean": 0.274390971307147,
+      "rmse_std": 0.0023206775345051235,
+      "seed_count": 3
+    },
+    {
+      "coefficient_of_variation": 0.0067206382073966685,
+      "horizon_steps": 10,
+      "manoeuvre": "brake_steer",
+      "model": "PINN",
+      "rmse_mean": 1.1125041090953518,
+      "rmse_std": 0.0074767376214720125,
+      "seed_count": 3
+    },
+    {
+      "coefficient_of_variation": 0.015430297558732176,
+      "horizon_steps": 50,
+      "manoeuvre": "brake_steer",
+      "model": "PINN",
+      "rmse_mean": 4.867267610244617,
+      "rmse_std": 0.0751033875240537,
+      "seed_count": 3
+    },
+    {
+      "coefficient_of_variation": 0.016627073964844745,
+      "horizon_steps": 100,
+      "manoeuvre": "brake_steer",
+      "model": "PINN",
+      "rmse_mean": 9.604689461049913,
+      "rmse_std": 0.1596978820782417,
+      "seed_count": 3
+    },
+    {
+      "coefficient_of_variation": 0.0175795906748915,
+      "horizon_steps": 200,
+      "manoeuvre": "brake_steer",
+      "model": "PINN",
+      "rmse_mean": 18.987531985009173,
+      "rmse_std": 0.3337930402228714,
+      "seed_count": 3
+    },
+    {
+      "coefficient_of_variation": 0.006780261727981622,
+      "horizon_steps": 1,
+      "manoeuvre": "steering_transient",
+      "model": "PINN",
+      "rmse_mean": 0.18597743625864038,
+      "rmse_std": 0.001260975693332601,
+      "seed_count": 3
+    },
+    {
+      "coefficient_of_variation": 0.005123154570128765,
+      "horizon_steps": 10,
+      "manoeuvre": "steering_transient",
+      "model": "PINN",
+      "rmse_mean": 1.0624010678023286,
+      "rmse_std": 0.005442844885821179,
+      "seed_count": 3
+    },
+    {
+      "coefficient_of_variation": 0.003933525263757129,
+      "horizon_steps": 50,
+      "manoeuvre": "steering_transient",
+      "model": "PINN",
+      "rmse_mean": 4.8144805927091054,
+      "rmse_std": 0.018937881043289664,
+      "seed_count": 3
+    },
+    {
+      "coefficient_of_variation": 0.003767195331683188,
+      "horizon_steps": 100,
+      "manoeuvre": "steering_transient",
+      "model": "PINN",
+      "rmse_mean": 9.468423735426079,
+      "rmse_std": 0.035669401694495416,
+      "seed_count": 3
+    },
+    {
+      "coefficient_of_variation": 0.003820630586640712,
+      "horizon_steps": 200,
+      "manoeuvre": "steering_transient",
+      "model": "PINN",
+      "rmse_mean": 18.60433076557481,
+      "rmse_std": 0.07108027516693594,
+      "seed_count": 3
+    },
+    {
+      "coefficient_of_variation": 0.006780261727981622,
+      "horizon_steps": 1,
+      "manoeuvre": "straight",
+      "model": "PINN",
+      "rmse_mean": 0.18597743625864038,
+      "rmse_std": 0.001260975693332601,
+      "seed_count": 3
+    },
+    {
+      "coefficient_of_variation": 0.005108730731264639,
+      "horizon_steps": 10,
+      "manoeuvre": "straight",
+      "model": "PINN",
+      "rmse_mean": 1.0602680391561006,
+      "rmse_std": 0.00541662391501447,
+      "seed_count": 3
+    },
+    {
+      "coefficient_of_variation": 0.0037060287959080665,
+      "horizon_steps": 50,
+      "manoeuvre": "straight",
+      "model": "PINN",
+      "rmse_mean": 4.8129005133611775,
+      "rmse_std": 0.01783674789435724,
+      "seed_count": 3
+    },
+    {
+      "coefficient_of_variation": 0.003643534469190445,
+      "horizon_steps": 100,
+      "manoeuvre": "straight",
+      "model": "PINN",
+      "rmse_mean": 9.46696152051966,
+      "rmse_std": 0.03449320061851297,
+      "seed_count": 3
+    },
+    {
+      "coefficient_of_variation": 0.0038099876537355886,
+      "horizon_steps": 200,
+      "manoeuvre": "straight",
+      "model": "PINN",
+      "rmse_mean": 18.60127535566482,
+      "rmse_std": 0.07087062944881904,
+      "seed_count": 3
+    },
+    {
+      "coefficient_of_variation": 0.006794797166345404,
+      "horizon_steps": 1,
+      "manoeuvre": "sustained_lateral",
+      "model": "PINN",
+      "rmse_mean": 0.18597468312924628,
+      "rmse_std": 0.001263660249938587,
+      "seed_count": 3
+    },
+    {
+      "coefficient_of_variation": 0.005359420212421355,
+      "horizon_steps": 10,
+      "manoeuvre": "sustained_lateral",
+      "model": "PINN",
+      "rmse_mean": 1.064693808688218,
+      "rmse_std": 0.005706141518323511,
+      "seed_count": 3
+    },
+    {
+      "coefficient_of_variation": 0.002726644581116634,
+      "horizon_steps": 50,
+      "manoeuvre": "sustained_lateral",
+      "model": "PINN",
+      "rmse_mean": 5.358591048632133,
+      "rmse_std": 0.014610973245172904,
+      "seed_count": 3
+    },
+    {
+      "coefficient_of_variation": 0.00421564025018393,
+      "horizon_steps": 100,
+      "manoeuvre": "sustained_lateral",
+      "model": "PINN",
+      "rmse_mean": 11.338213992748896,
+      "rmse_std": 0.04779783127303089,
+      "seed_count": 3
+    },
+    {
+      "coefficient_of_variation": 0.003284743505355059,
+      "horizon_steps": 200,
+      "manoeuvre": "sustained_lateral",
+      "model": "PINN",
+      "rmse_mean": 23.39828248026898,
+      "rmse_std": 0.07685735641352659,
+      "seed_count": 3
+    },
+    {
+      "coefficient_of_variation": 0.07926158489833661,
+      "horizon_steps": 1,
+      "manoeuvre": "brake_steer",
+      "model": "PassiveHNet",
+      "rmse_mean": 0.26849796793745284,
+      "rmse_std": 0.02128157448070528,
+      "seed_count": 3
+    },
+    {
+      "coefficient_of_variation": 0.12988735586612388,
+      "horizon_steps": 10,
+      "manoeuvre": "brake_steer",
+      "model": "PassiveHNet",
+      "rmse_mean": 1.2666813064580829,
+      "rmse_std": 0.16452588562088774,
+      "seed_count": 3
+    },
+    {
+      "coefficient_of_variation": 0.10934836109679305,
+      "horizon_steps": 50,
+      "manoeuvre": "brake_steer",
+      "model": "PassiveHNet",
+      "rmse_mean": 5.817566824595043,
+      "rmse_std": 0.6361413978405425,
+      "seed_count": 3
+    },
+    {
+      "coefficient_of_variation": 0.10808524470161368,
+      "horizon_steps": 100,
+      "manoeuvre": "brake_steer",
+      "model": "PassiveHNet",
+      "rmse_mean": 11.558604568416754,
+      "rmse_std": 1.2493146031865148,
+      "seed_count": 3
+    },
+    {
+      "coefficient_of_variation": 0.10830107141241169,
+      "horizon_steps": 200,
+      "manoeuvre": "brake_steer",
+      "model": "PassiveHNet",
+      "rmse_mean": 22.962511308717747,
+      "rmse_std": 2.4868645770537516,
+      "seed_count": 3
+    },
+    {
+      "coefficient_of_variation": 0.2360954525821553,
+      "horizon_steps": 1,
+      "manoeuvre": "steering_transient",
+      "model": "PassiveHNet",
+      "rmse_mean": 0.1902808238260328,
+      "rmse_std": 0.04492443721891258,
+      "seed_count": 3
+    },
+    {
+      "coefficient_of_variation": 0.1284846200803328,
+      "horizon_steps": 10,
+      "manoeuvre": "steering_transient",
+      "model": "PassiveHNet",
+      "rmse_mean": 1.2333781961752737,
+      "rmse_std": 0.1584701289509462,
+      "seed_count": 3
+    },
+    {
+      "coefficient_of_variation": 0.10316791023820697,
+      "horizon_steps": 50,
+      "manoeuvre": "steering_transient",
+      "model": "PassiveHNet",
+      "rmse_mean": 5.859173820672741,
+      "rmse_std": 0.6044787188012175,
+      "seed_count": 3
+    },
+    {
+      "coefficient_of_variation": 0.10191969792339203,
+      "horizon_steps": 100,
+      "manoeuvre": "steering_transient",
+      "model": "PassiveHNet",
+      "rmse_mean": 11.614395226921575,
+      "rmse_std": 1.1837356530907333,
+      "seed_count": 3
+    },
+    {
+      "coefficient_of_variation": 0.10284161646776734,
+      "horizon_steps": 200,
+      "manoeuvre": "steering_transient",
+      "model": "PassiveHNet",
+      "rmse_mean": 22.99180486587124,
+      "rmse_std": 2.364514377917677,
+      "seed_count": 3
+    },
+    {
+      "coefficient_of_variation": 0.2360954525821553,
+      "horizon_steps": 1,
+      "manoeuvre": "straight",
+      "model": "PassiveHNet",
+      "rmse_mean": 0.1902808238260328,
+      "rmse_std": 0.04492443721891258,
+      "seed_count": 3
+    },
+    {
+      "coefficient_of_variation": 0.13197000392755884,
+      "horizon_steps": 10,
+      "manoeuvre": "straight",
+      "model": "PassiveHNet",
+      "rmse_mean": 1.2452474455217442,
+      "rmse_std": 0.16433531027628717,
+      "seed_count": 3
+    },
+    {
+      "coefficient_of_variation": 0.10520892838740646,
+      "horizon_steps": 50,
+      "manoeuvre": "straight",
+      "model": "PassiveHNet",
+      "rmse_mean": 5.87054873806541,
+      "rmse_std": 0.6176341417779031,
+      "seed_count": 3
+    },
+    {
+      "coefficient_of_variation": 0.10264437961079617,
+      "horizon_steps": 100,
+      "manoeuvre": "straight",
+      "model": "PassiveHNet",
+      "rmse_mean": 11.623954036585204,
+      "rmse_std": 1.193133550709698,
+      "seed_count": 3
+    },
+    {
+      "coefficient_of_variation": 0.1029350484084332,
+      "horizon_steps": 200,
+      "manoeuvre": "straight",
+      "model": "PassiveHNet",
+      "rmse_mean": 22.993726480800934,
+      "rmse_std": 2.3668603483915165,
+      "seed_count": 3
+    },
+    {
+      "coefficient_of_variation": 0.2360616760778043,
+      "horizon_steps": 1,
+      "manoeuvre": "sustained_lateral",
+      "model": "PassiveHNet",
+      "rmse_mean": 0.19027950741595012,
+      "rmse_std": 0.04491769944386818,
+      "seed_count": 3
+    },
+    {
+      "coefficient_of_variation": 0.12610759890952314,
+      "horizon_steps": 10,
+      "manoeuvre": "sustained_lateral",
+      "model": "PassiveHNet",
+      "rmse_mean": 1.22779766988635,
+      "rmse_std": 0.1548346160960749,
+      "seed_count": 3
+    },
+    {
+      "coefficient_of_variation": 0.13823723550740927,
+      "horizon_steps": 50,
+      "manoeuvre": "sustained_lateral",
+      "model": "PassiveHNet",
+      "rmse_mean": 5.867174304795539,
+      "rmse_std": 0.8110619561350413,
+      "seed_count": 3
+    },
+    {
+      "coefficient_of_variation": 0.15644696681061318,
+      "horizon_steps": 100,
+      "manoeuvre": "sustained_lateral",
+      "model": "PassiveHNet",
+      "rmse_mean": 12.22249154484066,
+      "rmse_std": 1.9121717290586868,
+      "seed_count": 3
+    },
+    {
+      "coefficient_of_variation": 0.13194722284385219,
+      "horizon_steps": 200,
+      "manoeuvre": "sustained_lateral",
+      "model": "PassiveHNet",
+      "rmse_mean": 24.958576406871362,
+      "rmse_std": 3.293214843022767,
+      "seed_count": 3
+    }
+  ],
+  "dtype": "_default",
+  "elapsed_wall_s": null,
+  "evidence_tiers": {
+    "Tier A": [],
+    "Tier B": [
+      "controlled pH energy bookkeeping"
+    ],
+    "Tier C": [
+      "vehicle energy observations",
+      "baseline pilot",
+      "production-map finiteness diagnostic",
+      "bounded two-stiffness setup-optimization feasibility pilot"
+    ],
+    "Tier D": [
+      "ablations",
+      "learned extrapolation",
+      "expanded gradients",
+      "compute p95"
+    ]
+  },
+  "experiment": "results_audit",
+  "experiment_config": {
+    "dt": 0.005,
+    "mode": "smoke",
+    "output": "results/paper_suite",
+    "seed": 0
+  },
+  "experiments": {
+    "ablations": {
+      "reason": "No matched trained ablation variants exist.",
+      "recommended_action": "Expose and train only clean A0/A1/A2/A9 variants with matched protocol.",
+      "scientific_quality": "weak",
+      "status": "unavailable"
+    },
+    "baseline": {
+      "main_table_suitability": "no",
+      "protocol_only": "yes",
+      "reason": "Three seeds and 200-step rollouts are real, but the persisted test set consists of four deterministic trajectories, training histories are only final losses, and no checkpoints remain for independent OOD evaluation.",
+      "recommended_action": "Use as protocol/pilot evidence only. Persist checkpoints and epoch-wise losses, then evaluate on independent randomized test trajectories before a main-table claim.",
+      "scientific_quality": "weak",
+      "status": "weak",
+      "supplementary_suitability": "yes, labelled pilot"
+    },
+    "compute": {
+      "reason": "Only two warm samples; compilation is separated but repetitions are insufficient for a stable p95.",
+      "recommended_action": "Repeat warm timings (>=30 samples) on documented hardware.",
+      "scientific_quality": "weak",
+      "status": "weak"
+    },
+    "energy": {
+      "reason": "Controlled pH bookkeeping closes; vehicle traces are explicitly observational.",
+      "recommended_action": "Use toy balance as supporting numerical evidence; do not claim vehicle global passivity.",
+      "scientific_quality": "moderate",
+      "status": "complete"
+    },
+    "extrapolation": {
+      "reason": "Only the production map was checked for finiteness; learned baseline checkpoints were not persisted.",
+      "recommended_action": "Persist matched baseline checkpoints and measure interpolation/OOD RMSE.",
+      "scientific_quality": "weak",
+      "status": "partial"
+    },
+    "figures": {
+      "reason": "Baseline, toy-energy, conditioning, and bounded setup-pilot figures have source data, but none establishes main-paper readiness.",
+      "recommended_action": "Keep the controlled energy and bounded setup-pilot figures as supporting evidence; regenerate after valid solver/gradient/ablation data exist.",
+      "scientific_quality": "weak",
+      "status": "partial"
+    },
+    "gradients": {
+      "reason": "The 16-parameter CPU run was stopped without writing an artifact.",
+      "recommended_action": "Run the six-parameter representative subset over a small operating-point set.",
+      "scientific_quality": "weak",
+      "status": "failed"
+    },
+    "setup_conditioning": {
+      "reason": "A 10-step, \u00b115% k_f/k_r grid shows a 12.8% range for the normalised state-based candidate objective; AD and central-FD sensitivities are finite.",
+      "recommended_action": "Use the normalised suspension-velocity/heave candidate in additional bounded pilots; do not imply IFT validation until it is measured.",
+      "scientific_quality": "moderate",
+      "status": "complete"
+    },
+    "setup_optimization": {
+      "reason": "The bounded 10-step k_f/k_r pilot reduced the conditioned objective by 2.97% with finite states and AD/FD agreement at three points, but uses one deterministic initial condition and no IFT comparison.",
+      "recommended_action": "Treat as Tier C feasibility evidence; add IFT, additional starts, and a 200-step validation before claiming optimization utility.",
+      "scientific_quality": "moderate",
+      "status": "complete"
+    },
+    "solver": {
+      "reason": "No solver result artifact is present in this output directory.",
+      "recommended_action": "Re-run the already implemented solver study when compute resources permit.",
+      "scientific_quality": "weak",
+      "status": "unavailable"
+    }
+  },
+  "git_commit": "3063ece227a6a1e3b707f25ca28a7ee8c6192f6f",
+  "jax_version": "0.9.0.1",
+  "platform": "Linux-6.6.87.2-microsoft-standard-WSL2-x86_64-with-glibc2.39",
+  "python_version": "3.12.3 (main, Aug 31 2026, 10:18:26) [GCC 13.3.0]",
+  "seed": 0,
+  "status": "completed",
+  "timestamp": "2026-09-12T22:12:37.790675+00:00"
+}

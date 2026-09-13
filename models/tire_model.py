@@ -592,6 +592,7 @@ class PacejkaTire:
         self,
         alpha, kappa, Fz, gamma, T_ribs, T_gas, Vx,
         stochastic_key   = None,
+        apply_residual:  bool = True,
         wz:               jax.Array = jnp.array(0.0),
         mu_scale:         jax.Array = jnp.array(1.0),
         T_opt_override:   jax.Array = jnp.array(-1.0),
@@ -720,6 +721,13 @@ class PacejkaTire:
         Fy             = Fy * (1.0 - 0.15 * safe_abs(phi_t) * low_speed_fade)
 
         # ── PINN/GP residual corrections ─────────────────────────────────────
+        # ``apply_residual=False`` is the reproducible analytical MF6.2 path
+        # used by the independent TTC benchmark.  It retains the preceding
+        # thermal, combined-slip, and turn-slip calculations but excludes both
+        # learned drift and the nonstandard GP-style safety penalty.
+        if not apply_residual:
+            return Fx, Fy, jnp.array(0.0, dtype=jnp.asarray(Fx).dtype)
+
         T_eff  = jnp.mean(T_ribs[:3])
         T_norm = jnp.tanh((T_eff - self.T_opt) / 30.0) 
         Vx_arr = jnp.asarray(Vx)

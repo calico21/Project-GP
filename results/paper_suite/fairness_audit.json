@@ -1,0 +1,28 @@
+{
+  "dataset": {
+    "training_samples_per_seed": 1000,
+    "validation_samples_per_seed": 200,
+    "test": "four deterministic production rollouts"
+  },
+  "seeds": [
+    0,
+    1,
+    2
+  ],
+  "epochs": 50,
+  "optimizer": "Adam",
+  "learning_rate": 0.0003,
+  "weight_decay": 0.0,
+  "dt_s": 0.005,
+  "horizon_steps": 200,
+  "state_subset": "28 mechanical states [q,p=M_diag*v], evaluated as [q,v]",
+  "controls": 6,
+  "setup_dimensions": 28,
+  "models": [
+    "HNN",
+    "NeuralODE",
+    "PHNN",
+    "PINN",
+    "PassiveHNet"
+  ]
+}

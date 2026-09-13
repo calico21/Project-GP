@@ -1,0 +1,105 @@
+{
+  "config": {
+    "batch_size": 64,
+    "dt": 0.005,
+    "epochs": 50,
+    "horizon_steps": 200,
+    "learning_rate": 0.0003,
+    "models": [
+      "NeuralODE",
+      "PINN",
+      "HNN",
+      "PHNN",
+      "PassiveHNet"
+    ],
+    "n_test_one_step": 200,
+    "n_test_trajectories": 32,
+    "n_train": 1000,
+    "n_validation": 200,
+    "seeds": [
+      0,
+      1,
+      2
+    ]
+  },
+  "config_fingerprint": "590a37743ae698f918799974bf15dd5fb563ca901ee81e811818161e495d1389",
+  "model_specifications": {
+    "HNN": {
+      "class": "benchmarks.baselines.hnn.HNN",
+      "constructor": {
+        "control_dim": 6,
+        "dt": 0.005,
+        "hidden": [
+          128,
+          128,
+          64
+        ],
+        "q_dim": 14,
+        "setup_dim": 28
+      }
+    },
+    "NeuralODE": {
+      "class": "benchmarks.baselines.neural_ode.NeuralODE",
+      "constructor": {
+        "control_dim": 6,
+        "dt": 0.005,
+        "hidden": [
+          128,
+          128,
+          64
+        ],
+        "setup_dim": 28,
+        "state_dim": 28
+      }
+    },
+    "PHNN": {
+      "class": "benchmarks.baselines.phnn.PHNN",
+      "constructor": {
+        "control_dim": 6,
+        "dt": 0.005,
+        "hidden": [
+          128,
+          128,
+          64
+        ],
+        "q_dim": 14,
+        "setup_dim": 28
+      }
+    },
+    "PINN": {
+      "class": "benchmarks.baselines.pinn.PINN",
+      "constructor": {
+        "control_dim": 6,
+        "dt": 0.005,
+        "hidden": [
+          128,
+          128,
+          64
+        ],
+        "lambda_phys": 0.1,
+        "q_dim": 14,
+        "setup_dim": 28
+      }
+    },
+    "PassiveHNet": {
+      "class": "benchmarks.baselines.passive_hnet.PassiveHNetBaseline",
+      "constructor": {
+        "control_dim": 6,
+        "dt": 0.005,
+        "q_dim": 14,
+        "setup_dim": 28
+      }
+    }
+  },
+  "protocol_version": 1,
+  "required_metrics": [
+    "one_step_rmse",
+    "rollout_rmse",
+    "per_state_error",
+    "stability",
+    "energy_diagnostics",
+    "parameter_count",
+    "training_time_s",
+    "inference_time_s"
+  ]
+}

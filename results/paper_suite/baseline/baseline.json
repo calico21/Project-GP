@@ -1,0 +1,64 @@
+{
+  "dtype": "_default",
+  "elapsed_wall_s": 2.8638000003411435e-05,
+  "experiment": "baseline",
+  "experiment_config": {
+    "dt": 0.005,
+    "mode": "paper",
+    "output": "results/paper_suite",
+    "seed": 0
+  },
+  "git_commit": "3063ece227a6a1e3b707f25ca28a7ee8c6192f6f",
+  "jax_version": "0.9.0.1",
+  "metrics": {
+    "common_observables": {
+      "front_heave": 6,
+      "pitch": 4,
+      "rear_heave": 8,
+      "roll": 3,
+      "vx": 14,
+      "vy": 15,
+      "yaw_rate": 19
+    },
+    "epochs": 50,
+    "fairness_audit": "fairness_audit.json",
+    "horizon": 200,
+    "n_train": 1000,
+    "n_validation": 200,
+    "reference": "production 108-state vehicle projected to 28 mechanical states",
+    "representation": "[q, p=M_diag*v]; results converted back to [q,v]",
+    "seed_count": 3,
+    "training": {
+      "HNN": {
+        "train_loss": 0.694018262061523,
+        "train_time_s": 5.494288778000282,
+        "validation_loss": 0.5564463396165423
+      },
+      "NeuralODE": {
+        "train_loss": 0.00630429772479605,
+        "train_time_s": 6.110032875999877,
+        "validation_loss": 0.005218778176847469
+      },
+      "PHNN": {
+        "train_loss": 0.09108598232966161,
+        "train_time_s": 7.871663285000068,
+        "validation_loss": 0.10095617564579573
+      },
+      "PINN": {
+        "train_loss": 3.1220678009985443,
+        "train_time_s": 6.453004284999679,
+        "validation_loss": 3.782576529280372
+      },
+      "PassiveHNet": {
+        "train_loss": 2.970407948169077,
+        "train_time_s": 11.09616387799997,
+        "validation_loss": 3.533102665434675
+      }
+    }
+  },
+  "platform": "Linux-6.6.87.2-microsoft-standard-WSL2-x86_64-with-glibc2.39",
+  "python_version": "3.12.3 (main, Aug 31 2026, 10:18:26) [GCC 13.3.0]",
+  "seed": 0,
+  "status": "complete",
+  "timestamp": "2026-09-12T20:53:04.747124+00:00"
+}

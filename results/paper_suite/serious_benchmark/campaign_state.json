@@ -1,0 +1,52 @@
+{
+  "config_fingerprint": "590a37743ae698f918799974bf15dd5fb563ca901ee81e811818161e495d1389",
+  "resume_rule": "completed units are never retrained; incomplete units resume from epoch checkpoints.",
+  "status": "completed",
+  "units": {
+    "HNN/seed_0": {
+      "status": "completed"
+    },
+    "HNN/seed_1": {
+      "status": "completed"
+    },
+    "HNN/seed_2": {
+      "status": "completed"
+    },
+    "NeuralODE/seed_0": {
+      "status": "completed"
+    },
+    "NeuralODE/seed_1": {
+      "status": "completed"
+    },
+    "NeuralODE/seed_2": {
+      "status": "completed"
+    },
+    "PHNN/seed_0": {
+      "status": "completed"
+    },
+    "PHNN/seed_1": {
+      "status": "completed"
+    },
+    "PHNN/seed_2": {
+      "status": "completed"
+    },
+    "PINN/seed_0": {
+      "status": "completed"
+    },
+    "PINN/seed_1": {
+      "status": "completed"
+    },
+    "PINN/seed_2": {
+      "status": "completed"
+    },
+    "PassiveHNet/seed_0": {
+      "status": "completed"
+    },
+    "PassiveHNet/seed_1": {
+      "status": "completed"
+    },
+    "PassiveHNet/seed_2": {
+      "status": "completed"
+    }
+  }
+}

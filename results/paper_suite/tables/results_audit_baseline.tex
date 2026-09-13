@@ -1,0 +1,105 @@
+\begin{tabular}{llrrrr}
+\toprule
+Model & Manoeuvre & Horizon & Mean RMSE & Std & CV \\ \midrule
+HNN & brake steer & 1 & 0.20229 & 0.00741 & 0.0366 \\
+HNN & brake steer & 10 & 0.61255 & 0.0555 & 0.0907 \\
+HNN & brake steer & 50 & 2.7083 & 0.217 & 0.0801 \\
+HNN & brake steer & 100 & 5.459 & 0.396 & 0.0726 \\
+HNN & brake steer & 200 & 10.97 & 0.725 & 0.0661 \\
+HNN & steering transient & 1 & 0.024232 & 0.0204 & 0.841 \\
+HNN & steering transient & 10 & 0.54843 & 0.0497 & 0.0907 \\
+HNN & steering transient & 50 & 2.8417 & 0.184 & 0.0647 \\
+HNN & steering transient & 100 & 5.7189 & 0.339 & 0.0592 \\
+HNN & steering transient & 200 & 11.488 & 0.599 & 0.0522 \\
+HNN & straight & 1 & 0.024232 & 0.0204 & 0.841 \\
+HNN & straight & 10 & 0.56529 & 0.0473 & 0.0836 \\
+HNN & straight & 50 & 2.8514 & 0.183 & 0.064 \\
+HNN & straight & 100 & 5.7315 & 0.338 & 0.0589 \\
+HNN & straight & 200 & 11.497 & 0.6 & 0.0522 \\
+HNN & sustained lateral & 1 & 0.024234 & 0.0204 & 0.841 \\
+HNN & sustained lateral & 10 & 0.54152 & 0.0511 & 0.0944 \\
+HNN & sustained lateral & 50 & 2.5928 & 0.259 & 0.1 \\
+HNN & sustained lateral & 100 & 5.6989 & 0.53 & 0.0931 \\
+HNN & sustained lateral & 200 & 12.393 & 0.974 & 0.0786 \\
+NeuralODE & brake steer & 1 & 0.22118 & 0.0133 & 0.06 \\
+NeuralODE & brake steer & 10 & 0.73129 & 0.0495 & 0.0677 \\
+NeuralODE & brake steer & 50 & 3.5654 & 0.909 & 0.255 \\
+NeuralODE & brake steer & 100 & 9.1718 & 2.56 & 0.279 \\
+NeuralODE & brake steer & 200 & 29.632 & 7.86 & 0.265 \\
+NeuralODE & steering transient & 1 & 0.058861 & 0.0124 & 0.211 \\
+NeuralODE & steering transient & 10 & 0.6607 & 0.0574 & 0.0869 \\
+NeuralODE & steering transient & 50 & 3.6363 & 1.06 & 0.293 \\
+NeuralODE & steering transient & 100 & 9.2944 & 2.83 & 0.305 \\
+NeuralODE & steering transient & 200 & 29.873 & 7.9 & 0.265 \\
+NeuralODE & straight & 1 & 0.058861 & 0.0124 & 0.211 \\
+NeuralODE & straight & 10 & 0.67676 & 0.0556 & 0.0821 \\
+NeuralODE & straight & 50 & 3.6575 & 1.06 & 0.291 \\
+NeuralODE & straight & 100 & 9.3104 & 2.85 & 0.306 \\
+NeuralODE & straight & 200 & 29.876 & 7.9 & 0.264 \\
+NeuralODE & sustained lateral & 1 & 0.058857 & 0.0124 & 0.211 \\
+NeuralODE & sustained lateral & 10 & 0.64997 & 0.0621 & 0.0956 \\
+NeuralODE & sustained lateral & 50 & 3.9708 & 0.543 & 0.137 \\
+NeuralODE & sustained lateral & 100 & 10.897 & 1.83 & 0.168 \\
+NeuralODE & sustained lateral & 200 & 33.63 & 5.7 & 0.17 \\
+PHNN & brake steer & 1 & 1782.4 & 452 & 0.254 \\
+PHNN & brake steer & 10 & 11338 & 3.4e+03 & 0.3 \\
+PHNN & brake steer & 50 & 53242 & 1.63e+04 & 0.306 \\
+PHNN & brake steer & 100 & 1.0195e+05 & 2.68e+04 & 0.263 \\
+PHNN & brake steer & 200 & 2.1333e+05 & 3.05e+04 & 0.143 \\
+PHNN & steering transient & 1 & 0.51499 & 0.283 & 0.549 \\
+PHNN & steering transient & 10 & 11.217 & 3.62 & 0.323 \\
+PHNN & steering transient & 50 & 24.238 & 4.85 & 0.2 \\
+PHNN & steering transient & 100 & 85.965 & 34.3 & 0.399 \\
+PHNN & steering transient & 200 & 346.86 & 144 & 0.415 \\
+PHNN & straight & 1 & 0.51499 & 0.283 & 0.549 \\
+PHNN & straight & 10 & 2.9658 & 1.39 & 0.469 \\
+PHNN & straight & 50 & 18.68 & 2.73 & 0.146 \\
+PHNN & straight & 100 & 78.476 & 29.2 & 0.372 \\
+PHNN & straight & 200 & 334.2 & 131 & 0.392 \\
+PHNN & sustained lateral & 1 & 2.4446 & 0.845 & 0.346 \\
+PHNN & sustained lateral & 10 & 15.302 & 5 & 0.327 \\
+PHNN & sustained lateral & 50 & 86.285 & 12.3 & 0.142 \\
+PHNN & sustained lateral & 100 & 200.96 & 42.8 & 0.213 \\
+PHNN & sustained lateral & 200 & 616.6 & 229 & 0.372 \\
+PINN & brake steer & 1 & 0.27439 & 0.00232 & 0.00846 \\
+PINN & brake steer & 10 & 1.1125 & 0.00748 & 0.00672 \\
+PINN & brake steer & 50 & 4.8673 & 0.0751 & 0.0154 \\
+PINN & brake steer & 100 & 9.6047 & 0.16 & 0.0166 \\
+PINN & brake steer & 200 & 18.988 & 0.334 & 0.0176 \\
+PINN & steering transient & 1 & 0.18598 & 0.00126 & 0.00678 \\
+PINN & steering transient & 10 & 1.0624 & 0.00544 & 0.00512 \\
+PINN & steering transient & 50 & 4.8145 & 0.0189 & 0.00393 \\
+PINN & steering transient & 100 & 9.4684 & 0.0357 & 0.00377 \\
+PINN & steering transient & 200 & 18.604 & 0.0711 & 0.00382 \\
+PINN & straight & 1 & 0.18598 & 0.00126 & 0.00678 \\
+PINN & straight & 10 & 1.0603 & 0.00542 & 0.00511 \\
+PINN & straight & 50 & 4.8129 & 0.0178 & 0.00371 \\
+PINN & straight & 100 & 9.467 & 0.0345 & 0.00364 \\
+PINN & straight & 200 & 18.601 & 0.0709 & 0.00381 \\
+PINN & sustained lateral & 1 & 0.18597 & 0.00126 & 0.00679 \\
+PINN & sustained lateral & 10 & 1.0647 & 0.00571 & 0.00536 \\
+PINN & sustained lateral & 50 & 5.3586 & 0.0146 & 0.00273 \\
+PINN & sustained lateral & 100 & 11.338 & 0.0478 & 0.00422 \\
+PINN & sustained lateral & 200 & 23.398 & 0.0769 & 0.00328 \\
+PassiveHNet & brake steer & 1 & 0.2685 & 0.0213 & 0.0793 \\
+PassiveHNet & brake steer & 10 & 1.2667 & 0.165 & 0.13 \\
+PassiveHNet & brake steer & 50 & 5.8176 & 0.636 & 0.109 \\
+PassiveHNet & brake steer & 100 & 11.559 & 1.25 & 0.108 \\
+PassiveHNet & brake steer & 200 & 22.963 & 2.49 & 0.108 \\
+PassiveHNet & steering transient & 1 & 0.19028 & 0.0449 & 0.236 \\
+PassiveHNet & steering transient & 10 & 1.2334 & 0.158 & 0.128 \\
+PassiveHNet & steering transient & 50 & 5.8592 & 0.604 & 0.103 \\
+PassiveHNet & steering transient & 100 & 11.614 & 1.18 & 0.102 \\
+PassiveHNet & steering transient & 200 & 22.992 & 2.36 & 0.103 \\
+PassiveHNet & straight & 1 & 0.19028 & 0.0449 & 0.236 \\
+PassiveHNet & straight & 10 & 1.2452 & 0.164 & 0.132 \\
+PassiveHNet & straight & 50 & 5.8705 & 0.618 & 0.105 \\
+PassiveHNet & straight & 100 & 11.624 & 1.19 & 0.103 \\
+PassiveHNet & straight & 200 & 22.994 & 2.37 & 0.103 \\
+PassiveHNet & sustained lateral & 1 & 0.19028 & 0.0449 & 0.236 \\
+PassiveHNet & sustained lateral & 10 & 1.2278 & 0.155 & 0.126 \\
+PassiveHNet & sustained lateral & 50 & 5.8672 & 0.811 & 0.138 \\
+PassiveHNet & sustained lateral & 100 & 12.222 & 1.91 & 0.156 \\
+PassiveHNet & sustained lateral & 200 & 24.959 & 3.29 & 0.132 \\
+\bottomrule
+\end{tabular}

@@ -1,0 +1,28 @@
+{
+  "dtype": "_default",
+  "elapsed_wall_s": 2.0738999864988727e-05,
+  "experiment": "tables",
+  "experiment_config": {
+    "dt": 0.005,
+    "mode": "paper",
+    "output": "results/paper_suite",
+    "seed": 0
+  },
+  "git_commit": "3063ece227a6a1e3b707f25ca28a7ee8c6192f6f",
+  "jax_version": "0.9.0.1",
+  "metrics": {
+    "generated": [
+      "table_baselines.tex",
+      "table_energy.tex",
+      "table_ablations.tex",
+      "table_setup_optimization.tex",
+      "table_compute.tex",
+      "table_extrapolation.tex"
+    ]
+  },
+  "platform": "Linux-6.6.87.2-microsoft-standard-WSL2-x86_64-with-glibc2.39",
+  "python_version": "3.12.3 (main, Aug 31 2026, 10:18:26) [GCC 13.3.0]",
+  "seed": 0,
+  "status": "completed",
+  "timestamp": "2026-09-12T21:12:40.971902+00:00"
+}

@@ -1,0 +1,12 @@
+\begin{tabular}{llllllll}
+ \toprule
+case & delta\_H & dissipation & domain & final\_energy & initial\_energy & input\_work & monotonicity\_violations \\ \midrule
+Conservative (R=0, u=0) & -8.881784197001252e-16 & 0.0 & controlled\_pH & 2.6999999999999993 & 2.7 & 0.0 & 0 \\
+Dissipative (R≥0, u=0) & -0.4658894640818656 & 0.4658894640818651 & controlled\_pH & 2.2341105359181346 & 2.7 & 0.0 & 0 \\
+Forced (R=0, u≠0) & 0.04096122172993777 & 0.0 & controlled\_pH & 2.740961221729938 & 2.7 & 0.04096122172993704 & 10 \\
+Forced + dissipative & -0.4321813621993753 & 0.4705105649301969 & controlled\_pH & 2.267818637800625 & 2.7 & 0.03832920273082171 & 0 \\
+coasting & -687.9485730320157 &  & vehicle\_observational & 52937.91175107655 & 53625.860324108566 &  &  \\
+constant\_drive & -503.6017141859993 &  & vehicle\_observational & 53122.25860992257 & 53625.860324108566 &  &  \\
+steer\_oscillation & -595.5214751735621 &  & vehicle\_observational & 53030.338848935 & 53625.860324108566 &  &  \\
+\bottomrule
+\end{tabular}

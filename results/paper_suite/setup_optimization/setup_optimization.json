@@ -1,0 +1,30 @@
+{
+  "dtype": "_default",
+  "elapsed_wall_s": 0.0003000020001309167,
+  "experiment": "setup_optimization",
+  "experiment_config": {
+    "dt": 0.005,
+    "mode": "smoke",
+    "output": "results/paper_suite",
+    "seed": 0
+  },
+  "git_commit": "3063ece227a6a1e3b707f25ca28a7ee8c6192f6f",
+  "jax_version": "0.9.0.1",
+  "metrics": {
+    "final_setup": [
+      22500.000022030137,
+      24000.000025749985
+    ],
+    "initial_setup": [
+      22500.0,
+      24000.0
+    ],
+    "objective": "mean roll/heave proxy under fixed combined control; no unsupported splitter observable",
+    "success": true
+  },
+  "platform": "Linux-6.6.87.2-microsoft-standard-WSL2-x86_64-with-glibc2.39",
+  "python_version": "3.12.3 (main, Aug 31 2026, 10:18:26) [GCC 13.3.0]",
+  "seed": 0,
+  "status": "completed",
+  "timestamp": "2026-09-12T21:12:29.164691+00:00"
+}

@@ -1,0 +1,349 @@
+{
+  "can": {
+    "independence_status": "eligible observed-channel source, pending external provenance confirmation",
+    "permitted_claim": "prediction of the listed directly observed channels only",
+    "prohibited_claim": "108-state prediction or validation of unobserved thermal, slip, or compliance states",
+    "proposed_session_split": {
+      "test": [
+        "5"
+      ],
+      "train": [
+        "1",
+        "2",
+        "3"
+      ],
+      "validation": [
+        "4"
+      ]
+    },
+    "sessions": [
+      {
+        "column_count": 83,
+        "observed_channel_numeric_fraction": {
+          "ANGLE": 1.0,
+          "APPS_AV": 1.0,
+          "BPPS": 1.0,
+          "Yaw_Rate_z": 1.0,
+          "a_x": 1.0,
+          "a_y": 1.0,
+          "a_z": 1.0,
+          "rlRPM": 1.0,
+          "rlTRQ": 1.0,
+          "rrRPM": 1.0,
+          "rrTRQ": 1.0,
+          "speed": 1.0,
+          "v_x": 1.0,
+          "v_y": 1.0,
+          "v_z": 1.0
+        },
+        "observed_channels_present": [
+          "ANGLE",
+          "APPS_AV",
+          "BPPS",
+          "a_x",
+          "a_y",
+          "a_z",
+          "v_x",
+          "v_y",
+          "v_z",
+          "Yaw_Rate_z",
+          "speed",
+          "rlRPM",
+          "rrRPM",
+          "rlTRQ",
+          "rrTRQ"
+        ],
+        "path": "data/raw_can_logs/1.csv",
+        "row_count": 114414,
+        "session_id": "1",
+        "sha256": "10ac69b8f6057efb116dfaffed8690d01af2aad54d99d7839a958448958c3fc2",
+        "timestamp": {
+          "end_s": 572.065,
+          "finite_fraction": 1.0,
+          "median_positive_dt_s": 0.0049999999999954525,
+          "monotone_non_decreasing": true,
+          "present": true,
+          "start_s": 0.0
+        }
+      },
+      {
+        "column_count": 118,
+        "observed_channel_numeric_fraction": {
+          "ANGLE": 1.0,
+          "APPS_AV": 1.0,
+          "BPPS": 1.0,
+          "Yaw_Rate_z": 1.0,
+          "a_x": 1.0,
+          "a_y": 1.0,
+          "a_z": 1.0,
+          "rlRPM": 1.0,
+          "rlTRQ": 1.0,
+          "rrRPM": 1.0,
+          "rrTRQ": 1.0,
+          "speed": 1.0,
+          "v_x": 1.0,
+          "v_y": 1.0,
+          "v_z": 1.0
+        },
+        "observed_channels_present": [
+          "ANGLE",
+          "APPS_AV",
+          "BPPS",
+          "a_x",
+          "a_y",
+          "a_z",
+          "v_x",
+          "v_y",
+          "v_z",
+          "Yaw_Rate_z",
+          "speed",
+          "rlRPM",
+          "rrRPM",
+          "rlTRQ",
+          "rrTRQ"
+        ],
+        "path": "data/raw_can_logs/2.csv",
+        "row_count": 47035,
+        "session_id": "2",
+        "sha256": "b3df62a3b877f0894b0c664bc4bb94b70761658743e66b23cf788f66c6e5861a",
+        "timestamp": {
+          "end_s": 235.17000000000002,
+          "finite_fraction": 1.0,
+          "median_positive_dt_s": 0.0049999999999954525,
+          "monotone_non_decreasing": true,
+          "present": true,
+          "start_s": 0.0
+        }
+      },
+      {
+        "column_count": 91,
+        "observed_channel_numeric_fraction": {
+          "ANGLE": 1.0,
+          "APPS_AV": 1.0,
+          "BPPS": 1.0,
+          "Yaw_Rate_z": 1.0,
+          "a_x": 1.0,
+          "a_y": 1.0,
+          "a_z": 1.0,
+          "rlRPM": 1.0,
+          "rlTRQ": 1.0,
+          "rrRPM": 1.0,
+          "rrTRQ": 1.0,
+          "speed": 1.0,
+          "v_x": 1.0,
+          "v_y": 1.0,
+          "v_z": 1.0
+        },
+        "observed_channels_present": [
+          "ANGLE",
+          "APPS_AV",
+          "BPPS",
+          "a_x",
+          "a_y",
+          "a_z",
+          "v_x",
+          "v_y",
+          "v_z",
+          "Yaw_Rate_z",
+          "speed",
+          "rlRPM",
+          "rrRPM",
+          "rlTRQ",
+          "rrTRQ"
+        ],
+        "path": "data/raw_can_logs/3.csv",
+        "row_count": 75272,
+        "session_id": "3",
+        "sha256": "cd7db19e3bbd1f188393870259aa7325816f0b6d8f9f9b72e685d6a85fd936bc",
+        "timestamp": {
+          "end_s": 376.355,
+          "finite_fraction": 1.0,
+          "median_positive_dt_s": 0.0049999999999954525,
+          "monotone_non_decreasing": true,
+          "present": true,
+          "start_s": 0.0
+        }
+      },
+      {
+        "column_count": 118,
+        "observed_channel_numeric_fraction": {
+          "ANGLE": 1.0,
+          "APPS_AV": 1.0,
+          "BPPS": 1.0,
+          "Yaw_Rate_z": 1.0,
+          "a_x": 1.0,
+          "a_y": 1.0,
+          "a_z": 1.0,
+          "rlRPM": 1.0,
+          "rlTRQ": 1.0,
+          "rrRPM": 1.0,
+          "rrTRQ": 1.0,
+          "speed": 1.0,
+          "v_x": 1.0,
+          "v_y": 1.0,
+          "v_z": 1.0
+        },
+        "observed_channels_present": [
+          "ANGLE",
+          "APPS_AV",
+          "BPPS",
+          "a_x",
+          "a_y",
+          "a_z",
+          "v_x",
+          "v_y",
+          "v_z",
+          "Yaw_Rate_z",
+          "speed",
+          "rlRPM",
+          "rrRPM",
+          "rlTRQ",
+          "rrTRQ"
+        ],
+        "path": "data/raw_can_logs/4.csv",
+        "row_count": 163332,
+        "session_id": "4",
+        "sha256": "d0fa6185da1ac01a26c828a45ff2ff7464995c0edd148641d91abaefac493b65",
+        "timestamp": {
+          "end_s": 816.655,
+          "finite_fraction": 1.0,
+          "median_positive_dt_s": 0.0049999999999954525,
+          "monotone_non_decreasing": true,
+          "present": true,
+          "start_s": 0.0
+        }
+      },
+      {
+        "column_count": 118,
+        "observed_channel_numeric_fraction": {
+          "ANGLE": 1.0,
+          "APPS_AV": 1.0,
+          "BPPS": 1.0,
+          "Yaw_Rate_z": 1.0,
+          "a_x": 1.0,
+          "a_y": 1.0,
+          "a_z": 1.0,
+          "rlRPM": 1.0,
+          "rlTRQ": 1.0,
+          "rrRPM": 1.0,
+          "rrTRQ": 1.0,
+          "speed": 1.0,
+          "v_x": 1.0,
+          "v_y": 1.0,
+          "v_z": 1.0
+        },
+        "observed_channels_present": [
+          "ANGLE",
+          "APPS_AV",
+          "BPPS",
+          "a_x",
+          "a_y",
+          "a_z",
+          "v_x",
+          "v_y",
+          "v_z",
+          "Yaw_Rate_z",
+          "speed",
+          "rlRPM",
+          "rrRPM",
+          "rlTRQ",
+          "rrTRQ"
+        ],
+        "path": "data/raw_can_logs/5.csv",
+        "row_count": 169553,
+        "session_id": "5",
+        "sha256": "e8602fbd02dae837557202014b7730f9d88a2d216decaa92bd8a61c3d02aad47",
+        "timestamp": {
+          "end_s": 847.76,
+          "finite_fraction": 1.0,
+          "median_positive_dt_s": 0.0049999999999954525,
+          "monotone_non_decreasing": true,
+          "present": true,
+          "start_s": 0.0
+        }
+      }
+    ],
+    "shared_observed_channels": [
+      "ANGLE",
+      "APPS_AV",
+      "BPPS",
+      "Yaw_Rate_z",
+      "a_x",
+      "a_y",
+      "a_z",
+      "rlRPM",
+      "rlTRQ",
+      "rrRPM",
+      "rrTRQ",
+      "speed",
+      "v_x",
+      "v_y",
+      "v_z"
+    ],
+    "source": "stored real CAN sessions; external acquisition provenance is not established by these files alone",
+    "split_rule": "complete session IDs only; never random CAN rows"
+  },
+  "dtype": "_default",
+  "elapsed_wall_s": null,
+  "experiment": "independent_data_audit",
+  "experiment_config": {
+    "dt": 0.005,
+    "mode": "smoke",
+    "output": "results/paper_suite",
+    "seed": 0
+  },
+  "git_commit": "3063ece227a6a1e3b707f25ca28a7ee8c6192f6f",
+  "jax_version": "0.9.0.1",
+  "overall_decision": "No independent 108-state benchmark is eligible. CAN supports an observed-channel, session-held-out study; TTC supports a complete-run-held-out tire study.",
+  "platform": "Linux-6.6.87.2-microsoft-standard-WSL2-x86_64-with-glibc2.39",
+  "python_version": "3.12.3 (main, Aug 31 2026, 10:18:26) [GCC 13.3.0]",
+  "seed": 0,
+  "status": "completed_read_only_data_eligibility_audit",
+  "timestamp": "2026-09-13T09:54:39.639642+00:00",
+  "ttc": {
+    "channels": [
+      "alpha_rad",
+      "kappa",
+      "Fy_N",
+      "Fx_N",
+      "Fz_N",
+      "Mz_Nm",
+      "gamma_rad",
+      "P_kPa",
+      "Vx_ms",
+      "T_center_C",
+      "T_inner_C",
+      "T_outer_C",
+      "is_test",
+      "run"
+    ],
+    "existing_is_test_split": {
+      "decision": "do not use this flag as the evaluation split for a run-generalisation claim",
+      "eligible_for_held_out_run_claim": false,
+      "row_level_within_each_run": true
+    },
+    "permitted_claim": "held-out tire-force/submodel performance when evaluated with complete run holdout",
+    "prohibited_claim": "full vehicle trajectory validation",
+    "required_evaluation": "leave-one-run-out or another complete-run holdout; fit all scaling and residual correction on training runs only",
+    "runs": [
+      {
+        "existing_row_test_count": 7069,
+        "run_id": 4,
+        "sample_count": 35300
+      },
+      {
+        "existing_row_test_count": 6178,
+        "run_id": 5,
+        "sample_count": 31131
+      },
+      {
+        "existing_row_test_count": 10475,
+        "run_id": 6,
+        "sample_count": 52293
+      }
+    ],
+    "sample_count": 118724,
+    "sha256": "20cc32695df7015ca85a7be83b72b8c318f1506032366af0f30c07c2f7e615cc",
+    "source": "stored TTC Round 9 processed archive"
+  }
+}

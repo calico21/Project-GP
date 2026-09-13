@@ -1,0 +1,472 @@
+{
+  "dtype": "_default",
+  "elapsed_wall_s": null,
+  "equation_path": "models.tire_model.PacejkaTire.compute_force_and_sigma with apply_residual=False: MF6.2 pure forces Fx0/Fy0, combined-slip Fx=Fx0*Gxa and Fy=Fy0*Gyk, then the implemented zero-turn-rate turn-slip factor. PINN drift and GP-style penalty are bypassed exactly.",
+  "experiment": "ttc_pacejka_baseline_pilot",
+  "experiment_config": {
+    "dt": 0.005,
+    "mode": "smoke",
+    "output": "results/paper_suite",
+    "seed": 0
+  },
+  "fixed_auxiliary_inputs": {
+    "T_gas_C": 90.0,
+    "T_opt_override_C": -1.0,
+    "alpha_scale": 1.0,
+    "mu_scale": 1.0,
+    "rby1_scale": 1.0,
+    "rby2_scale": 1.0,
+    "wz_rad_s": 0.0
+  },
+  "git_commit": "3063ece227a6a1e3b707f25ca28a7ee8c6192f6f",
+  "input_mapping": {
+    "Fz": "Fz_N: TTC FZ sign-flipped during preprocessing to positive loaded force [N]",
+    "T_ribs": "[T_inner_C, T_center_C, T_outer_C] [C]",
+    "Vx": "Vx_ms: TTC V converted km/h to m/s; required, no fallback",
+    "alpha": "alpha_rad: TTC SA converted from degrees to radians during preprocessing",
+    "force_units_and_sign": "Fx_N and Fy_N are TTC SAE-convention forces in N, preserved by preprocessing. Fy alone receives the frozen Run-4 model-to-TTC multiplier; Fx receives no fitted sign mapping.",
+    "gamma": "gamma_rad: TTC IA converted degrees to radians without additional sign conversion",
+    "kappa": "kappa: TTC SL; all stored values are zero",
+    "pressure": "P_kPa is TTC pressure in kPa; it is retained for coverage diagnostics but unsupported by the selected model force interface.",
+    "tire_interpretation": "single Hoosier 43075 16x7.5-10 R20 on 7 inch rim; no vehicle corner/front/rear or side label is available in these run files",
+    "unmapped_archive_channels": "P_kPa and Mz_Nm are retained for diagnostics; the selected force path has no pressure input and does not predict Mz"
+  },
+  "input_scaler": {
+    "center": [
+      0.0019119211763109541,
+      0.0,
+      0.025461807979142333,
+      715.9182671388099,
+      11.164420443815965,
+      77.2526708215289,
+      56.053756090651,
+      57.52266940509928,
+      57.87622067988668
+    ],
+    "channels": [
+      "alpha_rad",
+      "kappa",
+      "gamma_rad",
+      "Fz_N",
+      "Vx_ms",
+      "P_kPa",
+      "T_inner_C",
+      "T_center_C",
+      "T_outer_C"
+    ],
+    "constant_fields": [
+      false,
+      true,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ],
+    "fit_partition": "train",
+    "scale": [
+      0.12576339974625486,
+      1.0,
+      0.026359087629782556,
+      328.11828486116104,
+      0.013029573231769785,
+      7.281222230687765,
+      5.890258646283001,
+      5.425072149653832,
+      5.411471583566007
+    ]
+  },
+  "jax_version": "0.9.0.1",
+  "leakage_protection": "Only Run 4 was used to select the global Fy sign or fit scaler metadata. Runs 5 and 6 are evaluation-only; is_test was never read.",
+  "limitations": "Fx has no longitudinal-slip support because kappa is zero. Gas temperature and turn rate are unavailable and fixed, pressure is not consumed by this force path, and TTC/model camber convention equivalence is assumed rather than independently verified.",
+  "metrics": {
+    "test": {
+      "Fx_secondary_zero_kappa_diagnostic": {
+        "bias_N": -21.112269137360638,
+        "count": 52293,
+        "finite": true,
+        "mae_N": 23.28068900235213,
+        "mu_mae": 0.036485832073502825,
+        "mu_rmse": 0.046590134096375684,
+        "r2": -1.0951645997618913,
+        "rmse_N": 29.20144138619891
+      },
+      "Fy": {
+        "bias_N": -32.704834832490405,
+        "count": 52293,
+        "finite": true,
+        "mae_N": 691.3451709864296,
+        "mu_mae": 1.055162391987304,
+        "mu_rmse": 1.1888924658022944,
+        "r2": 0.6688934178606467,
+        "rmse_N": 857.5068107251341
+      }
+    },
+    "train": {
+      "Fx_secondary_zero_kappa_diagnostic": {
+        "bias_N": -19.59807138810198,
+        "count": 35300,
+        "finite": true,
+        "mae_N": 22.09584815864023,
+        "mu_mae": 0.03434698278598412,
+        "mu_rmse": 0.044613410095795274,
+        "r2": -1.0882206586246768,
+        "rmse_N": 27.148325407691843
+      },
+      "Fy": {
+        "bias_N": -33.553987722395924,
+        "count": 35300,
+        "finite": true,
+        "mae_N": 755.233032950781,
+        "mu_mae": 1.082006381049664,
+        "mu_rmse": 1.2014097418653558,
+        "r2": 0.6438002017235748,
+        "rmse_N": 924.7040951849783
+      }
+    },
+    "validation": {
+      "Fx_secondary_zero_kappa_diagnostic": {
+        "bias_N": -18.0370559892069,
+        "count": 31131,
+        "finite": true,
+        "mae_N": 20.416695576756286,
+        "mu_mae": 0.033298415063641895,
+        "mu_rmse": 0.04347407438992173,
+        "r2": -0.9850760484322574,
+        "rmse_N": 25.604679747685374
+      },
+      "Fy": {
+        "bias_N": 23.710833497548713,
+        "count": 31131,
+        "finite": true,
+        "mae_N": 754.4368749857019,
+        "mu_mae": 1.1502746603930385,
+        "mu_rmse": 1.277273717731801,
+        "r2": 0.5986611552843089,
+        "rmse_N": 924.4303598599373
+      }
+    }
+  },
+  "model": "Pacejka MF6.2 analytical (residual disabled)",
+  "platform": "Linux-6.6.87.2-microsoft-standard-WSL2-x86_64-with-glibc2.39",
+  "python_version": "3.12.3 (main, Aug 31 2026, 10:18:26) [GCC 13.3.0]",
+  "seed": 0,
+  "sign_convention": {
+    "model_to_ttc_fy_multiplier": -1,
+    "selection_partition": "train (Run 4) only",
+    "training_rmse_by_multiplier_N": {
+      "-1": 924.7040951849783,
+      "1": 2204.9128342969216
+    }
+  },
+  "source_sha256": "20cc32695df7015ca85a7be83b72b8c318f1506032366af0f30c07c2f7e615cc",
+  "split": {
+    "test": [
+      6
+    ],
+    "train": [
+      4
+    ],
+    "validation": [
+      5
+    ]
+  },
+  "status": "completed_lightweight_analytical_pilot",
+  "target_scaler": {
+    "center": [
+      -19.59807138810205,
+      6.346184135977178
+    ],
+    "channels": [
+      "Fx_N",
+      "Fy_N"
+    ],
+    "constant_fields": [
+      false,
+      false
+    ],
+    "fit_partition": "train",
+    "scale": [
+      18.786888255078008,
+      1549.3728675526093
+    ]
+  },
+  "test_fy_strata": [
+    {
+      "bias_N": 51.55267033710325,
+      "count": 8332,
+      "finite": true,
+      "high": 2,
+      "low": 0,
+      "mae_N": 136.12585513754584,
+      "mu_mae": 0.23097695747745808,
+      "mu_rmse": 0.29731693731927783,
+      "r2": 0.8814622453616141,
+      "rmse_N": 174.91192686903725,
+      "stratum": "abs_slip_angle_deg"
+    },
+    {
+      "bias_N": 12.990562505670928,
+      "count": 8395,
+      "finite": true,
+      "high": 4,
+      "low": 2,
+      "mae_N": 433.782372743117,
+      "mu_mae": 0.7133760269364051,
+      "mu_rmse": 0.7966553791473586,
+      "r2": 0.7906423982184397,
+      "rmse_N": 506.14660720285315,
+      "stratum": "abs_slip_angle_deg"
+    },
+    {
+      "bias_N": -46.126763963790175,
+      "count": 16800,
+      "finite": true,
+      "high": 8,
+      "low": 4,
+      "mae_N": 815.1947838390896,
+      "mu_mae": 1.2504426039906358,
+      "mu_rmse": 1.3127923923764873,
+      "r2": 0.6610759021410041,
+      "rmse_N": 929.4000190860332,
+      "stratum": "abs_slip_angle_deg"
+    },
+    {
+      "bias_N": -78.54081396075871,
+      "count": 18766,
+      "finite": true,
+      "high": 13,
+      "low": 8,
+      "mae_N": 942.2059583135543,
+      "mu_mae": 1.399172943691576,
+      "mu_rmse": 1.4396881280154536,
+      "r2": 0.6459822275688827,
+      "rmse_N": 1071.2351329622866,
+      "stratum": "abs_slip_angle_deg"
+    },
+    {
+      "bias_N": 2.5686243292666897,
+      "count": 9963,
+      "finite": true,
+      "high": 350,
+      "low": 100,
+      "mae_N": 270.0789236951162,
+      "mu_mae": 1.231662028146662,
+      "mu_rmse": 1.3215700932760277,
+      "r2": 0.6797678065884771,
+      "rmse_N": 289.39377331144243,
+      "stratum": "Fz_N"
+    },
+    {
+      "bias_N": -5.1608985622273345,
+      "count": 9961,
+      "finite": true,
+      "high": 550,
+      "low": 350,
+      "mae_N": 475.2796220432014,
+      "mu_mae": 1.0799996469877904,
+      "mu_rmse": 1.2008233315086805,
+      "r2": 0.7056569660324967,
+      "rmse_N": 527.346104703609,
+      "stratum": "Fz_N"
+    },
+    {
+      "bias_N": -24.57751543323493,
+      "count": 9953,
+      "finite": true,
+      "high": 750,
+      "low": 550,
+      "mae_N": 661.9776773648376,
+      "mu_mae": 1.0016830018385856,
+      "mu_rmse": 1.1329808265096513,
+      "r2": 0.7110399537013647,
+      "rmse_N": 746.5164246632489,
+      "stratum": "Fz_N"
+    },
+    {
+      "bias_N": -35.114860702481664,
+      "count": 10179,
+      "finite": true,
+      "high": 1000,
+      "low": 750,
+      "mae_N": 897.581287588425,
+      "mu_mae": 1.0166337041507527,
+      "mu_rmse": 1.15995635746256,
+      "r2": 0.6719425918020783,
+      "rmse_N": 1019.8411627954553,
+      "stratum": "Fz_N"
+    },
+    {
+      "bias_N": -88.45004848508708,
+      "count": 12237,
+      "finite": true,
+      "high": 1300,
+      "low": 1000,
+      "mae_N": 1062.5408715593514,
+      "mu_mae": 0.9667905779416169,
+      "mu_rmse": 1.131899532500687,
+      "r2": 0.6443876773371604,
+      "rmse_N": 1236.6435850190196,
+      "stratum": "Fz_N"
+    },
+    {
+      "bias_N": -145.47635576150327,
+      "count": 3353,
+      "finite": true,
+      "high": 0,
+      "low": -1,
+      "mae_N": 702.5620250431872,
+      "mu_mae": 1.0539956036151825,
+      "mu_rmse": 1.2068306360976453,
+      "r2": 0.6544409255150597,
+      "rmse_N": 888.9805974729578,
+      "stratum": "camber_deg"
+    },
+    {
+      "bias_N": -84.49155639471702,
+      "count": 24042,
+      "finite": true,
+      "high": 1,
+      "low": 0,
+      "mae_N": 715.3688987321534,
+      "mu_mae": 1.0754217201099252,
+      "mu_rmse": 1.2221668408574162,
+      "r2": 0.6630284029828761,
+      "rmse_N": 895.7563375627265,
+      "stratum": "camber_deg"
+    },
+    {
+      "bias_N": -12.272038437407499,
+      "count": 12449,
+      "finite": true,
+      "high": 3,
+      "low": 1,
+      "mae_N": 677.7710596539649,
+      "mu_mae": 1.0653701666996342,
+      "mu_rmse": 1.1874128182685328,
+      "r2": 0.6777739062368155,
+      "rmse_N": 830.1345791673244,
+      "stratum": "camber_deg"
+    },
+    {
+      "bias_N": 77.24868650670516,
+      "count": 12449,
+      "finite": true,
+      "high": 5,
+      "low": 3,
+      "mae_N": 655.5025762288467,
+      "mu_mae": 1.0061432649324302,
+      "mu_rmse": 1.1182441655924424,
+      "r2": 0.6756218880822907,
+      "rmse_N": 798.2452498529703,
+      "stratum": "camber_deg"
+    },
+    {
+      "bias_N": -35.34191728466836,
+      "count": 6214,
+      "finite": true,
+      "high": 10,
+      "low": 0,
+      "mae_N": 845.8490149392949,
+      "mu_mae": 1.313291864674487,
+      "mu_rmse": 1.4350629062202402,
+      "r2": 0.5201094925589991,
+      "rmse_N": 1023.6937737423056,
+      "stratum": "speed_ms"
+    },
+    {
+      "bias_N": -14.49511631381984,
+      "count": 39847,
+      "finite": true,
+      "high": 12,
+      "low": 10,
+      "mae_N": 702.5803436481771,
+      "mu_mae": 1.0593393088058123,
+      "mu_rmse": 1.1844467801578666,
+      "r2": 0.6696577011106526,
+      "rmse_N": 862.7152234332863,
+      "stratum": "speed_ms"
+    },
+    {
+      "bias_N": -146.50711715849042,
+      "count": 6232,
+      "finite": true,
+      "high": 25,
+      "low": 15,
+      "mae_N": 465.45062487350265,
+      "mu_mae": 0.7710715467136762,
+      "mu_rmse": 0.9147971898966758,
+      "r2": 0.821103608826102,
+      "rmse_N": 605.2294047390617,
+      "stratum": "speed_ms"
+    }
+  ],
+  "test_operating_range_outside_train": [
+    {
+      "channel": "alpha_rad",
+      "test_outside_train_count": 135,
+      "test_outside_train_fraction": 0.0025816074809247892,
+      "train_max": 0.21500711055318147,
+      "train_min": -0.2147453111653823
+    },
+    {
+      "channel": "kappa",
+      "test_outside_train_count": 0,
+      "test_outside_train_fraction": 0.0,
+      "train_max": -0.0,
+      "train_min": -0.0
+    },
+    {
+      "channel": "gamma_rad",
+      "test_outside_train_count": 4,
+      "test_outside_train_fraction": 7.649207350888264e-05,
+      "train_max": 0.07010987605261222,
+      "train_min": -0.00027925268031909274
+    },
+    {
+      "channel": "Fz_N",
+      "test_outside_train_count": 78,
+      "test_outside_train_fraction": 0.0014915954334232115,
+      "train_max": 1245.83,
+      "train_min": 125.63
+    },
+    {
+      "channel": "Vx_ms",
+      "test_outside_train_count": 12446,
+      "test_outside_train_fraction": 0.23800508672288834,
+      "train_max": 11.225,
+      "train_min": 11.116666666666667
+    },
+    {
+      "channel": "P_kPa",
+      "test_outside_train_count": 2137,
+      "test_outside_train_fraction": 0.04086589027212055,
+      "train_max": 85.14,
+      "train_min": 41.03
+    },
+    {
+      "channel": "T_inner_C",
+      "test_outside_train_count": 938,
+      "test_outside_train_fraction": 0.01793739123783298,
+      "train_max": 74.3,
+      "train_min": 43.33
+    },
+    {
+      "channel": "T_center_C",
+      "test_outside_train_count": 1499,
+      "test_outside_train_fraction": 0.028665404547453772,
+      "train_max": 72.56,
+      "train_min": 42.79
+    },
+    {
+      "channel": "T_outer_C",
+      "test_outside_train_count": 1740,
+      "test_outside_train_fraction": 0.03327405197636395,
+      "train_max": 71.65,
+      "train_min": 46.92
+    }
+  ],
+  "timestamp": "2026-09-13T10:16:30.524514+00:00"
+}

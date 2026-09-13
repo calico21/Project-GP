@@ -1,0 +1,185 @@
+{
+  "available_runs": [
+    4,
+    5,
+    6
+  ],
+  "dtype": "_default",
+  "elapsed_wall_s": null,
+  "experiment": "ttc_tire_benchmark_pilot",
+  "experiment_config": {
+    "dt": 0.005,
+    "mode": "smoke",
+    "output": "results/paper_suite",
+    "seed": 0
+  },
+  "git_commit": "3063ece227a6a1e3b707f25ca28a7ee8c6192f6f",
+  "input_scaler": {
+    "center": [
+      0.0019119211763109541,
+      0.0,
+      0.025461807979142333,
+      715.9182671388099,
+      11.164420443815965,
+      77.2526708215289,
+      56.053756090651,
+      57.52266940509928,
+      57.87622067988668
+    ],
+    "channels": [
+      "alpha_rad",
+      "kappa",
+      "gamma_rad",
+      "Fz_N",
+      "Vx_ms",
+      "P_kPa",
+      "T_inner_C",
+      "T_center_C",
+      "T_outer_C"
+    ],
+    "constant_fields": [
+      false,
+      true,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ],
+    "fit_partition": "train",
+    "scale": [
+      0.12576339974625486,
+      1.0,
+      0.026359087629782556,
+      328.11828486116104,
+      0.013029573231769785,
+      7.281222230687765,
+      5.890258646283001,
+      5.425072149653832,
+      5.411471583566007
+    ]
+  },
+  "jax_version": "0.9.0.1",
+  "model_execution": "none; this pilot neither trains nor evaluates a tire formulation",
+  "partition_runs_observed": {
+    "test": [
+      6
+    ],
+    "train": [
+      4
+    ],
+    "validation": [
+      5
+    ]
+  },
+  "partition_sample_counts": {
+    "test": 52293,
+    "train": 35300,
+    "validation": 31131
+  },
+  "platform": "Linux-6.6.87.2-microsoft-standard-WSL2-x86_64-with-glibc2.39",
+  "python_version": "3.12.3 (main, Aug 31 2026, 10:18:26) [GCC 13.3.0]",
+  "seed": 0,
+  "source_path": "data/ttc_round9/processed.npz",
+  "source_sha256": "20cc32695df7015ca85a7be83b72b8c318f1506032366af0f30c07c2f7e615cc",
+  "split": {
+    "test": [
+      6
+    ],
+    "train": [
+      4
+    ],
+    "validation": [
+      5
+    ]
+  },
+  "status": "prepared_no_training",
+  "stored_is_test_flag": "ignored: it is a row-level partition within every run and is prohibited for this benchmark",
+  "target_scaler": {
+    "center": [
+      -19.59807138810205,
+      6.346184135977178
+    ],
+    "channels": [
+      "Fx_N",
+      "Fy_N"
+    ],
+    "constant_fields": [
+      false,
+      false
+    ],
+    "fit_partition": "train",
+    "scale": [
+      18.786888255078008,
+      1549.3728675526093
+    ]
+  },
+  "test_operating_range_outside_train": [
+    {
+      "channel": "alpha_rad",
+      "held_out_outside_train_count": 135,
+      "held_out_outside_train_fraction": 0.0025816074809247892,
+      "train_max": 0.21500711055318147,
+      "train_min": -0.2147453111653823
+    },
+    {
+      "channel": "kappa",
+      "held_out_outside_train_count": 0,
+      "held_out_outside_train_fraction": 0.0,
+      "train_max": -0.0,
+      "train_min": -0.0
+    },
+    {
+      "channel": "gamma_rad",
+      "held_out_outside_train_count": 4,
+      "held_out_outside_train_fraction": 7.649207350888264e-05,
+      "train_max": 0.07010987605261222,
+      "train_min": -0.00027925268031909274
+    },
+    {
+      "channel": "Fz_N",
+      "held_out_outside_train_count": 78,
+      "held_out_outside_train_fraction": 0.0014915954334232115,
+      "train_max": 1245.83,
+      "train_min": 125.63
+    },
+    {
+      "channel": "Vx_ms",
+      "held_out_outside_train_count": 12446,
+      "held_out_outside_train_fraction": 0.23800508672288834,
+      "train_max": 11.225,
+      "train_min": 11.116666666666667
+    },
+    {
+      "channel": "P_kPa",
+      "held_out_outside_train_count": 2137,
+      "held_out_outside_train_fraction": 0.04086589027212055,
+      "train_max": 85.14,
+      "train_min": 41.03
+    },
+    {
+      "channel": "T_inner_C",
+      "held_out_outside_train_count": 938,
+      "held_out_outside_train_fraction": 0.01793739123783298,
+      "train_max": 74.3,
+      "train_min": 43.33
+    },
+    {
+      "channel": "T_center_C",
+      "held_out_outside_train_count": 1499,
+      "held_out_outside_train_fraction": 0.028665404547453772,
+      "train_max": 72.56,
+      "train_min": 42.79
+    },
+    {
+      "channel": "T_outer_C",
+      "held_out_outside_train_count": 1740,
+      "held_out_outside_train_fraction": 0.03327405197636395,
+      "train_max": 71.65,
+      "train_min": 46.92
+    }
+  ],
+  "timestamp": "2026-09-13T09:59:11.935448+00:00"
+}

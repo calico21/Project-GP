@@ -1,0 +1,21 @@
+{
+  "dtype": "_default",
+  "elapsed_wall_s": 0.00021651499992003664,
+  "experiment": "ablations",
+  "experiment_config": {
+    "dt": 0.005,
+    "mode": "paper",
+    "output": "results/paper_suite",
+    "seed": 0
+  },
+  "git_commit": "3063ece227a6a1e3b707f25ca28a7ee8c6192f6f",
+  "jax_version": "0.9.0.1",
+  "metrics": {
+    "honesty_note": "No ablation is assigned performance values without a matched trained model and protocol."
+  },
+  "platform": "Linux-6.6.87.2-microsoft-standard-WSL2-x86_64-with-glibc2.39",
+  "python_version": "3.12.3 (main, Aug 31 2026, 10:18:26) [GCC 13.3.0]",
+  "seed": 0,
+  "status": "partial",
+  "timestamp": "2026-09-12T21:08:58.037317+00:00"
+}
