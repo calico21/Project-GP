@@ -13,12 +13,24 @@ HISTORIAL DE ESTE SCRIPT (por qué tiene esta forma y no otra):
       motion ratio, centro de balanceo y anti-dive desde cero con métodos
       geométricos propios (trabajo virtual, FVSA, SVSA) sin poder validarlos,
       y encima usaba una clave 'contact_patch' que no existe en el hp real.
-  v3 (esta versión): tras inspeccionar vehicle_params_ter27 real, resulta que
+  v3: tras inspeccionar vehicle_params_ter27 real, resulta que
       h_rc_f, h_rc_r, anti_dive_f, anti_dive_r, anti_squat, motion_ratio_f_poly
       y motion_ratio_r_poly YA ESTÁN en el config (casi seguro exportados de
       OptimumKinematics) -> se leen DIRECTAMENTE en vez de re-derivarlos. Es
       más fiable usar un dato ya validado por otra herramienta que reinventar
       el cálculo con mis propios métodos sin poder contrastarlos.
+  v4 (esta versión): se añade dimensionado de MUELLES SECUNDARIOS (helper /
+      tender springs) y comprobación del reparto de recorrido respecto a FSG
+      Rule T 2.5.1. El diseño reserva 25 mm de droop en rueda como parte de un
+      recorrido total de 50 mm, junto con los 25 mm mínimos de jounce exigidos
+      con piloto. El objetivo NO es re-derivar geometría nueva, sino
+      reutilizar exactamente lo que ya calcula size_springs() (Ks_sel, MR)
+      para comprobar si, tras elegir el muelle principal, este mantiene
+      precarga (contacto) a lo largo de todo el recorrido de droop exigido
+      por normativa, o si queda "suelto" y por tanto hace falta un helper.
+      Convenio de MR: se mantiene el mismo que en size_springs() en todo
+      momento (MR = dz_wheel / dz_shock, por eso allí Ks = Kw*MR^2), así que
+      aquí también F_shock = F_wheel*MR y dz_wheel = dz_shock*MR.
 
 QUÉ SIGUE SIN RESOLVERSE / SUPUESTOS EXPLÍCITOS (no se han adivinado a ciegas):
 
@@ -33,6 +45,10 @@ QUÉ SIGUE SIN RESOLVERSE / SUPUESTOS EXPLÍCITOS (no se han adivinado a ciegas)
     dimensionar (poly[0], el término independiente, es el MR a z=0 sea cual
     sea el convenio), pero si se quiere usar la parte de rising-rate hay que
     confirmar el signo antes de fiarse de la dirección del efecto.
+  - `F_solid = helper_rate_n_mm * helper_stroke_mm` asume rigidez lineal del
+    helper hasta bloque solido; es una aproximación (suficiente para decidir
+    si el helper se queda "solidificado" bajo carga estatica de piloto), no
+    la curva real de una espiral progresiva si el fabricante la documenta.
 ================================================================================
 """
 
@@ -59,6 +75,9 @@ class DesignTargets:
     lat_accel_g: float = 1.8
     tlltd_front: float = 0.45          # fracción de rigidez a balanceo TOTAL en el eje delantero
     brake_decel_g: float = 2.0
+    min_droop_wheel_mm: float = 25.0   # reparto de diseño: 25 mm droop si se usan 50 mm totales (FSG T 2.5.1)
+    helper_rate_n_mm: float = 3.0      # rigidez del muelle helper (plano de retención)
+    helper_stroke_mm: float = 15.0     # carrera libre nominal del helper
 
 
 SPRING_CATALOG_N_MM: List[float] = [16, 18, 20, 22, 24, 26, 28, 30, 32, 35, 38, 40,
@@ -130,6 +149,50 @@ def size_springs(v: dict, targets: DesignTargets) -> dict:
                 fn_f_act=fn_f_act, fn_r_act=fn_r_act)
 
 
+def size_helper_springs(v: dict, targets: DesignTargets, sp: dict) -> dict:
+    """
+    Comprueba si el muelle PRINCIPAL ya seleccionado (sp['Ks_f_sel']/['Ks_r_sel'])
+    mantiene precarga (contacto) durante todo el droop mínimo reglamentario
+    (reparto de diseño: 25 mm de droop en rueda dentro de 50 mm totales de recorrido) o si, al extenderse la
+    suspensión, el muelle alcanza su longitud libre antes de llegar a ese
+    droop y queda suelto/rattling -> en ese caso hace falta un muelle
+    secundario (helper / tender spring) para cerrar el hueco.
+
+    Convenio de MR idéntico al de size_springs(): MR = dz_wheel / dz_shock
+    (de ahí que allí Ks = Kw * MR^2). Por trabajo virtual:
+        F_shock = F_wheel * MR        dz_wheel = dz_shock * MR
+    """
+    g = 9.81
+
+    def _axle(m_s: float, Ks_sel: float, MR: float) -> dict:
+        Fz = m_s * g                      # carga estática suspendida por esquina [N]
+        F_shock = Fz * MR                 # fuerza estática en el vástago [N]
+
+        delta_s = F_shock / Ks_sel        # hundimiento estático en el shock [mm] (Ks_sel en N/mm)
+        delta_w = delta_s * MR            # hundimiento estático equivalente en rueda [mm]
+
+        droop_req_shock = targets.min_droop_wheel_mm / MR   # droop reglamentario referido al shock [mm]
+
+        gap_wheel = max(0.0, targets.min_droop_wheel_mm - delta_w)  # holgura sin helper, en rueda [mm]
+        gap_shock = gap_wheel / MR                                   # misma holgura, en shock [mm]
+
+        stroke_req = gap_shock + 3.0      # carrera útil mínima del helper (+3 mm de margen de seguridad)
+
+        F_solid = targets.helper_rate_n_mm * targets.helper_stroke_mm   # fuerza al llegar a bloque [N]
+        margin_solid = F_shock / F_solid  # nº de veces que F_shock supera F_solid (helper 100% sólido)
+
+        return dict(Fz=Fz, F_shock=F_shock, delta_s=delta_s, delta_w=delta_w,
+                    droop_req_shock=droop_req_shock, gap_wheel=gap_wheel,
+                    gap_shock=gap_shock, stroke_req=stroke_req,
+                    F_solid=F_solid, margin_solid=margin_solid,
+                    needs_helper=gap_wheel > 0.0)
+
+    return dict(
+        front=_axle(v['m_s_f'], sp['Ks_f_sel'], v['MR_f']),
+        rear=_axle(v['m_s_r'], sp['Ks_r_sel'], v['MR_r']),
+    )
+
+
 # ==============================================================================
 # 4. DIMENSIONADO DE ARB
 # ==============================================================================
@@ -184,7 +247,7 @@ def brake_travel_budget(v: dict, targets: DesignTargets, sp: dict) -> dict:
 # 6. INFORME
 # ==============================================================================
 
-def print_report(v: dict, targets: DesignTargets, sp: dict, arb: dict, travel: dict):
+def print_report(v: dict, targets: DesignTargets, sp: dict, helpers: dict, arb: dict, travel: dict):
     print("=" * 96)
     print("  DIMENSIONADO DE MUELLES Y ARB PARA COMPRA — TeR27")
     print("=" * 96)
@@ -203,6 +266,32 @@ def print_report(v: dict, targets: DesignTargets, sp: dict, arb: dict, travel: d
     print(f"  {'Ks RECOMENDADO [N/mm]':26s} {sp['Ks_f_sel']:14.1f} {sp['Ks_r_sel']:14.1f}   <- COMPRAR")
     print(f"  {'fn resultante [Hz]':26s} {sp['fn_f_act']:14.2f} {sp['fn_r_act']:14.2f}")
     print(f"  {'fn objetivo [Hz]':26s} {sp['fn_f_target']:14.2f} {sp['fn_r_target']:14.2f}")
+
+    print("\n[2.1] MUELLES SECUNDARIOS (HELPERS) Y FSG SCRUTINEERING (Rule T 2.5.1)")
+    print(f"  {'':38s} {'Delantero':>14s} {'Trasero':>14s}")
+    print(f"  {'Droop reglamentario rueda [mm]':38s} "
+          f"{targets.min_droop_wheel_mm:14.1f} {targets.min_droop_wheel_mm:14.1f}")
+    print(f"  {'Droop reglamentario shock [mm]':38s} "
+          f"{helpers['front']['droop_req_shock']:14.2f} {helpers['rear']['droop_req_shock']:14.2f}")
+    print(f"  {'Hundimiento estático rueda [mm]':38s} "
+          f"{helpers['front']['delta_w']:14.2f} {helpers['rear']['delta_w']:14.2f}")
+    print(f"  {'Hundimiento estático shock [mm]':38s} "
+          f"{helpers['front']['delta_s']:14.2f} {helpers['rear']['delta_s']:14.2f}")
+    print(f"  {'Holgura sin helper, rueda [mm]':38s} "
+          f"{helpers['front']['gap_wheel']:14.2f} {helpers['rear']['gap_wheel']:14.2f}")
+    print(f"  {'Holgura sin helper, shock [mm]':38s} "
+          f"{helpers['front']['gap_shock']:14.2f} {helpers['rear']['gap_shock']:14.2f}")
+
+    for label, key in [("Delantero", "front"), ("Trasero", "rear")]:
+        h = helpers[key]
+        veredicto = ("NO (Muelle principal quedaría suelto)" if h['needs_helper']
+                     else "SÍ (el muelle principal ya cubre el droop exigido, no hace falta helper)")
+        print(f"\n  {label}: ¿Supera Scrutineering SIN helper? -> {veredicto}")
+        print(f"    Carrera útil mínima requerida del helper       = {h['stroke_req']:.1f} mm")
+        print(f"    Fuerza de bloqueo a bloque (F_solid)            = {h['F_solid']:.0f} N")
+        print(f"    Con piloto (F_shock={h['F_shock']:.0f} N), el helper trabaja a "
+            f"{h['margin_solid']:.1f}x F_solid -> completamente comprimido bajo carga "
+            f"estática idealizada (no afecta a la tasa efectiva)")
 
     print("\n[3] ARB  (unidades ambiguas en el config -> se dan las dos lecturas posibles)")
     print(f"  Rigidez balanceo TOTAL requerida = {arb['K_phi_total_req']:.0f} Nm/rad")
@@ -236,6 +325,7 @@ if __name__ == "__main__":
     v = load_vehicle(vehicle_params_ter27)
     targets = DesignTargets()
     sp = size_springs(v, targets)
+    helpers = size_helper_springs(v, targets, sp)
     arb = size_arb(v, targets, sp)
     travel = brake_travel_budget(v, targets, sp)
-    print_report(v, targets, sp, arb, travel)
+    print_report(v, targets, sp, helpers, arb, travel)

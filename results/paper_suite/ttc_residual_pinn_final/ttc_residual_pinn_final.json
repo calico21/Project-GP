@@ -31,7 +31,7 @@
   "experiment": "ttc_residual_pinn_final",
   "experiment_config": {
     "dt": 0.005,
-    "mode": "smoke",
+    "mode": "locked",
     "output": "results/paper_suite",
     "seed": 0
   },

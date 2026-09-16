@@ -1,6 +1,6 @@
 {
-  "git_commit": "3063ece227a6a1e3b707f25ca28a7ee8c6192f6f",
-  "timestamp": "2026-09-13T11:17:50.389006+00:00",
+  "git_commit": "cb6ec2d78054f7967bf78b528936304d18fd0e02",
+  "timestamp": "2026-09-13T16:58:14.776348+00:00",
   "python_version": "3.12.3 (main, Aug 31 2026, 10:18:26) [GCC 13.3.0]",
   "jax_version": "0.9.0.1",
   "platform": "Linux-6.6.87.2-microsoft-standard-WSL2-x86_64-with-glibc2.39",
@@ -9,7 +9,7 @@
   "experiment_config": {
     "mode": "smoke",
     "seed": 0,
-    "output": "results/paper_suite",
+    "output": "/home/alexr/eRacing/FS_Driver_Setup_Optimizer/results/paper_suite",
     "dt": 0.005
   },
   "experiment": "manifest",
@@ -393,7 +393,7 @@
     },
     {
       "path": "serious_benchmark/fig_serious_benchmark_one_step_rmse.pdf",
-      "sha256": "d29557566dfb1d9415e216bc9e898da9c9a75a11d1d04f1c81d4d319397a0b15"
+      "sha256": "378ec0af3784116c3b0f46754c93f90fd06014314e7f2bd9893248c820460ae2"
     },
     {
       "path": "serious_benchmark/fig_serious_benchmark_one_step_rmse.png",
@@ -553,7 +553,7 @@
     },
     {
       "path": "ttc_residual_pinn_final/ttc_residual_pinn_final.json",
-      "sha256": "231d9c5d03f904f6f2a74f2c3e3eedc6416d98706281a015db47addbe936becf"
+      "sha256": "94e308af66421c5253669a20716257962f09415ee35b877f886f0cb4ee93d114"
     },
     {
       "path": "ttc_residual_pinn_pilot/candidate_metrics.csv",
