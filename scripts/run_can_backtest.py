@@ -3,7 +3,7 @@ scripts/run_can_backtest.py — Safe Streaming Multiplexed CAN DBC Decoded 108-D
 """
 
 from __future__ import annotations
-
+from tqdm import tqdm
 import argparse
 import os
 import sys
@@ -277,12 +277,13 @@ def _simulate_all_windows_jit(vehicle: DifferentiableMultiBodyVehicle, x0_batch:
 
 
 def run_session_backtest(vehicle, df, dt=0.005, steer_sign=1.0, verbose=True,
-                          tire_cal: jax.Array = jnp.array(
-                                [1.0, 1.0, -1.0, 1.0, 1.0, 1.0],
-                                dtype=jnp.float32,
-                            ),
-                          steer_gain: float = 1.0, brake_gain: float = 1.0,
-                          torque_gain: float = 1.0, ay_scale: float = 1.0):
+                         tire_cal: jax.Array = jnp.array(
+                             [1.0, 1.0, -1.0, 1.0, 1.0, 1.0],
+                             dtype=jnp.float32,
+                         ),
+                         steer_gain: float = 1.0, brake_gain: float = 1.0,
+                         torque_gain: float = 1.0, ay_scale: float = 1.0,
+                         session_name: str = "Session"):
     N = len(df)
     n_windows = N // WINDOW_LEN
     if n_windows == 0:
@@ -327,11 +328,21 @@ def run_session_backtest(vehicle, df, dt=0.005, steer_sign=1.0, verbose=True,
         real_wz_wins.append(real_wz_all[start:end])
         real_ay_wins.append(real_ay_all[start:end])
 
-    u_batch = jnp.asarray(np.stack(u_windows))
-    x0_batch = jnp.asarray(np.stack(x0_windows))
+    CHUNK_SIZE = 25
+    sim_chunks = []
 
-    sim_out = _simulate_all_windows_jit(vehicle, x0_batch, u_batch, dt, tire_cal, ay_scale)
-    sim_out_np = np.array(sim_out)
+    with tqdm(total=n_windows, desc=f"  [Sim] {session_name if 'session_name' in locals() else 'Session'}", 
+            unit="win", leave=False, dynamic_ncols=True) as pbar:
+        for i in range(0, n_windows, CHUNK_SIZE):
+            end_i = min(i + CHUNK_SIZE, n_windows)
+            u_chunk = jnp.asarray(np.stack(u_windows[i:end_i]))
+            x0_chunk = jnp.asarray(np.stack(x0_windows[i:end_i]))
+            
+            chunk_res = _simulate_all_windows_jit(vehicle, x0_chunk, u_chunk, dt, tire_cal, ay_scale)
+            sim_chunks.append(np.array(chunk_res))
+            pbar.update(end_i - i)
+
+    sim_out_np = np.concatenate(sim_chunks, axis=0)
 
     per_window_ay_max = np.max(np.abs(sim_out_np[:, :, 2]), axis=1)
     n_blown = int(np.sum(per_window_ay_max > 15.0))
@@ -472,9 +483,21 @@ def run_session_backtest_debug(
         brake_mean_wins.append(float(np.mean(p_hyd[s:e])))
         rear_trq_mean_wins.append(float(np.mean(t_rl[s:e] + t_rr[s:e])))
 
-    u_batch = jnp.asarray(np.stack(u_windows))
-    x0_batch = jnp.asarray(np.stack(x0_windows))
-    sim_out_np = np.array(_simulate_all_windows_jit(vehicle, x0_batch, u_batch, dt, tire_cal, ay_scale))
+    CHUNK_SIZE = 25
+    sim_chunks = []
+
+    with tqdm(total=n_windows, desc=f"  [Debug Sim] {session_name}", 
+            unit="win", leave=True, dynamic_ncols=True) as pbar:
+        for i in range(0, n_windows, CHUNK_SIZE):
+            end_i = min(i + CHUNK_SIZE, n_windows)
+            u_chunk = jnp.asarray(np.stack(u_windows[i:end_i]))
+            x0_chunk = jnp.asarray(np.stack(x0_windows[i:end_i]))
+            
+            chunk_res = _simulate_all_windows_jit(vehicle, x0_chunk, u_chunk, dt, tire_cal, ay_scale)
+            sim_chunks.append(np.array(chunk_res))
+            pbar.update(end_i - i)
+
+    sim_out_np = np.concatenate(sim_chunks, axis=0)
 
     sim_vx_wins = sim_out_np[:, :, 0]
     sim_wz_wins = sim_out_np[:, :, 1]
@@ -629,10 +652,9 @@ def main():
     vehicle = DifferentiableMultiBodyVehicle(VP_DICT, TP_DICT)
 
     # ── Load calibrated tire_cal + gains, if present ─────────────────────────
-    tire_cal = jnp.array(
-        [mu[0], mu[1], -1.0, 1.0, rby_cal[0], rby_cal[1]],
-        dtype=jnp.float32
-    )
+    mu = np.array([1.0, 1.0], dtype=np.float32)
+    rby_cal = np.array([1.0, 1.0], dtype=np.float32)
+    tire_cal = jnp.array([1.0, 1.0, -1.0, 1.0, 1.0, 1.0], dtype=jnp.float32)
     steer_gain, brake_gain, torque_gain = 1.0, 1.0, 1.0
     steer_sign_cal = 1.0
 
@@ -688,9 +710,9 @@ def main():
             )
 
         res = run_session_backtest(vehicle, df, dt=args.dt, steer_sign=steer_sign, verbose=False,
-                                tire_cal=tire_cal, steer_gain=steer_gain,
-                                brake_gain=brake_gain, torque_gain=torque_gain,
-                                ay_scale=ay_scale_cal)
+                           tire_cal=tire_cal, steer_gain=steer_gain,
+                           brake_gain=brake_gain, torque_gain=torque_gain,
+                           ay_scale=ay_scale_cal, session_name=f.name)
         scores.append(res['score'])
         print(f"{f.name:<16} | {res['duration_s']:<7.1f} | {res['rmse_vx']:<9.3f} | {res['rmse_wz']:<10.3f} | {res['rmse_ay']:<9.3f} | {res['score']:<6.1f}% | {steer_sign:<5.0f} | {res['r_ay']:+.3f}"
               + ("" if res.get('wz_valid', True) and res.get('ay_valid', True) else "  [LOW-DYN]"))
